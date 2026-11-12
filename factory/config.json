@@ -2,6 +2,7 @@
   "tracker": "auto",
   "concurrency": 2,
   "max_rounds": 3,
+  "max_continues": 3,
   "base_branch": "main",
   "merge_method": "merge",
   "labels": {

@@ -193,6 +193,11 @@ gate's `round-<N-1>/checks.md`, the reviews in `round-<N-1>/`, or
 - `STATUS: READY`: `factory/bin/job advance <id> gate`, then go to **gate**. If
   `advance` refuses (nothing pushed, no PR, a dirty tree), resume the builder
   once with the refusal. If it refuses again, stop this job and tell the user.
+- `STATUS: PARTIAL`: the builder stopped with work left. Run
+  `factory/bin/job continue <id>`. It prints how to resume the builder (same
+  round, `Continue: read build.md ## Remaining, finish it, and update
+  build.md.`); do that. After `max_continues` in one round it moves the job to
+  `needs-human` itself and says so.
 - `STATUS: BLOCKED`: `factory/bin/job advance <id> needs-human`.
 
 **gate.** Run `factory/bin/gate <id>`. It prints `GATE: PASS` or `GATE: FAIL`.

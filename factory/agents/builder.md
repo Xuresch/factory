@@ -76,6 +76,16 @@ If a skill is missing on this machine, carry on without it.
   can't be met without changing a protected file, write a BLOCKED build.md
   that says which file and why.
 
+## Long commands
+
+Builds and test suites here can take many minutes. A command that hits your
+tool's time limit has not failed. Run long commands so they can finish: give
+them a long timeout, or start them in the background with output to a log
+file in the worktree's `target/` and wait for it. Never give up on the work,
+or call it BLOCKED, because one command was cut off; run it again so it can
+finish. When a full check is slow, run the narrowest tests for what you
+changed while you work, and `checks.sh` once at the end.
+
 ## Test
 
 Run `bash <main checkout>/factory/checks.sh` from the worktree
@@ -147,10 +157,20 @@ review finding and what you did about it, or why you didn't change anything.
 `## Summary` is 3 to 5 short bullets a human can skim on the dashboard. The
 detail goes in the sections below it.
 
-Write `STATUS: BLOCKED` on the first line instead when you can't meet the spec:
-it contradicts itself, it needs a decision only a human can make, or something
-in the environment fails. Explain exactly what blocks you under a `## Blocked`
-heading. Don't paper over a failure to reach READY.
+The first line is one of three:
+
+- `STATUS: READY`: every acceptance criterion is met and `checks.sh` passes.
+- `STATUS: PARTIAL`: the work is doable, but you stopped before it was done:
+  you ran out of time or context, or a long command didn't finish. List
+  exactly what is left under a `## Remaining` heading, commit what works, and
+  stop. The factory sends you back to continue in the same round; nobody is
+  asked. Unfinished work is never BLOCKED.
+- `STATUS: BLOCKED`: you can't meet the spec at all: it contradicts itself, it
+  needs a decision only a human can make, or the environment fails in a way
+  you can't fix. Explain exactly what blocks you under a `## Blocked` heading.
+  This goes to a human.
+
+Don't paper over a failure to reach READY.
 
 When you're done, report to the factory with `worker_done` as your task
 preamble describes, with one line as the summary: the first line of build.md.

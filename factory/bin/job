@@ -13,6 +13,7 @@ Usage:
   job advance <job> <stage>      move a job to <stage>, or refuse
   job merge <job>                APPROVE → sync with the base branch, gate, merge (the PR, or locally)
   job reply <issue>              post your words (stdin) on the issue as the operator, not the factory
+  job continue <job>             build.md says STATUS: PARTIAL → the builder goes on, same round
   job feedback <job>             needs-human → build, with your feedback (stdin) as feedback-<k>.md
   job reject <job>               needs-info or needs-human → rejected, with your reason (stdin) as rejection.md
   job agents <job> <json>        record the routed agent set (called by factory/bin/route)
@@ -820,8 +821,17 @@ def advance(job, stage):
 
     elif old == "build":  # → needs-human
         status = first_line(d / "build.md")
-        require(status == "STATUS: BLOCKED", f"build.md starts with {status!r}, not STATUS: BLOCKED")
-        escalate(job, "The builder is blocked:\n\n" + (section(d / "build.md", "Blocked") or "(no Blocked section)"))
+        limit = CONFIG.get("max_continues", 3)
+        used = (job.get("continues") or {}).get(str(job["round"]), 0)
+        if status == "STATUS: PARTIAL":
+            require(used >= limit, f"build.md says PARTIAL with {used}/{limit} continues used: "
+                                   f"run `job continue {job['id']}`")
+            escalate(job, f"The builder stopped with work left {limit} times in round {job['round']}. "
+                          "The job may be too big for one build:\n\n"
+                          + (section(d / "build.md", "Remaining") or "(no Remaining section)"))
+        else:
+            require(status == "STATUS: BLOCKED", f"build.md starts with {status!r}, not STATUS: BLOCKED")
+            escalate(job, "The builder is blocked:\n\n" + (section(d / "build.md", "Blocked") or "(no Blocked section)"))
 
     elif old == "gate":
         checks = round_dir(job) / "checks.md"
@@ -1093,6 +1103,28 @@ def cmd_tracker():
         print(f"label {key} {value}")
 
 
+def cmd_continue(job):
+    """The builder stopped with work left (STATUS: PARTIAL). It goes on in the
+    same round, up to `max_continues` times per round; then a human decides."""
+    if job["stage"] != "build":
+        die(f"{job['id']} is in {job['stage']}, not build")
+    d = job_dir(job["id"])
+    status = first_line(d / "build.md")
+    if status != "STATUS: PARTIAL":
+        die(f"build.md starts with {status!r}, not STATUS: PARTIAL")
+    counts = job.setdefault("continues", {})
+    n = counts.get(str(job["round"]), 0) + 1
+    limit = CONFIG.get("max_continues", 3)
+    if n > limit:
+        save(advance(sync(job), "needs-human"))
+        print(f"{job['id']}: needs-human: still unfinished after {limit} continues in round {job['round']}")
+        return
+    counts[str(job["round"])] = n
+    save(job)
+    print(f"{job['id']}: continue {n}/{limit} in round {job['round']}: resume the builder with "
+          "`Continue: read build.md ## Remaining, finish it, and update build.md.`")
+
+
 def cmd_feedback(job, text):
     if job["stage"] != "needs-human":
         die(f"{job['id']} is in {job['stage']}, not needs-human")
@@ -1204,6 +1236,8 @@ def main(argv):
                       "start a new builder worker")
         elif cmd == "merge" and len(args) == 1:
             cmd_merge(resolve(args[0]))
+        elif cmd == "continue" and len(args) == 1:
+            cmd_continue(resolve(args[0]))
         elif cmd == "feedback" and len(args) == 1:
             cmd_feedback(resolve(args[0]), sys.stdin.read())
         elif cmd == "reject" and len(args) == 1:
