@@ -113,6 +113,14 @@ DESIGN.md                     how it works and why
 
 [`DESIGN.md`](DESIGN.md) explains each decision and lists what changed from v1.
 
+## Keeping it up to date
+
+`factory/bin/update` brings in a newer version of this template (from this
+repo, or `update <git-url-or-path>[@ref]`) and keeps what's yours: the
+`<!-- project -->` blocks in the briefs, your config values, `checks.sh`.
+`factory/tests/run.sh` tests the factory's scripts in throwaway repos with a
+fake Orca; run it after an update.
+
 ## Dashboard
 
 ```bash

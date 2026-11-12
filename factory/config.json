@@ -31,6 +31,10 @@
     "approver": {
       "agent": "claude",
       "model": "opus"
+    },
+    "retro": {
+      "agent": "claude",
+      "model": "sonnet"
     }
   },
   "builder": {
@@ -151,5 +155,15 @@
       "cache_write_1h": 16.0,
       "cache_read": 0.2
     }
-  }
+  },
+  "review_sections": {
+    "code": [
+      "Standards",
+      "Spec"
+    ]
+  },
+  "max_cost_usd": null,
+  "notify": "auto",
+  "retro_after_merge": true,
+  "feature_review": true
 }

@@ -41,6 +41,9 @@ It beats the issue where they disagree.
 
 ## Decide
 
+<!-- project: what this project is for, so intake can tell what belongs -->
+<!-- /project -->
+
 - **ACCEPT** when the request is clear, fits the project, and can be built and
   reviewed as one pull request. If it is too big, accept a smaller first slice
   that is useful on its own, and say what you left out. If it is vague but the

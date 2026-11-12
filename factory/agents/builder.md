@@ -133,6 +133,9 @@ command you ran and its result, or what the page showed.
   you're done. Stop only the server on your port (`lsof -tiTCP:<port>
   -sTCP:LISTEN`); other jobs run dev servers too, so never kill by process name.
 
+<!-- project: how to verify changes in this project: dev server, test tools, build rules -->
+<!-- /project -->
+
 ## Commit, push, PR
 
 The header's `Tracker:` says where the work goes.
@@ -150,6 +153,21 @@ The header's `Tracker:` says where the work goes.
 - **Tracker: local.** There is no remote and no PR. Commit only: never push,
   never merge, and never touch the ticket in `.scratch/`. The factory merges
   the branch into the base itself after approval.
+
+## Before READY: check your own diff
+
+Before you write READY, read your whole diff (`git diff <base>...HEAD`) once,
+as a reviewer would, and fix what you find:
+
+- Every acceptance criterion: where in the diff it is met, and how you know.
+  Nothing the spec didn't ask for.
+- The smell baseline in `~/.agents/skills/code-review/SKILL.md` (duplicated
+  code, mysterious names, speculative generality, and the rest). Keep it
+  quick: the code reviewer does the full standards review.
+
+Record it in build.md under `## Self-review`, two to five lines: what you
+checked and what you changed because of it. The factory refuses READY
+without it.
 
 ## Write build.md
 
@@ -173,6 +191,9 @@ The files changed and what each change does.
 
 ## Validation
 The commands you ran and whether each one passed.
+
+## Self-review
+What you checked in your own diff before READY, and what you changed.
 
 ## Log
 ### Round <N>

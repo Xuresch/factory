@@ -227,6 +227,9 @@ a Claude review and the other way round. **WAIT FOR ALL.** Each time one finishe
 `factory/bin/job sync <id>` so the dashboard fills in. When every reviewer has
 finished:
 
+- `advance` refuses because a review doesn't count (no verdict, or a required
+  section such as `## Standards` or `## Spec` missing): `job send` that
+  reviewer the refusal, and advance again when it reports.
 - all PASS: `factory/bin/job advance <id> approve`, then
   `factory/bin/job start <id> approver`.
 - any CHANGES: `factory/bin/job advance <id> build` (or `needs-human` when it
@@ -251,11 +254,20 @@ intake or spec (the ticket asked for it, or its risk is in `hold.after_spec_risk
 Stop working on it and tell the user which file to review. It resumes only
 through the user (see below).
 
+**retro.** When `job merge` prints `start the retro`, run
+`factory/bin/job start <id> retro`. It looks back at the job and writes
+`retro.md` with suggestions for the environment. Don't wait for it to start
+the next job; when it reports, tell the user its first line and that the
+candidates are in `factory/jobs/<id>/retro.md`. Never apply them yourself.
+
 **feature branches.** When `job merge` prints that every ticket for a branch is
 done, run `factory/bin/job finish <branch>`. It syncs the branch with
-`base_branch`, runs the full checks and merges it. If it can't (a conflict,
-failing checks, a dirty checkout), it says so and leaves the branch alone: tell
-the user and point them to `factory/jobs/_features/<branch>.md`.
+`base_branch` and runs the full checks, then asks for a feature review: run
+`factory/bin/job feature-review <branch>`, and when that worker reports, run
+`job finish <branch>` again, which merges it. If anything doesn't go through
+(a conflict, failing checks, a dirty checkout, a review with CHANGES), it says
+so and leaves the branch alone: tell the user and point them to
+`factory/jobs/_features/<branch>.md`.
 
 A job is finished for this run when it reaches `merged`, `rejected`,
 `needs-info`, `needs-human` or `paused`. Its workers close on their own.

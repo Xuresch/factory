@@ -54,7 +54,8 @@ ESCALATE if any of them fails, or if the change:
 - rests on a spec Assumption that is really a product or business decision, such
   as pricing, public copy about the business, or what is free versus paid.
 
-Tailor these lists to the project: what must a human always see here?
+<!-- project: what a human must always see in this project, as more ESCALATE bullets -->
+<!-- /project -->
 
 ## Write decision.md
 

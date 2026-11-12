@@ -46,6 +46,9 @@ the server you started, by the PID listening on your port
 (`lsof -tiTCP:<port> -sTCP:LISTEN`); other jobs run dev servers too, so
 never kill by process name.
 
+<!-- project: where the design tokens, theme and shared components live -->
+<!-- /project -->
+
 ## What to look for
 
 - It looks like it belongs in the app: the same colours, type scale, spacing,

@@ -21,7 +21,8 @@ Usage:
   job resume <job>               paused → on: after the human reviewed (and maybe edited) intake.md or spec.md
   job rewind <job> <stage>       back to intake, spec or build with your feedback (stdin)
   job route-set <job> k=v...     override for this job: builder=claude/opus, code=codex, ux=claude/sonnet
-  job finish <branch>            every ticket for a feature branch is done: sync, check, merge into base_branch
+  job finish <branch>            every ticket for a feature branch is done: sync, check, feature review, merge
+  job feature-review <branch>    start the reviewer of a whole feature branch (job finish says when)
   job feedback <job>             needs-human → build, with your feedback (stdin) as feedback-<k>.md
   job reject <job>               needs-info or needs-human → rejected, with your reason (stdin) as rejection.md
   job agents <job> <json>        record the routed agent set (called by factory/bin/route)
@@ -676,11 +677,15 @@ def sync(job):
         gate = header(rd / "checks.md").get("GATE") if (rd / "checks.md").exists() else None
         job["gate"] = gate
         if job["agents"] and job["stage"] in {"review", "approve", "merging", "merged", "needs-human"}:
-            job["reviews"] = {}
+            job["reviews"], job["review_problems"] = {}, {}
             for r in reviewers(job):
-                line = first_line(rd / f"review-{r}.md")
+                f = rd / f"review-{r}.md"
+                line = first_line(f)
                 m = re.fullmatch(r"VERDICT:\s*(PASS|CHANGES)", line or "")
-                job["reviews"][r] = m.group(1) if m else ("pending" if line is None else "invalid")
+                problem = review_problem(r, f, m)
+                job["reviews"][r] = "pending" if line is None else "invalid" if problem else m.group(1)
+                if problem and line is not None:
+                    job["review_problems"][r] = problem
     (claude, claude_rows), (codex, codex_rows) = cost_usd(job), codex_cost_usd(job)
     job["cost_by_agent"] = {"claude": claude, "codex": codex}
     # One row per role, agent and model, in pipeline order, for the dashboard.
@@ -726,12 +731,26 @@ def is_merged(job):
     return run(["git", "merge-base", "--is-ancestor", tip, jbase(job)], check=False).returncode == 0
 
 
+def review_problem(lens, path, verdict):
+    """Why a review file doesn't count, or None. A lens with required sections
+    (config.json `review_sections`, e.g. code: Standards and Spec) must have them."""
+    if not path.exists():
+        return None
+    if not verdict:
+        return "its first line isn't `VERDICT: PASS` or `VERDICT: CHANGES`"
+    need = CONFIG.get("review_sections", {}).get(lens, [])
+    missing = [h for h in need if section(path, h) is None]
+    return f"it has no {', '.join('## ' + h for h in missing)} section" if missing else None
+
+
 def check_reviews_done(job):
     rd = round_dir(job)
     missing = [r for r in reviewers(job) if not (rd / f"review-{r}.md").exists()]
     require(not missing, f"round {job['round']} is missing reviews from: {', '.join(missing)}")
-    bad = [r for r, v in job["reviews"].items() if v not in {"PASS", "CHANGES"}]
-    require(not bad, f"first line isn't a verdict in review-{bad[0]}.md" if bad else "")
+    bad = {r: p for r, p in (job.get("review_problems") or {}).items()}
+    if bad:
+        r, why = next(iter(bad.items()))
+        raise Refused(f"review-{r}.md doesn't count: {why}. Send the reviewer-{r} worker this message.")
 
 
 def describe(entry):
@@ -869,6 +888,9 @@ def advance(job, stage):
                                  f"see `factory/bin/job slices {job['id']}`")
         status = first_line(d / "build.md")
         require(status == "STATUS: READY", f"build.md starts with {status!r}, not STATUS: READY")
+        require(section(d / "build.md", "Self-review") is not None,
+                "build.md has no `## Self-review` section: the builder checks its own diff against the "
+                "spec and the smell list before READY (see its brief)")
         require(not git(job, "status", "--porcelain").stdout.strip(), "the worktree has uncommitted changes")
         require(int(git(job, "rev-list", "--count", f"{job['base_ref']}..HEAD").stdout) > 0,
                 f"{job['branch']} has no commits on top of {job['base_ref']}")
@@ -998,6 +1020,9 @@ def advance(job, stage):
         stage = "paused"
     job["stage"] = stage
     job["ended"] = now() if stage in TERMINAL | WAITING else None
+    if stage in WAITING:
+        notify(f"{job['id']} ({job['issue']}) waits for you: {stage}"
+               + (f" after {job['paused']['after']}" if stage == "paused" else ""))
     job.setdefault("history", []).append({"stage": stage, "round": job["round"], "at": now()})
     return job
 
@@ -1153,6 +1178,7 @@ def composite_build_md(job, status, blocked=()):
                 return f"Never started: it waits on slice(s) {', '.join(map(str, s['needs']))}."
             return section(f, "Blocked") or section(f, "Remaining") or "(no reason given)"
         parts += ["", "## Blocked"] + [f"Slice {s['n']}, {s['title']}:\n\n{reason(s)}" for s in blocked]
+    parts += ["", "## Self-review", "Each slice builder's self-review is in its section below."]
     parts += ["", "## Slices"]
     for s in job["slices"]:
         f = d / f"slice-{s['n']}.md"
@@ -1290,7 +1316,31 @@ def create_follow_ups(job):
 # feedback; `route-set` overrides the builder or a reviewer for one job.
 
 
+BUDGETED = {"spec", "build", "gate", "review", "approve"}
+
+
+def notify(text):
+    """Best effort: a desktop notification when a job needs the human."""
+    cmd = CONFIG.get("notify", "auto")
+    if not cmd:
+        return
+    if cmd == "auto":
+        import shutil
+        if not shutil.which("notify-send"):
+            return
+        argv = ["notify-send", "--app-name=factory", "Software factory", text]
+    else:
+        argv = [*cmd.split(), text]
+    try:
+        subprocess.run(argv, capture_output=True, timeout=10)
+    except Exception:
+        pass
+
+
 def hold_point(job, old, stage):
+    limit = CONFIG.get("max_cost_usd")
+    if limit and stage in BUDGETED and job.get("cost_usd", 0) > job.get("cost_allowance", limit):
+        return "budget"
     holds = set(job.get("holds") or [])
     if (job.get("intake") or {}).get("risk") in CONFIG.get("hold", {}).get("after_spec_risk", []):
         holds.add("spec")
@@ -1302,8 +1352,15 @@ def hold_point(job, old, stage):
 
 
 def pause(job, after, resume):
-    f = "intake.md" if after == "intake" else "spec.md"
     job["paused"] = {"after": after, "resume": resume, "at": now()}
+    if after == "budget":
+        limit = job.get("cost_allowance", CONFIG["max_cost_usd"])
+        comment("issue", job["issue"],
+                f"### Factory: paused, over budget\n\nThis job has cost ${job['cost_usd']:.2f} "
+                f"(API-equivalent), over its ${limit:.2f} allowance (`max_cost_usd`). Resume to allow "
+                f"another ${CONFIG['max_cost_usd']:.2f}, give feedback to change course, or reject it.")
+        return label("issue", job["issue"], add=LABELS["needs_human"], remove=LABELS["queue"])
+    f = "intake.md" if after == "intake" else "spec.md"
     comment("issue", job["issue"],
             f"### Factory: paused after {after}\n\nReview `factory/jobs/{job['id']}/{f}`. Edit it if you want "
             f"(your version is binding), then resume. Or send feedback to redo it, or reject the job.")
@@ -1323,9 +1380,11 @@ def cmd_resume(job):
         require_slot(job["id"])
     except Refused as e:
         die(str(e))
+    if p["after"] == "budget":
+        job["cost_allowance"] = round(job.get("cost_usd", 0) + CONFIG["max_cost_usd"], 2)
     f = job_dir(job["id"]) / ("intake.md" if p["after"] == "intake" else "spec.md")
     paused_at = datetime.fromisoformat(p["at"].replace("Z", "+00:00")).timestamp()
-    edited = f.stat().st_mtime > paused_at + 1
+    edited = p["after"] != "budget" and f.stat().st_mtime > paused_at + 1
     if edited:
         append_binding_note(f)
         job.setdefault("human_edits", []).append({"file": f.name, "at": now()})
@@ -1474,23 +1533,45 @@ def cmd_finish(branch):
     where = branch_worktree(branch)
     temp = None
     if where is None:
+        # Kept until the merge: the feature reviewer works in it.
         temp = str(REPO / ".worktrees" / f"_finish-{slug}")
-        run(["git", "worktree", "add", temp, branch])
+        if not Path(temp).exists():
+            run(["git", "worktree", "add", temp, branch])
         if GITHUB:
             run(["git", "merge", "--ff-only", f"origin/{branch}"], cwd=temp, check=False)
         where = temp
     elif run(["git", "status", "--porcelain"], cwd=where).stdout.strip():
         stop("DIRTY", f"{branch} is checked out in {where} with uncommitted changes.")
+    state_file = report_dir / f"{slug}.json"
+    state = json.loads(state_file.read_text()) if state_file.exists() else {}
+    review = report_dir / f"{slug}-review.md"
     try:
         merged = run(["git", "merge", "--no-edit", ref_of(BASE)], cwd=where, check=False)
         if merged.returncode != 0:
             run(["git", "merge", "--abort"], cwd=where, check=False)
             stop("CONFLICT", f"{branch} conflicts with {BASE}:\n\n```\n{merged.stdout.strip()}\n```")
-        env = dict(os.environ, FACTORY_GATE="merge", FACTORY_BASE_REF=ref_of(BASE))
-        checks = subprocess.run(["bash", str(FACTORY / "checks.sh")], cwd=where, capture_output=True, text=True, env=env)
-        if checks.returncode != 0:
-            tail = "\n".join((checks.stdout + checks.stderr).rstrip().splitlines()[-60:])
-            stop("FAIL", f"checks.sh fails on {branch} after syncing with {BASE}:\n\n```\n{tail}\n```")
+        tip = run(["git", "rev-parse", "HEAD"], cwd=where).stdout.strip()
+        if state.get("checked") != tip:
+            env = dict(os.environ, FACTORY_GATE="merge", FACTORY_BASE_REF=ref_of(BASE))
+            checks = subprocess.run(["bash", str(FACTORY / "checks.sh")], cwd=where, capture_output=True, text=True, env=env)
+            if checks.returncode != 0:
+                tail = "\n".join((checks.stdout + checks.stderr).rstrip().splitlines()[-60:])
+                stop("FAIL", f"checks.sh fails on {branch} after syncing with {BASE}:\n\n```\n{tail}\n```")
+            state["checked"] = tip
+            state_file.write_text(json.dumps(state, indent=2))
+        if CONFIG.get("feature_review", True):
+            verdict = first_line(review)
+            if state.get("reviewed") != tip or not verdict:
+                state.update({"worktree": where, "tip": tip, "reviewed": tip})
+                state_file.write_text(json.dumps(state, indent=2))
+                review.unlink(missing_ok=True)
+                temp = None  # keep the worktree for the reviewer
+                print(f"{branch}: synced and checked; start the feature review: "
+                      f"`factory/bin/job feature-review {branch}`, then run `job finish {branch}` again")
+                return
+            if verdict != "VERDICT: PASS":
+                stop("REVIEW", f"The feature review asks for changes; see `factory/jobs/_features/{slug}-review.md`."
+                     "\n\n" + (section(review, "Findings") or ""))
         if GITHUB:
             run(["git", "push", "origin", branch], cwd=where)
             prs = gh_json("pr", "list", "--head", branch, "--base", BASE, "--state", "open", "--json", "number")
@@ -1505,8 +1586,48 @@ def cmd_finish(branch):
     finally:
         if temp:
             run(["git", "worktree", "remove", "--force", temp], check=False)
-    report.write_text(f"FINISH: MERGED\n\n# {branch} → {BASE}\n\nSynced, checked and merged at {now()}.\n")
+    report.write_text(f"FINISH: MERGED\n\n# {branch} → {BASE}\n\nSynced, checked"
+                      + (", reviewed" if CONFIG.get("feature_review", True) else "")
+                      + f" and merged at {now()}.\n")
+    if state_file.exists():
+        state_file.unlink()
+    wt = REPO / ".worktrees" / f"_finish-{slug}"
+    if wt.exists():
+        run(["git", "worktree", "remove", "--force", str(wt)], check=False)
     print(f"{branch}: merged into {BASE}")
+
+
+def cmd_feature_review(branch):
+    """Start the feature reviewer on the whole branch: the reviews per ticket
+    never saw how the tickets fit together."""
+    slug = re.sub(r"[^\w-]", "-", branch)
+    report_dir = JOBS / "_features"
+    state_file = report_dir / f"{slug}.json"
+    if not state_file.exists():
+        die(f"run `job finish {branch}` first: it syncs and checks the branch")
+    state = json.loads(state_file.read_text())
+    entry = CONFIG["stages"].get("feature-review") or CONFIG["routing"]["high"]["code"]
+    brief = FACTORY / "agents" / "reviewer-feature.md"
+    spec = (f"Feature branch: {branch}. Merges into: {BASE}. Main checkout: {REPO}. "
+            f"Worktree: {state['worktree']}. Tip: {state['tip']}. Base: {ref_of(BASE)}. "
+            f"Jobs folder: {JOBS}/. Write: {report_dir / (slug + '-review.md')}.\n\n"
+            f"Your brief is {brief}. Read it in full and follow it exactly. When you're done, "
+            "report with worker_done; its summary is the one line your brief names.")
+    cmd = [orca_cli(), "orchestration", "worker-start", "--agent", entry["agent"]]
+    if entry.get("model"):
+        cmd += ["--model", entry["model"]]
+    cmd += ["--worktree", f"path:{state['worktree']}", "--task-title", f"feature-review {branch}",
+            "--spec-file", "-", "--json"]
+    res = subprocess.run(cmd, cwd=REPO, input=spec, capture_output=True, text=True)
+    try:
+        dispatch = (json.loads(res.stdout).get("result") or {}).get("dispatchId")
+    except json.JSONDecodeError:
+        dispatch = None
+    if res.returncode != 0 or not dispatch:
+        die(f"worker-start for the feature review failed:\n{(res.stdout or res.stderr).strip()[:2000]}")
+    state["dispatch"] = dispatch
+    state_file.write_text(json.dumps(state, indent=2))
+    print(f"{branch}: feature review started on {describe(entry)}, dispatch {dispatch}")
 
 
 # ---- Commands --------------------------------------------------------------
@@ -1701,6 +1822,8 @@ def cmd_merge(job):
         run(["git", "push", "origin", "--delete", job["branch"]], check=False)
     save(advance(sync(job), "merged"))
     print(f"{job['id']}: merged " + (f"PR #{job['pr']}" if GITHUB else f"{job['branch']} into {jbase(job)}"))
+    if CONFIG.get("retro_after_merge"):
+        print(f"{job['id']}: start the retro: `factory/bin/job start {job['id']} retro`")
     feature_hint(job)
 
 
@@ -1814,7 +1937,8 @@ def cmd_approve(job):
 
 def cmd_feedback(job, text):
     if job["stage"] == "paused":  # redo the step it paused after
-        return cmd_rewind(job, job["paused"]["after"], text)
+        after = job["paused"]["after"]
+        return cmd_rewind(job, "build" if after == "budget" else after, text)
     if job["stage"] != "needs-human":
         die(f"{job['id']} is in {job['stage']}, not needs-human")
     if not text.strip():
@@ -1896,6 +2020,8 @@ def worker_place(job, role):
     if role.startswith("builder-s"):
         k = role.removeprefix("builder-s")
         return slice_worktree(job, k), slice_branch(job, k)
+    if role == "retro":
+        return str(REPO), jbase(job)
     return job["worktree"], job["branch"]
 
 
@@ -1918,7 +2044,7 @@ def cmd_start(job, role, extra):
     entry = role_entry(job, role)
     agent_file = "spec-writer" if role == "spec" else "builder" if role.startswith("builder-s") else role
     brief = FACTORY / "agents" / f"{agent_file}.md"
-    where = "current" if role == "intake" else f"path:{worker_place(job, role)[0]}"
+    where = "current" if role in {"intake", "retro"} else f"path:{worker_place(job, role)[0]}"
     port = role_port(job, role)
     lines = [job_header(job, role)]
     if role.startswith("builder-s"):
@@ -2039,6 +2165,8 @@ def main(argv):
             cmd_route_set(resolve(args[0]), args[1:])
         elif cmd == "finish" and len(args) == 1:
             cmd_finish(args[0])
+        elif cmd == "feature-review" and len(args) == 1:
+            cmd_feature_review(args[0])
         elif cmd == "approve" and len(args) == 1:
             cmd_approve(resolve(args[0]))
         elif cmd == "feedback" and len(args) == 1:

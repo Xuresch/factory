@@ -44,6 +44,9 @@ the server you started, by the PID listening on your port
 (`lsof -tiTCP:<port> -sTCP:LISTEN`); other jobs run dev servers too, so
 never kill by process name.
 
+<!-- project: the kinds of users the app has -->
+<!-- /project -->
+
 ## What to look for
 
 - The flow does what the spec promises, with no dead ends.

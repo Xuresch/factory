@@ -57,6 +57,11 @@ factory/bin/job
 factory/bin/gate
 factory/bin/route
 factory/bin/dashboard
+factory/bin/update
+factory/bin/clean-cache
+factory/agents/reviewer-feature.md
+factory/agents/retro.md
+factory/tests/run.sh
 factory/dashboard.html
 ```
 
@@ -65,7 +70,7 @@ SRC=https://raw.githubusercontent.com/Xuresch/factory/main
 for f in <the paths above>; do
   mkdir -p "$(dirname "$f")" && curl -fsSL "$SRC/$f" -o "$f"
 done
-chmod +x factory/checks.sh factory/bin/job factory/bin/gate factory/bin/route factory/bin/dashboard
+chmod +x factory/checks.sh factory/bin/* factory/tests/run.sh
 ```
 
 Don't copy `README.md`, `DESIGN.md`, `INSTALL.md`, `LICENSE`, `examples/` or
@@ -101,9 +106,11 @@ It must be non-interactive, must not rewrite files (no `--fix`, no
   `surface_reviewers`, `cross_review` and `prices_usd_per_mtok` as they are
   unless the user asks.
 
-**Agents.** The checklists are general on purpose. Tailor them to the stack
-without changing their structure, file names, first-line formats or one-line
-replies:
+**Agents.** The checklists are general on purpose. Each brief has an empty
+`<!-- project: ... -->` slot where the project goes; write the project's part
+between the slot's two lines and nowhere else, so `factory/bin/update` can
+bring in new versions of the brief later without losing it. Don't change the
+structure, file names, first-line formats or one-line replies:
 
 - `reviewer-security.md`: this project's hot spots (its auth, its data access
   rules, its payment and webhook code, where user input meets queries or HTML).
@@ -179,7 +186,8 @@ gh label create enhancement --force --color A2EEEF --description "New feature or
 3. `<orca> worktree current --json` succeeds from the project root inside an
    Orca terminal, and the agents `config.json` names (`claude`, `codex`) are
    enabled in Orca on this machine.
-4. `python3 -m json.tool factory/config.json` succeeds.
+4. `python3 -m json.tool factory/config.json` succeeds, and
+   `factory/tests/run.sh` passes (it needs only git and python3).
 5. `git check-ignore factory/jobs/x .worktrees/x` prints both paths, and
    `git status --porcelain --untracked-files=all` lists every file from step 1
    (the skill, the agents and `factory/`) as committable.

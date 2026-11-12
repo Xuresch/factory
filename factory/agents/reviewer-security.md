@@ -48,6 +48,9 @@ is in the main checkout; your one file goes there.
 - **Secrets**: keys, credentials or `.env` values in commits.
 - **Dependencies**: new packages, and whether they are needed and maintained.
 
+<!-- project: this project's security hot spots -->
+<!-- /project -->
+
 ## Write review-security.md
 
 ```markdown

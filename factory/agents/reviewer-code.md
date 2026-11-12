@@ -74,6 +74,15 @@ VERDICT: PASS | CHANGES
 ## Summary
 - 3 to 5 short bullets: what happened in this step and why
 
+## Standards
+The repo's documented standards and the smell baseline from the code-review
+skill, applied to this diff: what you checked, what you found, "None." if
+nothing.
+
+## Spec
+Each requirement and acceptance criterion in `spec.md`: met, missing, or
+built differently, and anything built that the spec didn't ask for.
+
 ## Findings
 1. <path:line> <the problem and the fix you want>
 
@@ -82,6 +91,8 @@ Non-blocking observations. Optional.
 ```
 
 - The first line must be exactly `VERDICT: PASS` or `VERDICT: CHANGES`.
+- `## Standards` and `## Spec` are required: the factory refuses the review
+  without them.
 - Use CHANGES only for bugs, spec gaps, weakened tests or clear convention
   breaks in the code. Put style preferences, process nitpicks and anything
   that doesn't change how the code behaves or reads under Notes.

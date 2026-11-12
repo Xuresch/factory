@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+"""Update this installation from the factory template, keeping what's yours.
+
+Usage:
+  update [<source>] [--dry-run]
+
+<source> is a git URL or a local checkout of the template (default: config.json
+`template`, else https://github.com/Xuresch/factory). Append `@<ref>` for a
+branch or tag.
+
+What it does:
+- factory/bin/*, factory/dashboard.html, factory/tests/*, the factory skill and
+  every brief without project blocks: replaced by the template's version.
+- factory/agents/*.md: the template's version, with this installation's
+  `<!-- project: ... -->` ... `<!-- /project -->` blocks put back into the
+  template's slots of the same kind (matched by the text after `project:`).
+  A block with no matching slot is kept at the end of the file, and said so.
+- factory/config.json: keys the template added are added; your values stay.
+- Never touched: factory/checks.sh, factory/cargo-env.sh, factory/jobs/, and
+  anything outside factory/ and .claude/skills/factory/.
+
+It prints what changed and leaves committing to you.
+"""
+
+import json
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[2]
+FACTORY = REPO / "factory"
+CONFIG = json.loads((FACTORY / "config.json").read_text())
+DEFAULT = CONFIG.get("template", "https://github.com/Xuresch/factory")
+BLOCK_RE = re.compile(r"<!-- project: (.*?) -->\n(.*?)<!-- /project -->\n?", re.S)
+NEVER = {"checks.sh", "cargo-env.sh"}
+
+
+def die(msg):
+    print(f"update: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def fetch(source, into):
+    src, _, ref = source.partition("@")
+    if Path(src).expanduser().is_dir():
+        path = Path(src).expanduser().resolve()
+        if ref:
+            subprocess.run(["git", "-C", str(path), "worktree", "add", "--detach", str(into), ref],
+                           check=True, capture_output=True)
+            return into
+        return path
+    cmd = ["git", "clone", "--quiet", "--depth", "1"] + (["--branch", ref] if ref else []) + [src, str(into)]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        die(f"can't fetch {source}: {res.stderr.strip()}")
+    return into
+
+
+def merge_brief(mine, theirs):
+    """The template's text with my project blocks in its slots of the same kind."""
+    blocks = {kind: body for kind, body in BLOCK_RE.findall(mine)}
+    used, notes = set(), []
+
+    def fill(m):
+        kind = m.group(1)
+        if kind in blocks:
+            used.add(kind)
+            return f"<!-- project: {kind} -->\n{blocks[kind]}<!-- /project -->\n"
+        return m.group(0)
+
+    out = BLOCK_RE.sub(fill, theirs)
+    for kind, body in blocks.items():
+        if kind not in used:
+            out = out.rstrip("\n") + f"\n\n<!-- project: {kind} -->\n{body}<!-- /project -->\n"
+            notes.append(f"kept '{kind}' at the end: the template has no slot for it any more")
+    return out, notes
+
+
+def merge_config(mine, theirs, path=""):
+    added = []
+    for key, value in theirs.items():
+        if key not in mine:
+            mine[key] = value
+            added.append(path + key)
+        elif isinstance(value, dict) and isinstance(mine[key], dict):
+            added += merge_config(mine[key], value, path + key + ".")
+    return added
+
+
+def main(argv):
+    dry = "--dry-run" in argv
+    args = [a for a in argv if a != "--dry-run"]
+    source = args[0] if args else DEFAULT
+    with tempfile.TemporaryDirectory() as tmp:
+        tpl = fetch(source, Path(tmp) / "template")
+        tf = tpl / "factory"
+        if not (tf / "bin" / "job").exists():
+            die(f"{source} doesn't look like the factory template (no factory/bin/job)")
+        changes, notes = [], []
+
+        def put(dst, text):
+            old = dst.read_text() if dst.exists() else None
+            if old != text:
+                changes.append(f"{'updated' if old is not None else 'added'} {dst.relative_to(REPO)}")
+                if not dry:
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    dst.write_text(text)
+
+        for rel in ["bin", "tests"]:
+            for f in sorted((tf / rel).rglob("*")):
+                if f.is_file() and "__pycache__" not in f.parts:
+                    dst = FACTORY / f.relative_to(tf)
+                    put(dst, f.read_text())
+                    if not dry and f.stat().st_mode & 0o111:
+                        dst.chmod(dst.stat().st_mode | 0o755)
+        put(FACTORY / "dashboard.html", (tf / "dashboard.html").read_text())
+        skill = tpl / ".claude" / "skills" / "factory" / "SKILL.md"
+        if skill.exists():
+            put(REPO / ".claude" / "skills" / "factory" / "SKILL.md", skill.read_text())
+        for f in sorted((tf / "agents").glob("*.md")):
+            dst = FACTORY / "agents" / f.name
+            text = f.read_text()
+            if dst.exists():
+                text, n = merge_brief(dst.read_text(), text)
+                notes += [f"{dst.name}: {x}" for x in n]
+            put(dst, text)
+        mine = json.loads((FACTORY / "config.json").read_text())
+        added = merge_config(mine, json.loads((tf / "config.json").read_text()))
+        if added:
+            changes.append(f"config.json: added {', '.join(added)}")
+            if not dry:
+                (FACTORY / "config.json").write_text(json.dumps(mine, indent=2) + "\n")
+        if (tf / "checks.sh").exists() and (FACTORY / "checks.sh").exists():
+            notes.append("checks.sh and cargo-env.sh are yours and were left alone")
+    print(("would change (dry run):" if dry else "changed:") if changes else "already up to date")
+    for c in changes:
+        print(f"  {c}")
+    for n in notes:
+        print(f"  note: {n}")
+    if changes and not dry:
+        print("Review with `git diff`, run factory/tests/run.sh, and commit.")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
