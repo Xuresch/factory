@@ -1,57 +1,6 @@
-# Project files
-src/dry-run-workflow-for-agent-skills/fs-cleanup-example/example_business_project
-src/dry-run-workflow-for-agent-skills/fs-cleanup-example/vegan_icecream_example_project
-
-# bookkeeping-agent — safety net for credentials across both local and cloud
-src/bookkeeping-agent/**/agent-home/auth.json
-
-
-# Python
 __pycache__/
 *.py[cod]
-*$py.class
-*.egg-info/
-*.egg
-*.pyd
-venv/
-.venv/
-Pipfile.lock
-
-# Ruff cache
-.ruff_cache/
-
-# Logs
-logs/
-*.log
-npm-debug.log*
-pnpm-debug.log*
-yarn-debug.log*
-
-# Dependency directories
-node_modules/
-
-# Environment files
-.env
-.env.local
-.env.*.local
-
-# IDE/editor folders
-.vscode/
-.idea/
-*.swp
-
-# Miscellaneous
-Thumbs.db
-ehthumbs.db
 .DS_Store
-
-.agents
-.claude
-
-# Project folders whose agent config is part of the published source
-!src/claude-code-devtool-kanban-board/.claude
-!src/cross-platform-agent-skills/2-movie-poster-demo/2-codex-arbiter-mcp-evals/.agents
-!src/literature-review-consensus-mcp/.agents
-!src/software-engineers-using-coding-agents/vegan-bars/.claude
-!src/software-factory-claude-code/.claude
-!src/software-factory-claude-code-v2/.claude
+.env
+.env.*
+node_modules/
