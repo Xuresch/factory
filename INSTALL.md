@@ -11,10 +11,15 @@ The source is the folder the user pointed you at. On GitHub, read files from
 
 Stop and tell the user if any of these fail:
 
-- It's a git repo with an `origin` on GitHub, and `gh auth status` shows a user
-  who can push to it and manage its labels.
-- Its default branch (`gh repo view --json defaultBranchRef`) exists on
-  `origin`.
+- It's a git repo, and `/setup-matt-pocock-skills` has run: `docs/agents/issue-tracker.md`
+  and `docs/agents/triage-labels.md` exist. If not, ask the user to run it
+  first. The factory follows the tracker that file names:
+  - **GitHub**: the repo has an `origin` on GitHub, `gh auth status` shows a
+    user who can push to it and manage its labels, and the default branch
+    (`gh repo view --json defaultBranchRef`) exists on `origin`.
+  - **Local Markdown**: tickets live in `.scratch/`; no remote is needed. The
+    base branch must exist locally.
+  - Anything else (GitLab): stop and tell the user it isn't supported.
 - `claude --version` is 2.1.257 or later (the intake agent runs on Fable).
 - `codex --version` works and Codex is signed in: Codex is the default builder.
 - Orca is installed and running, and the project is added to it
@@ -78,6 +83,7 @@ It must be non-interactive, must not rewrite files (no `--fix`, no
 
 **`factory/config.json`.**
 
+- `tracker`: leave `auto`; `factory/bin/job tracker` shows what it detected.
 - `base_branch`: the default branch.
 - `merge_method`: `merge`, `squash` or `rebase`, one the repo allows
   (`gh api repos/{owner}/{repo} --jq '{allow_merge_commit, allow_squash_merge, allow_rebase_merge}'`).
@@ -88,11 +94,8 @@ It must be non-interactive, must not rewrite files (no `--fix`, no
   Add a path only when no job should ever change it. They are fnmatch
   patterns, so `*` also matches `/`.
 - `ports`: move `base` if the project already uses ports 5100–5199.
-- `labels`: the mattpocock/skills triage roles. If the repo already ran
-  `/setup-matt-pocock-skills` with other label strings, copy them from
-  `docs/agents/triage-labels.md`: `queue` is ready-for-agent, `needs_info`
-  needs-info, `needs_human` ready-for-human, `returned` needs-triage,
-  `wontfix` wontfix.
+- `labels`: leave them. They are only the fallback; the factory reads the real
+  strings from `docs/agents/triage-labels.md`.
 - Leave `concurrency`, `max_rounds`, `stages`, `builder`, `routing`,
   `surface_reviewers`, `cross_review` and `prices_usd_per_mtok` as they are
   unless the user asks.
@@ -150,8 +153,10 @@ copied in step 1 does: the skill in `.claude/skills/factory/`, the briefs in
 `factory/agents/` and the rest of `factory/` are part of the project and get
 committed, so ignore only these two paths, never `.claude/` or `factory/`.
 
-**Labels.** The triage roles from mattpocock/skills. `--force` keeps labels
-that `/setup-matt-pocock-skills` already made:
+**Labels.** On a local tracker, skip this: the Status strings come from
+`docs/agents/triage-labels.md`. On GitHub, create the triage roles from
+mattpocock/skills, using the strings in that file; `--force` keeps labels
+that already exist:
 
 ```bash
 gh label create ready-for-agent --force --color 5319E7 --description "Fully specified; the software factory builds it"
@@ -168,7 +173,8 @@ gh label create enhancement --force --color A2EEEF --description "New feature or
 1. In the project root, on the current branch, `bash factory/checks.sh` exits 0.
    If it fails there, the factory can never pass a job: fix the
    script (not the project) or tell the user what's broken.
-2. `factory/bin/job queue` runs without an error.
+2. `factory/bin/job tracker` names the tracker the docs describe, and
+   `factory/bin/job queue` runs without an error.
 3. `<orca> worktree current --json` succeeds from the project root inside an
    Orca terminal, and the agents `config.json` names (`claude`, `codex`) are
    enabled in Orca on this machine.

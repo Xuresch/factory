@@ -5,8 +5,8 @@ description: Run the software factory on GitHub issues. Use when the user types 
 
 # Factory
 
-You are the factory's only orchestrator. You work through GitHub issues labeled
-`ready-for-agent`, run up to `concurrency` jobs at once, and start every agent
+You are the factory's only orchestrator. You work through issues labeled
+`ready-for-agent` (GitHub or local tickets), run up to `concurrency` jobs at once, and start every agent
 for every job as an **Orca worker** (`orchestration` skill), on Claude Code or
 Codex as `config.json` says. You never write code, specs, reviews or decisions yourself, and you never
 edit `job.json`: the scripts in `factory/bin/` change state and refuse illegal
@@ -26,14 +26,30 @@ intake (claude/fable)  → ACCEPT (scope possibly changed) | NEEDS-INFO | REJECT
 route (script)         → builder + reviewers + models from risk/surfaces via config.json
 worktree               → factory/<job-id> from origin/<base>
 spec-writer (claude)   → spec.md
-builder (codex)        → commits; the first push opens a draft PR "Closes #<n>"
+builder (codex)        → commits; on GitHub the first push opens a draft PR "Closes #<n>"
 gate (script)          → checks.sh; FAIL → builder gets the log, no reviewers start
 reviewers (routed)     → parallel, WAIT FOR ALL; CHANGES → builder → gate → reviewers
                          code and security never run on the builder's agent
                          CHANGES from ux or ui → the next round's builder is claude
-approver (claude/opus) → APPROVE: sync origin/<base>, gate, gh pr merge
-                         ESCALATE: PR ready, decision as PR comment, label ready-for-human
+approver (claude/opus) → APPROVE: sync with the base, gate, merge (gh pr merge, or locally)
+                         ESCALATE: PR ready (GitHub), decision as a comment, label ready-for-human
 ```
+
+**Tracker.** The factory reads `docs/agents/issue-tracker.md`, which
+`/setup-matt-pocock-skills` wrote, and works with whatever it says:
+
+- **GitHub**: issues, labels and comments on GitHub; every job is a PR,
+  merged with `gh pr merge`.
+- **Local Markdown**: tickets in `.scratch/<feature>/issues/NN-<slug>.md`,
+  addressed as `<feature>/<NN>`. The state is the ticket's `Status:` line,
+  comments go under its `## Comments` heading, and `Blocked by:` holds a
+  ticket back until its blockers are done. There is no remote and no PR: the
+  builder only commits, and `job merge` merges the branch into the base
+  branch locally and sets `Status: done`.
+
+`factory/bin/job tracker` prints which one is active and the label strings
+from `docs/agents/triage-labels.md`. You never handle the difference
+yourself: the scripts do. Say "issue" for both.
 
 Labels are the mattpocock/skills triage roles. A human triages with
 `/triage`, outside the factory; `ready-for-agent` hands an issue to it. The
@@ -128,9 +144,10 @@ scripts, never type into a worker's terminal.
 Every spec starts with the job's header, built from `job.json`:
 
 ```
-Job: <id>. Job folder: <repo>/factory/jobs/<id>/. Main checkout: <repo>. Worktree: <worktree>. Branch: <branch>. Base: origin/<base>. Issue: #<issue>.
+Job: <id>. Job folder: <repo>/factory/jobs/<id>/. Main checkout: <repo>. Worktree: <worktree>. Branch: <branch>. Base: <base_ref>. Tracker: <tracker>. Issue: <issue>.
 ```
 
+`<base_ref>` and `<tracker>` are the job.json fields of those names.
 `<header>` below means that line. Keep `Job folder: <path>/` exactly as shown:
 the job's cost is found by that string.
 
@@ -194,7 +211,7 @@ gate's `round-<N-1>/checks.md`, the reviews in `round-<N-1>/`, or
 finished:
 
 - all PASS: `factory/bin/job advance <id> approve`, then start the `approver` worker with
-  `<header> PR: #<pr>. Final round: <N>.`
+  `<header> PR: #<pr>. Final round: <N>.` (locally: `PR: none.`)
 - any CHANGES: `factory/bin/job advance <id> build` (or `needs-human` when it
   refuses because this was the last round), then resume the builder:
   `Round <N-1> reviews are in round-<N-1>/. Address every VERDICT: CHANGES, push, and update build.md for round <N>.`
@@ -213,7 +230,7 @@ finished:
 A job is finished for this run when it reaches `merged`, `rejected`,
 `needs-info` or `needs-human`. Its workers close on their own.
 
-A person can merge a job's PR by hand at any stage. `factory/bin/job queue`
+A person can merge a job's PR (or, locally, its branch into the base) by hand at any stage. `factory/bin/job queue`
 then moves the job to `merged`; stop any workers still running for it, as the
 `orchestration` guide's recovery reference says.
 
@@ -291,15 +308,28 @@ new feature, ask.
   labels, closes the job's PR if it has one, and moves the job to Done. The
   issue stays open; to bring it back, delete `factory/jobs/<id>` and add the
   `factory` label again.
-- **An answer to a `needs-info` question**: post their words on the issue with
-  `gh issue comment <n> --body "<their answer>"`, then
+- **An answer to a `needs-info` question**: post their words on the issue as
+  theirs, not the factory's:
+
+  ```bash
+  factory/bin/job reply <issue> <<'EOF'
+  <their answer>
+  EOF
+  ```
+
+  then
   `factory/bin/job advance <id> intake` and go to **intake**.
-- **A new feature**: create the issue, then do **/factory run <n>** with the
-  new number:
+- **A new feature**: create the issue, then do **/factory run <n>** with it.
+  On GitHub:
 
   ```bash
   gh issue create --label ready-for-agent --title "<short imperative title>" --body "<the feature, verbatim>"
   ```
+
+  Locally, write `.scratch/<feature>/issues/<NN>-<slug>.md` as
+  `docs/agents/issue-tracker.md` describes, with `# <title>`, a
+  `Status: ready-for-agent` line and the feature verbatim as the body. Ask
+  which feature folder it belongs to when it isn't clear.
 
 ## Guardrails
 
@@ -311,6 +341,7 @@ new feature, ask.
 - Codex workers run without Claude's tool limits. The scripts are the limit:
   `job advance` refuses a review round or a merge if a reviewer or the approver
   changed the branch.
-- Agents push only their `factory/<job-id>` branch. Merges happen only through
-  `factory/bin/job merge`, which uses `gh pr merge`. The factory never deploys.
-- One PR per issue, at most `max_rounds` rounds per job.
+- Agents push only their `factory/<job-id>` branch, and only on GitHub. Merges
+  happen only through `factory/bin/job merge`: `gh pr merge` on GitHub, a
+  local merge into the base branch otherwise. The factory never deploys.
+- One branch (and on GitHub one PR) per issue, at most `max_rounds` rounds per job.

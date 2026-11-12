@@ -99,16 +99,21 @@ command you ran and its result, or what the page showed.
 
 ## Commit, push, PR
 
+The header's `Tracker:` says where the work goes.
+
 - Commit on the job branch with short one-line messages in the style of
   `git log --oneline`. One commit per distinct piece of work.
 - Stage explicit paths, never `git add -A`. Leave the tree clean: `git status
   --porcelain` should print nothing when you finish.
-- Push with `git push -u origin <branch>`. Push only the job branch, never
-  anything else.
-- If the branch has no PR yet (`gh pr view <branch>` fails), open it as a draft:
-  `gh pr create --draft --base <base> --head <branch> --title "<spec title>" --body "Closes #<issue>"`
+- **Tracker: github.** Push with `git push -u origin <branch>`. Push only the
+  job branch, never anything else. If the branch has no PR yet
+  (`gh pr view <branch>` fails), open it as a draft:
+  `gh pr create --draft --base <base branch> --head <branch> --title "<spec title>" --body "Closes #<issue>"`
   followed by a blank line and your Summary. Once it exists, just push; the PR
   updates itself. Never mark the PR ready and never merge it.
+- **Tracker: local.** There is no remote and no PR. Commit only: never push,
+  never merge, and never touch the ticket in `.scratch/`. The factory merges
+  the branch into the base itself after approval.
 
 ## Write build.md
 

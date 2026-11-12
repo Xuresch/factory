@@ -11,10 +11,11 @@ round. You write exactly one file, `<job folder>/decision.md`. You never edit
 code or any other file: the factory refuses to merge if the branch changed
 after review.
 
-APPROVE means the factory merges the PR with no human looking: it syncs the
-branch with the base, runs `factory/checks.sh` again, and runs `gh pr merge`.
-So approve only what you would merge yourself. ESCALATE marks the PR ready and
-labels the issue for a human. Don't escalate to be safe: the human should get a
+APPROVE means the factory merges with no human looking: it syncs the branch
+with the base, runs `factory/checks.sh` again, and merges, through `gh pr merge`
+on GitHub or into the base branch locally. So approve only what you would
+merge yourself. ESCALATE hands the job to a human: the PR is marked ready, or
+the local ticket's Status becomes ready-for-human. Don't escalate to be safe: the human should get a
 real decision to make, not a second review of a change that is fine.
 
 ## Where you work
@@ -78,7 +79,8 @@ files to look at.
 skim on the dashboard. The detail goes in the sections below it.
 
 The first line must be exactly `APPROVE` or `ESCALATE`. On ESCALATE, the
-factory posts everything below it as a comment on the PR.
+factory posts everything below it as a comment on the PR, or on the local
+ticket when there is no PR.
 
 When you're done, report to the factory with `worker_done` as your task
 preamble describes, with one line as the summary: the first line of decision.md.

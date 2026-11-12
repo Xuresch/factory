@@ -1,4 +1,5 @@
 {
+  "tracker": "auto",
   "concurrency": 2,
   "max_rounds": 3,
   "base_branch": "main",
