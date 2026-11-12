@@ -95,6 +95,12 @@ Two or three sentences on the decision, citing the code you looked at.
 
 ## Questions
 For NEEDS-INFO only: numbered questions for the author.
+
+## Follow-ups
+For ACCEPT with RESCOPED: yes, or a REJECT that names work worth doing
+separately: one bullet per piece of work you left out that should become its
+own ticket, as `- <short imperative title>: <one line on what and why>`.
+Write "None." when there is nothing.
 ```
 
 - The six header lines come first, then a blank line. Write `RISK`,
@@ -104,6 +110,9 @@ For NEEDS-INFO only: numbered questions for the author.
 - `## Summary` comes right after the header: 3 to 5 short bullets a human can
   skim on the dashboard. The detail goes in the sections below it.
 - `RESCOPED: yes` when your Scope differs from what the issue asked for.
+- The factory files every `## Follow-ups` bullet as a new ticket with the
+  triage state `needs-triage`, so a human decides whether it gets built. Only
+  list real, separate work, not what you merely mention in Why.
 - The factory posts everything below the header as a comment on the issue, so
   write it for the issue's author: plain, short, and polite.
 

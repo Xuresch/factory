@@ -821,6 +821,7 @@ def advance(job, stage):
             run(["git", "worktree", "add", "-b", job["branch"], job["worktree"], BASE_REF])
             job["fork_point"] = run(["git", "rev-parse", BASE_REF]).stdout.strip()
         comment("issue", job["issue"], f"{title}\n\n{intake_body()}")
+        create_follow_ups(job)
         if stage == "needs-info":
             label("issue", job["issue"], add=LABELS["needs_info"], remove=LABELS["queue"])
         elif stage == "rejected":
@@ -971,6 +972,7 @@ def advance(job, stage):
 
     job["stage"] = stage
     job["ended"] = now() if stage in TERMINAL | WAITING else None
+    job.setdefault("history", []).append({"stage": stage, "round": job["round"], "at": now()})
     return job
 
 
@@ -1206,6 +1208,51 @@ def cmd_slice_done(job, k):
     finish_slices(job)
 
 
+# ---- Follow-ups: what intake left out becomes a ticket ----------------------
+
+
+def follow_ups(intake):
+    """`- <title>: <why>` bullets under intake.md's `## Follow-ups`."""
+    body = section(intake, "Follow-ups") or ""
+    out = []
+    for line in body.splitlines():
+        m = re.match(r"^\s*[-*]\s+(.+?)(?::\s+(.+))?$", line)
+        if m and m.group(1).strip().lower() not in {"none", "none."}:
+            out.append((m.group(1).strip().rstrip("."), (m.group(2) or "").strip()))
+    return out
+
+
+def create_follow_ups(job):
+    """File each follow-up once, as needs-triage: a human triages it like any ticket."""
+    d = job_dir(job["id"])
+    done = {f["title"] for f in job.get("follow_ups") or []}
+    created = []
+    for title, why in follow_ups(d / "intake.md"):
+        if title in done:
+            continue
+        origin = f"Follow-up from {job['issue']} (factory job {job['id']}): intake left this out of that job."
+        body = f"{origin}\n\n{why}".strip()
+        if GITHUB:
+            url = gh("issue", "create", "--label", LABELS["returned"], "--title", title,
+                     "--body", f"{body}\n\nFollow-up of #{job['issue']}.").strip()
+            ref = url.rsplit("/", 1)[-1]
+        else:
+            folder = ticket_path(job["issue"]).parent
+            numbers = [int(p.name.split("-")[0]) for p in folder.glob("*.md") if p.name[:2].isdigit()]
+            nn = f"{max(numbers, default=0) + 1:02d}"
+            path = folder / f"{nn}-{slugify(title)}.md"
+            path.write_text(f"# {nn}: {title}\n\n{body}\n\n**Blocked by:** None\n\n"
+                            f"**Status:** {LABELS['returned']}\n")
+            ref = f"{folder.parent.name}/{nn}"
+        job.setdefault("follow_ups", []).append({"title": title, "issue": ref})
+        created.append(f"{ref}: {title}")
+    if created:
+        comment("issue", job["issue"], "### Factory: follow-ups filed\n\n"
+                + "\n".join(f"- {c}" for c in created)
+                + f"\n\nThey wait as `{LABELS['returned']}` for triage.")
+    return created
+
+
 # ---- Commands --------------------------------------------------------------
 
 
@@ -1240,6 +1287,7 @@ def cmd_create(number):
         "stage": "intake", "round": 0, "round_limit": CONFIG["max_rounds"],
         "intake": None, "agents": None, "gate": None, "reviews": {},
         "dispatch": {}, "cost_usd": 0.0, "started": now(), "ended": None,
+        "history": [{"stage": "intake", "round": 0, "at": now()}],
     }
     write_issue_md(job)
     save(job)

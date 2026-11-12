@@ -547,7 +547,7 @@ async function refreshDrawer() {
     const head = g !== group ? `<div class="group">${esc(g)}</div>` : ''
     group = g
     const round = f.match(/^round-(\d+)\//)
-    const name = f === COSTS ? `costs · $${Number(job.cost_usd).toFixed(2)}`
+    const name = f === COSTS ? `overview · $${Number(job.cost_usd).toFixed(2)}`
       : f === TICKET ? `ticket · ${esc(job.issue)}` : round
       ? `<span class="rn">R${round[1]} </span>${esc(f.split('/')[1].replace(/^review-|\.md$/g, ''))}`
       : esc(f)
@@ -572,6 +572,31 @@ function tokens(n) {
   return n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n)
 }
 
+function mins(ms) {
+  const m = Math.round(ms / 60000)
+  return m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m` : `${m}m`
+}
+
+// One row per stage the job passed through, from job.history (factory/bin/job advance).
+function timelineTable(job) {
+  const h = job.history || []
+  if (!h.length) return '<p class="note">No timeline: this job started before the factory recorded one.</p>'
+  const end = job.ended ? Date.parse(job.ended) : Date.now()
+  const total = end - Date.parse(h[0].at)
+  const rows = h.map((e, i) => {
+    const from = Date.parse(e.at)
+    const to = i + 1 < h.length ? Date.parse(h[i + 1].at) : (DONE.has(e.stage) ? from : end)
+    const share = total ? Math.round((100 * (to - from)) / total) : 0
+    return `<tr><td>${esc(e.stage)}</td><td class="n">${e.round || '-'}</td>
+      <td class="n">${esc(new Date(from).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}</td>
+      <td class="n">${to > from ? mins(to - from) : '–'}</td>
+      <td class="n"><span class="bar" style="--w:${share}%"></span>${share}%</td></tr>`
+  }).join('')
+  return `<table class="costs"><thead><tr><th>stage</th><th class="n">round</th><th class="n">from</th>
+    <th class="n">time</th><th class="n">share</th></tr></thead><tbody>${rows}</tbody>
+    <tfoot><tr><td colspan="3">total</td><td class="n">${mins(total)}</td><td></td></tr></tfoot></table>`
+}
+
 // One row per role, agent and model, from job.cost_breakdown (factory/bin/job sync).
 function costTable(job) {
   const rows = job.cost_breakdown || []
@@ -585,7 +610,10 @@ function costTable(job) {
       <td class="n">$${Number(r.cost_usd).toFixed(2)}</td>
       <td class="n"><span class="bar" style="--w:${share(r.cost_usd)}%"></span>${share(r.cost_usd)}%</td>
     </tr>`).join('')
-  return `<h2>Costs</h2>
+  const followUps = (job.follow_ups || []).map((f) => `<li>${esc(f.issue)}: ${esc(f.title)}</li>`).join('')
+  return `<h2>Timeline</h2>${timelineTable(job)}
+    ${followUps ? `<h2>Follow-ups filed</h2><ul>${followUps}</ul>` : ''}
+    <h2>Costs</h2>
     <p class="head">claude $${Number(by.claude || 0).toFixed(2)} · codex $${Number(by.codex || 0).toFixed(2)} · total $${total.toFixed(2)}</p>
     ${rows.length ? `<table class="costs">
       <thead><tr><th>role</th><th>agent · model</th><th class="n">sessions</th><th class="n">input</th>

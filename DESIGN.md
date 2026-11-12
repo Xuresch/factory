@@ -198,6 +198,12 @@ of that round. A conflict or a failing gate during `job merge` sends the job
 back to the builder too. Only with no round left does it reach a human.
 `job approve` merges an escalated job the same way.
 
+**Every job keeps a timeline and its follow-ups.** `job advance` appends each
+stage with its round and time to `history`; the dashboard's overview shows how
+long each stage took. When intake leaves work out, it lists it under
+`## Follow-ups`, and the factory files each one once as a `needs-triage`
+ticket (or GitHub issue), so nothing intake cut is lost.
+
 ## What changed from v1
 
 | v1 | v2 | Asked for by |
