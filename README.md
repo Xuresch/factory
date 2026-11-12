@@ -98,6 +98,7 @@ factory/
   bin/job                     the only writer of job.json; refuses illegal moves; merges
   bin/gate                    runs checks.sh in a job's worktree → round-N/checks.md
   bin/route                   risk + surfaces → the job's builder, reviewers and models
+  bin/dashboard               serves the board on 127.0.0.1, with local tickets
   dashboard.html              the board
 examples/jobs/                finished jobs from a real run
 INSTALL.md                    instructions for the installing agent
@@ -109,10 +110,11 @@ DESIGN.md                     how it works and why
 ## Dashboard
 
 ```bash
-cd factory && python3 -m http.server
+factory/bin/dashboard
 ```
 
-Open <http://localhost:8000/dashboard.html>. Each job is a card with its issue
+Open <http://127.0.0.1:8000/dashboard.html>. It serves `factory/` and, read-only,
+local tickets in `.scratch/`, on this machine only. Each job is a card with its issue
 and PR, a row of gate and review chips per round, its risk, cost and
 time. Click a card to read every file the job wrote; each one opens with a
 short summary of what happened in that step. To see the example

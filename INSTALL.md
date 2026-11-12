@@ -56,6 +56,7 @@ factory/checks.sh
 factory/bin/job
 factory/bin/gate
 factory/bin/route
+factory/bin/dashboard
 factory/dashboard.html
 ```
 
@@ -64,7 +65,7 @@ SRC=https://raw.githubusercontent.com/Xuresch/factory/main
 for f in <the paths above>; do
   mkdir -p "$(dirname "$f")" && curl -fsSL "$SRC/$f" -o "$f"
 done
-chmod +x factory/checks.sh factory/bin/job factory/bin/gate factory/bin/route
+chmod +x factory/checks.sh factory/bin/job factory/bin/gate factory/bin/route factory/bin/dashboard
 ```
 
 Don't copy `README.md`, `DESIGN.md`, `INSTALL.md`, `LICENSE`, `examples/` or
@@ -131,8 +132,8 @@ Every agent is an Orca worker: Codex builds, Claude Code reviews, and a job
 moves to a Claude builder when the UX or UI review asks for changes. Briefs
 are in `factory/agents/`. State is in
 `factory/jobs/` (gitignored); `factory/bin/job` is its only writer. Checks:
-`factory/checks.sh`. Dashboard: `cd factory && python3 -m http.server`, then
-open http://localhost:8000/dashboard.html.
+`factory/checks.sh`. Dashboard: `factory/bin/dashboard`, then open
+http://127.0.0.1:8000/dashboard.html.
 
 Each job works in its own git worktree, a full checkout of the repo at
 `.worktrees/<job-id>` (gitignored). A tool run from the repo root that doesn't

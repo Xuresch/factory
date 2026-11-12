@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""Serve the factory dashboard on this machine only.
+
+Usage: dashboard [port]        (default 8000), then open http://127.0.0.1:<port>/dashboard.html
+
+Serves factory/ at /, and, read-only, the repo's local tickets (.scratch/) at
+/.scratch/, so the dashboard can show a local ticket live: its Status and the
+factory's comments. Binds 127.0.0.1, unlike `python3 -m http.server`, which
+listens on every interface.
+"""
+
+import functools
+import http.server
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[2]
+FACTORY = REPO / "factory"
+SCRATCH = REPO / ".scratch"
+
+
+class Handler(http.server.SimpleHTTPRequestHandler):
+    def translate_path(self, path):
+        clean = path.split("?", 1)[0].split("#", 1)[0]
+        if clean == "/.scratch" or clean.startswith("/.scratch/"):
+            saved, self.directory = self.directory, str(SCRATCH)
+            try:
+                return super().translate_path(clean[len("/.scratch"):] or "/")
+            finally:
+                self.directory = saved
+        return super().translate_path(path)
+
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
+    def log_message(self, *args):
+        pass  # the dashboard polls; don't fill the terminal
+
+
+def main(argv):
+    port = int(argv[0]) if argv else 8000
+    handler = functools.partial(Handler, directory=str(FACTORY))
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), handler)
+    print(f"dashboard: http://127.0.0.1:{port}/dashboard.html (Ctrl+C to stop)", flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

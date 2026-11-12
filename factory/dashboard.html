@@ -204,6 +204,7 @@
   .md blockquote { border-left: 2px solid var(--line); padding-left: 12px; color: var(--muted); }
   .md a { color: var(--active); }
   .md table { border-collapse: collapse; font-size: 13px; display: block; overflow-x: auto; }
+  .tlink { background: none; border: 0; padding: 0; font: inherit; color: inherit; text-decoration: underline; cursor: pointer; }
   .md table.costs td.n, .md table.costs th.n { text-align: right; font-family: var(--mono); font-size: 12px; white-space: nowrap; }
   .md table.costs tfoot td { font-weight: 600; }
   .md table.costs .bar { display: inline-block; width: 40px; height: 6px; margin-right: 6px; vertical-align: middle;
@@ -372,8 +373,13 @@ function elapsed(job) {
 const link = (url, text) =>
   url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${text}</a>` : `<span>${text}</span>`
 
+// A local ticket (.scratch/...) has no web page: its link opens it in the drawer.
+const isLocal = (job) => job.issue_url && !/^https?:/.test(job.issue_url)
+
 function links(job) {
-  const out = [link(job.issue_url, `issue #${job.issue}`)]
+  const out = [isLocal(job)
+    ? `<button class="tlink" data-ticket="${esc(job.id)}">ticket ${esc(job.issue)}</button>`
+    : link(job.issue_url, `issue #${job.issue}`)]
   if (job.pr) out.push(link(job.pr_url, `PR #${job.pr}`))
   return out.join('')
 }
@@ -515,19 +521,23 @@ async function refreshDrawer() {
 
   const base = `jobs/${job.id}/`
   // "costs" is not a file: it renders job.cost_breakdown. Finished jobs open on it.
-  const files = [COSTS, ...sortFiles(await listFiles(base))]
+  const jobFiles = sortFiles(await listFiles(base))
+  const files = [COSTS, ...(isLocal(job) ? [TICKET] : []), ...jobFiles]
   if (!openPath || !files.includes(openPath)) {
-    openPath = DONE.has(job.stage) || files.length === 1 ? COSTS : files[1]
+    openPath = DONE.has(job.stage) || !jobFiles.length ? COSTS : jobFiles[0]
   }
 
   let text = null
   if (openPath === COSTS) {
     text = costTable(job)
+  } else if (openPath === TICKET) {
+    text = await fetchText('/' + job.issue_url).catch(() =>
+      `Can't load ${job.issue_url}.\n\nStart the dashboard with \`factory/bin/dashboard\`: plain \`python3 -m http.server\` serves only factory/, not the tickets in .scratch/.`)
   } else if (openPath) {
     text = await fetchText(base + openPath)
     firstLines.set(base + openPath, text.split('\n')[0].trim())
   }
-  await Promise.all(files.filter((f) => f !== COSTS && !firstLines.has(base + f)).map(async (f) => {
+  await Promise.all(files.filter((f) => f !== COSTS && f !== TICKET && !firstLines.has(base + f)).map(async (f) => {
     firstLines.set(base + f, (await fetchText(base + f)).split('\n')[0].trim())
   }))
 
@@ -537,7 +547,8 @@ async function refreshDrawer() {
     const head = g !== group ? `<div class="group">${esc(g)}</div>` : ''
     group = g
     const round = f.match(/^round-(\d+)\//)
-    const name = f === COSTS ? `costs · $${Number(job.cost_usd).toFixed(2)}` : round
+    const name = f === COSTS ? `costs · $${Number(job.cost_usd).toFixed(2)}`
+      : f === TICKET ? `ticket · ${esc(job.issue)}` : round
       ? `<span class="rn">R${round[1]} </span>${esc(f.split('/')[1].replace(/^review-|\.md$/g, ''))}`
       : esc(f)
     const t = tone(firstLines.get(base + f) || '')
@@ -553,6 +564,7 @@ async function refreshDrawer() {
 }
 
 const COSTS = '__costs__'
+const TICKET = '__ticket__'
 const DONE = new Set(['merged', 'rejected', 'needs-human', 'needs-info'])
 
 function tokens(n) {
@@ -603,6 +615,15 @@ function closeDrawer() {
 
 document.addEventListener('click', (e) => {
   if (e.target.closest('a')) return
+  const ticketEl = e.target.closest('[data-ticket]')
+  if (ticketEl) {
+    e.stopPropagation()
+    const id = ticketEl.dataset.ticket
+    if (openJobId !== id) { openJobId = id; document.body.classList.add('open') }
+    openPath = TICKET
+    openText = undefined
+    return refreshDrawer()
+  }
   const cardEl = e.target.closest('[data-job]')
   if (cardEl) return openDrawer(cardEl.dataset.job)
   const fileEl = e.target.closest('[data-file]')
