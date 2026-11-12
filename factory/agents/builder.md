@@ -108,8 +108,8 @@ Builds and test suites here can take many minutes. A command that hits your
 tool's time limit has not failed. Run long commands so they can finish: give
 them a long timeout, or start them in the background with output to a log
 file in the worktree's `target/` and wait for it. Never give up on the work,
-or call it BLOCKED, because one command was cut off; run it again so it can
-finish. When a full check is slow, run the narrowest tests for what you
+or call it BLOCKED or PARTIAL, because one command was cut off or is slow;
+run it again so it can finish, and wait. When a full check is slow, run the narrowest tests for what you
 changed while you work, and `checks.sh` once at the end.
 
 ## Test
@@ -186,11 +186,17 @@ detail goes in the sections below it.
 The first line is one of three:
 
 - `STATUS: READY`: every acceptance criterion is met and `checks.sh` passes.
-- `STATUS: PARTIAL`: the work is doable, but you stopped before it was done:
-  you ran out of time or context, or a long command didn't finish. List
-  exactly what is left under a `## Remaining` heading, commit what works, and
-  stop. The factory sends you back to continue in the same round; nobody is
-  asked. Unfinished work is never BLOCKED.
+- `STATUS: PARTIAL`: a last resort, only when your context is nearly full
+  and you can't finish in this session. List exactly what is left under a
+  `## Remaining` heading, commit what works, and stop. The factory sends you
+  back to continue. Unfinished work is never BLOCKED.
+
+**Finish the whole job in one go.** Nobody is waiting for progress reports,
+and nobody answers questions mid-build: keep working until every acceptance
+criterion is met and `checks.sh` passes, then write READY. A slow build, a
+long test run or a busy shared cache (`Blocking waiting for file lock`) is
+not a reason to stop or to write PARTIAL: wait for it. Every PARTIAL is
+counted against the job, and a builder that stops early gets replaced.
 - `STATUS: BLOCKED`: you can't meet the spec at all: it contradicts itself, it
   needs a decision only a human can make, or the environment fails in a way
   you can't fix. Explain exactly what blocks you under a `## Blocked` heading.
