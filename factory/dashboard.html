@@ -204,6 +204,10 @@
   .md blockquote { border-left: 2px solid var(--line); padding-left: 12px; color: var(--muted); }
   .md a { color: var(--active); }
   .md table { border-collapse: collapse; font-size: 13px; display: block; overflow-x: auto; }
+  .md table.costs td.n, .md table.costs th.n { text-align: right; font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+  .md table.costs tfoot td { font-weight: 600; }
+  .md table.costs .bar { display: inline-block; width: 40px; height: 6px; margin-right: 6px; vertical-align: middle;
+    border-radius: 3px; background: linear-gradient(90deg, var(--muted) var(--w), var(--line) var(--w)); }
   .md th, .md td { border: 1px solid var(--line); padding: 5px 9px; text-align: left; }
   .verdict {
     display: inline-block; font-family: var(--mono); font-size: 12px; font-weight: 600;
@@ -430,7 +434,9 @@ async function render() {
   }
   const running = jobs.filter((j) => LIVE.has(j.stage)).length
   const cost = jobs.reduce((sum, j) => sum + Number(j.cost_usd), 0)
+  const part = (a) => jobs.reduce((sum, j) => sum + Number((j.cost_by_agent || {})[a] || 0), 0)
   $('totals').textContent = `${running} running · $${cost.toFixed(2)} API-equivalent`
+    + ` (claude $${part('claude').toFixed(2)} · codex $${part('codex').toFixed(2)})`
 }
 
 async function poll() {
@@ -508,15 +514,20 @@ async function refreshDrawer() {
   $('d-links').innerHTML = links(job)
 
   const base = `jobs/${job.id}/`
-  const files = sortFiles(await listFiles(base))
-  if (!openPath || !files.includes(openPath)) openPath = files[0] || null
+  // "costs" is not a file: it renders job.cost_breakdown. Finished jobs open on it.
+  const files = [COSTS, ...sortFiles(await listFiles(base))]
+  if (!openPath || !files.includes(openPath)) {
+    openPath = DONE.has(job.stage) || files.length === 1 ? COSTS : files[1]
+  }
 
   let text = null
-  if (openPath) {
+  if (openPath === COSTS) {
+    text = costTable(job)
+  } else if (openPath) {
     text = await fetchText(base + openPath)
     firstLines.set(base + openPath, text.split('\n')[0].trim())
   }
-  await Promise.all(files.filter((f) => !firstLines.has(base + f)).map(async (f) => {
+  await Promise.all(files.filter((f) => f !== COSTS && !firstLines.has(base + f)).map(async (f) => {
     firstLines.set(base + f, (await fetchText(base + f)).split('\n')[0].trim())
   }))
 
@@ -526,7 +537,7 @@ async function refreshDrawer() {
     const head = g !== group ? `<div class="group">${esc(g)}</div>` : ''
     group = g
     const round = f.match(/^round-(\d+)\//)
-    const name = round
+    const name = f === COSTS ? `costs · $${Number(job.cost_usd).toFixed(2)}` : round
       ? `<span class="rn">R${round[1]} </span>${esc(f.split('/')[1].replace(/^review-|\.md$/g, ''))}`
       : esc(f)
     const t = tone(firstLines.get(base + f) || '')
@@ -536,8 +547,41 @@ async function refreshDrawer() {
 
   if (text !== openText) {
     openText = text
-    $('d-doc').innerHTML = text === null ? '<p class="note">Intake hasn’t written anything yet.</p>' : markdown(text)
+    $('d-doc').innerHTML = text === null ? '<p class="note">Intake hasn’t written anything yet.</p>'
+      : openPath === COSTS ? text : markdown(text)
   }
+}
+
+const COSTS = '__costs__'
+const DONE = new Set(['merged', 'rejected', 'needs-human', 'needs-info'])
+
+function tokens(n) {
+  n = Number(n) || 0
+  return n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n)
+}
+
+// One row per role, agent and model, from job.cost_breakdown (factory/bin/job sync).
+function costTable(job) {
+  const rows = job.cost_breakdown || []
+  const total = rows.reduce((sum, r) => sum + Number(r.cost_usd), 0)
+  const by = job.cost_by_agent || {}
+  const share = (c) => (total ? Math.round((100 * c) / total) : 0)
+  const body = rows.map((r) => `<tr>
+      <td>${esc(r.role)}</td><td>${esc(r.agent)} · ${esc(r.model || '?')}</td>
+      <td class="n">${r.sessions}</td><td class="n">${tokens(r.input_tokens)}</td>
+      <td class="n">${tokens(r.cached_tokens)}</td><td class="n">${tokens(r.output_tokens)}</td>
+      <td class="n">$${Number(r.cost_usd).toFixed(2)}</td>
+      <td class="n"><span class="bar" style="--w:${share(r.cost_usd)}%"></span>${share(r.cost_usd)}%</td>
+    </tr>`).join('')
+  return `<h2>Costs</h2>
+    <p class="head">claude $${Number(by.claude || 0).toFixed(2)} · codex $${Number(by.codex || 0).toFixed(2)} · total $${total.toFixed(2)}</p>
+    ${rows.length ? `<table class="costs">
+      <thead><tr><th>role</th><th>agent · model</th><th class="n">sessions</th><th class="n">input</th>
+        <th class="n">cached</th><th class="n">output</th><th class="n">cost</th><th class="n">share</th></tr></thead>
+      <tbody>${body}</tbody>
+      <tfoot><tr><td colspan="6">total</td><td class="n">$${total.toFixed(2)}</td><td></td></tr></tfoot>
+    </table>` : '<p class="note">No priced sessions yet. The breakdown fills in as workers run.</p>'}
+    <p class="note">API-equivalent at factory/config.json prices. A builder keeps one session across rounds, so its row covers every round. Input is uncached input plus cache writes.</p>`
 }
 
 async function openDrawer(id) {

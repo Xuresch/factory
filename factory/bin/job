@@ -467,6 +467,24 @@ def transcripts(job):
 
 
 _warned = set()
+ROLE_RE = re.compile(r"factory/agents/([\w-]+)\.md")
+
+
+def role_of(text):
+    """The worker's role, from `Your brief is <repo>/factory/agents/<role>.md`."""
+    m = ROLE_RE.search(text)
+    return m.group(1) if m else "unknown"
+
+
+def add_row(rows, role, agent, model, fresh, cached, output, cost):
+    """Sum into rows keyed by (role, agent, model)."""
+    row = rows.setdefault((role, agent, model), {
+        "role": role, "agent": agent, "model": model, "sessions": 0,
+        "input_tokens": 0, "cached_tokens": 0, "output_tokens": 0, "cost_usd": 0.0})
+    row["input_tokens"] += fresh
+    row["cached_tokens"] += cached
+    row["output_tokens"] += output
+    row["cost_usd"] += cost
 
 
 def warn_unpriced(model):
@@ -486,9 +504,9 @@ def cost_usd(job):
     """
     needle = f"Job folder: {job_dir(job['id'])}/"
     prices = CONFIG["prices_usd_per_mtok"]
-    total = 0.0
+    total, rows = 0.0, {}
     for path in transcripts(job):
-        usage_by_message, ours = {}, False
+        usage_by_message, ours, role = {}, False, "unknown"
         with path.open() as f:
             for i, line in enumerate(f):
                 try:
@@ -497,13 +515,14 @@ def cost_usd(job):
                     continue
                 if not ours:
                     if needle in user_text(entry):
-                        ours = True
+                        ours, role = True, role_of(user_text(entry))
                     elif i > 40:
                         break
                     continue
                 msg = entry.get("message")
                 if entry.get("type") == "assistant" and isinstance(msg, dict) and msg.get("usage"):
                     usage_by_message[msg["id"]] = (msg["model"], msg["usage"])
+        counted = set()
         for model, u in usage_by_message.values():
             tokens = (u.get("input_tokens", 0) + u.get("output_tokens", 0)
                       + u.get("cache_creation_input_tokens", 0) + u.get("cache_read_input_tokens", 0))
@@ -516,12 +535,19 @@ def cost_usd(job):
             split = u.get("cache_creation") or {}
             write_1h = split.get("ephemeral_1h_input_tokens", 0)
             write_5m = u.get("cache_creation_input_tokens", 0) - write_1h
-            total += (u.get("input_tokens", 0) * p["input"]
-                      + u.get("output_tokens", 0) * p["output"]
-                      + write_5m * p["cache_write_5m"]
-                      + write_1h * p["cache_write_1h"]
-                      + u.get("cache_read_input_tokens", 0) * p["cache_read"]) / 1e6
-    return round(total, 2)
+            cost = (u.get("input_tokens", 0) * p["input"]
+                    + u.get("output_tokens", 0) * p["output"]
+                    + write_5m * p["cache_write_5m"]
+                    + write_1h * p["cache_write_1h"]
+                    + u.get("cache_read_input_tokens", 0) * p["cache_read"]) / 1e6
+            total += cost
+            add_row(rows, role, "claude", model,
+                    u.get("input_tokens", 0) + u.get("cache_creation_input_tokens", 0),
+                    u.get("cache_read_input_tokens", 0), u.get("output_tokens", 0), cost)
+            counted.add((role, "claude", model))
+        for key in counted:
+            rows[key]["sessions"] += 1
+    return round(total, 2), rows
 
 
 # ---- Cost from Codex sessions ----------------------------------------------
@@ -560,13 +586,13 @@ def codex_cost_usd(job):
     prices = CONFIG["prices_usd_per_mtok"]
     sessions = {}
     for path in codex_sessions(job):
-        sid, model, total, ours = path.stem, None, None, False
+        sid, model, total, ours, role = path.stem, None, None, False, "unknown"
         with path.open() as f:
             for i, line in enumerate(f):
                 if not ours and i > 60:
                     break
                 if not ours and needle in line:
-                    ours = True
+                    ours, role = True, role_of(line)
                 if '"session_meta"' in line[:80] or '"turn_context"' in line[:80] or '"token_count"' in line:
                     try:
                         entry = json.loads(line)
@@ -582,9 +608,9 @@ def codex_cost_usd(job):
         if ours and total:
             best = sessions.get(sid)
             if not best or total.get("total_tokens", 0) > best[1].get("total_tokens", 0):
-                sessions[sid] = (model, total)
-    cost = 0.0
-    for model, u in sessions.values():
+                sessions[sid] = (model, total, role)
+    cost, rows = 0.0, {}
+    for model, u, role in sessions.values():
         if model not in prices:
             warn_unpriced(model)
             continue
@@ -592,10 +618,13 @@ def codex_cost_usd(job):
         cached = u.get("cached_input_tokens", 0)
         written = u.get("cache_write_input_tokens", 0)
         fresh = u.get("input_tokens", 0) - cached - written
-        cost += (fresh * p["input"] + cached * p["cached_input"]
-                 + written * p.get("cache_write", p["input"])
-                 + u.get("output_tokens", 0) * p["output"]) / 1e6
-    return round(cost, 2)
+        one = (fresh * p["input"] + cached * p["cached_input"]
+               + written * p.get("cache_write", p["input"])
+               + u.get("output_tokens", 0) * p["output"]) / 1e6
+        cost += one
+        add_row(rows, role, "codex", model, fresh + written, cached, u.get("output_tokens", 0), one)
+        rows[(role, "codex", model)]["sessions"] += 1
+    return round(cost, 2), rows
 
 
 # ---- Sync: fields derived from files ---------------------------------------
@@ -623,8 +652,16 @@ def sync(job):
                 line = first_line(rd / f"review-{r}.md")
                 m = re.fullmatch(r"VERDICT:\s*(PASS|CHANGES)", line or "")
                 job["reviews"][r] = m.group(1) if m else ("pending" if line is None else "invalid")
-    claude, codex = cost_usd(job), codex_cost_usd(job)
+    (claude, claude_rows), (codex, codex_rows) = cost_usd(job), codex_cost_usd(job)
     job["cost_by_agent"] = {"claude": claude, "codex": codex}
+    # One row per role, agent and model, in pipeline order, for the dashboard.
+    order = ["intake", "spec-writer", "builder", "reviewer-code", "reviewer-security",
+             "reviewer-ux", "reviewer-ui", "approver"]
+    rows = list(claude_rows.values()) + list(codex_rows.values())
+    rows.sort(key=lambda r: (order.index(r["role"]) if r["role"] in order else len(order), r["agent"]))
+    for r in rows:
+        r["cost_usd"] = round(r["cost_usd"], 4)
+    job["cost_breakdown"] = rows
     job["cost_usd"] = round(claude + codex, 2)
     return job
 
