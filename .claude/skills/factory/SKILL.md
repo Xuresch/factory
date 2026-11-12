@@ -333,6 +333,9 @@ new feature, ask.
 
 ## Guardrails
 
+- Never edit an issue, a ticket file, `job.json` or an agent's file to make a
+  script accept it. When a script refuses or finds nothing it should find,
+  stop and tell the user what it said; the script is wrong, or the input is.
 - Only issues labeled `ready-for-agent` run. Labels need triage or write access,
   so the label is the trust boundary. `job create` refuses unlabeled issues.
 - Issue text reaches agents only as quoted data in `issue.md`, never in a
