@@ -194,7 +194,7 @@ reviewers' project blocks.
 | Stack | Per worktree | In `env.sh` / `checks.sh` |
 |---|---|---|
 | Rust | `target/`, many GB | `CARGO_TARGET_DIR` shared in the main checkout, `CARGO_BUILD_JOBS`, `CARGO_INCREMENTAL=0`, `CARGO_PROFILE_DEV_DEBUG=line-tables-only`; one target dir per pinned toolchain |
-| Go | nothing big | `GOCACHE` and `GOMODCACHE` are global already; `go vet ./... && go test ./...` |
+| Go | nothing big | `GOCACHE` and `GOMODCACHE` are global already; `go vet ./... && go test -count=1 ./...` (`-count=1` so the gate never reports a cached result) |
 | pnpm | `node_modules`, hard links | `pnpm install --frozen-lockfile --prefer-offline` in `checks.sh`; the store is shared already |
 | bun | `node_modules` | `bun install --frozen-lockfile`; the cache is global already |
 | npm / yarn | `node_modules`, copied | `npm ci --prefer-offline`; set `npm_config_cache` (or yarn's cache folder) to one shared path |

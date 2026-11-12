@@ -22,7 +22,7 @@
   "stages": {
     "intake": {
       "agent": "claude",
-      "model": "fable"
+      "model": "opus"
     },
     "spec": {
       "agent": "claude",
@@ -84,7 +84,7 @@
     "security": {
       "security": {
         "agent": "claude",
-        "model": "opus"
+        "model": "sonnet"
       }
     }
   },
@@ -170,5 +170,36 @@
   "keep_open_roles": [
     "builder"
   ],
-  "worktree_root": null
+  "worktree_root": null,
+  "stages_by_risk": {
+    "spec": {
+      "low": {
+        "agent": "claude",
+        "model": "sonnet"
+      }
+    },
+    "approver": {
+      "low": {
+        "agent": "claude",
+        "model": "sonnet"
+      }
+    }
+  },
+  "skip_spec_when": {
+    "size": [
+      "small"
+    ],
+    "risk": [
+      "low"
+    ]
+  },
+  "risk_upgrades": {
+    "high": {
+      "security": {
+        "agent": "claude",
+        "model": "opus"
+      }
+    }
+  },
+  "commit_tickets": true
 }

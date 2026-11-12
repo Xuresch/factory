@@ -100,6 +100,12 @@ files and implementation to the spec writer.
 ## Why
 Two or three sentences on the decision, citing the code you looked at.
 
+## Acceptance criteria
+For ACCEPT with SIZE: small and RISK: low only: the numbered acceptance
+criteria, each one observable behaviour and how to check it (a command, a
+test, a file). There is no spec writer for these jobs: the builder works from
+your Scope and this list, so make both specific.
+
 ## Questions
 For NEEDS-INFO only: numbered questions for the author.
 

@@ -162,7 +162,9 @@ short line per transition, e.g. `004-dark-mode #12: gate PASS → reviewing (cod
 decision:
 
 - `ACCEPT`: run `factory/bin/route <id>` (it prints the builder and reviewers), then `factory/bin/job advance <id> spec`
-  (it comments on the issue and creates the worktree). Go to **spec**.
+  (it comments on the issue and creates the worktree). Go to **spec**, unless
+  it prints `spec skipped`: for a small, low-risk job intake wrote the
+  acceptance criteria and the job is already in **build**, so start the builder.
 - `NEEDS-INFO`: `factory/bin/job advance <id> needs-info`. The job parks until
   the author replies.
 - `REJECT`: `factory/bin/job advance <id> rejected`.
@@ -254,11 +256,12 @@ intake or spec (the ticket asked for it, or its risk is in `hold.after_spec_risk
 Stop working on it and tell the user which file to review. It resumes only
 through the user (see below).
 
-**retro.** When `job merge` prints `start the retro`, run
-`factory/bin/job start <id> retro`. It looks back at the job and writes
-`retro.md` with suggestions for the environment. Don't wait for it to start
-the next job; when it reports, tell the user its first line and that the
-candidates are in `factory/jobs/<id>/retro.md`. Never apply them yourself.
+**retro.** `job merge` starts a retro worker itself after a merge. It looks
+back at the job and writes `retro.md` with suggestions for the environment.
+Don't wait for it to start the next job; when it reports, tell the user its
+first line and that the candidates are in `factory/jobs/<id>/retro.md`. Never
+apply them yourself. Only if `job merge` says the retro didn't start, start it
+with `factory/bin/job start <id> retro`.
 
 **feature branches.** When `job merge` prints that every ticket for a branch is
 done, run `factory/bin/job finish <branch>`. It syncs the branch with

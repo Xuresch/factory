@@ -267,6 +267,23 @@ def local_issue(key):
     }
 
 
+def commit_ticket(job, message):
+    """Commit the ticket file in the main checkout, so status flips and the
+    factory's comments don't pile up as uncommitted changes there. Only that
+    one path is committed; nothing else the user has staged or changed."""
+    if not CONFIG.get("commit_tickets", True):
+        return
+    path = ticket_path(job["issue"])
+    rel = str(path.relative_to(REPO))
+    if run(["git", "ls-files", "--error-unmatch", rel], check=False).returncode != 0:
+        return  # an untracked .scratch/: the user doesn't keep tickets in git
+    if not run(["git", "status", "--porcelain", "--", rel]).stdout.strip():
+        return
+    res = run(["git", "commit", "--quiet", "-m", message, "--", rel], check=False)
+    if res.returncode != 0:
+        print(f"job: couldn't commit {rel}: {(res.stderr or res.stdout).strip()[:200]}", file=sys.stderr)
+
+
 def set_status(key, status):
     path = ticket_path(key)
     text = path.read_text()
@@ -840,6 +857,7 @@ def advance(job, stage):
         if not GITHUB:
             set_status(job["issue"], "done")
             comment("issue", job["issue"], f"### Factory: merged\n\n{job['branch']} is merged into {jbase(job)}.")
+            commit_ticket(job, f"Close {job['issue']}: {job['title']} (factory job {job['id']})")
         elif old == "needs-human":
             label("issue", job["issue"], remove=LABELS["needs_human"])
         elif old == "needs-info":
@@ -872,6 +890,9 @@ def advance(job, stage):
                 job["fork_point"] = run(["git", "rev-parse", jref(job)]).stdout.strip()
         comment("issue", job["issue"], f"{title}\n\n{intake_body()}")
         create_follow_ups(job)
+        if stage == "spec" and spec_from_intake(job):
+            next_round(job)
+            stage = "build"
         if stage == "needs-info":
             label("issue", job["issue"], add=LABELS["needs_info"], remove=LABELS["queue"])
         elif stage == "rejected":
@@ -1368,6 +1389,33 @@ def notify(text):
         pass
 
 
+def spec_from_intake(job):
+    """For a small, low-risk job intake writes the acceptance criteria itself and
+    the spec writer is skipped (config.json `skip_spec_when`). Writes spec.md from
+    intake.md and returns True, or returns False and the spec writer runs."""
+    rule = CONFIG.get("skip_spec_when")
+    i = job.get("intake") or {}
+    if not rule or i.get("split") or "spec" in (job.get("holds") or []):
+        return False
+    if i.get("size") not in rule.get("size", []) or i.get("risk") not in rule.get("risk", []):
+        return False
+    if (i.get("risk") in CONFIG.get("hold", {}).get("after_spec_risk", [])):
+        return False
+    d = job_dir(job["id"])
+    criteria = section(d / "intake.md", "Acceptance criteria")
+    scope = section(d / "intake.md", "Scope")
+    if not criteria or not scope:
+        return False
+    (d / "spec.md").write_text(
+        f"# {job['title']}\n\n> Issue {job['issue']}: {job['title']}\n\n"
+        f"> Small, low-risk job: written from intake.md, no spec writer.\n\n"
+        f"## Summary\n- Built from intake's scope and acceptance criteria.\n\n"
+        f"## Requirements\n{scope}\n\n## Acceptance criteria\n{criteria}\n\n"
+        f"## Out of scope\nAnything not in the requirements above.\n")
+    job["spec_skipped"] = True
+    return True
+
+
 def hold_point(job, old, stage):
     limit = CONFIG.get("max_cost_usd")
     if limit and stage in BUDGETED and job.get("cost_usd", 0) > job.get("cost_allowance", limit):
@@ -1854,7 +1902,11 @@ def cmd_merge(job):
     save(advance(sync(job), "merged"))
     print(f"{job['id']}: merged " + (f"PR #{job['pr']}" if GITHUB else f"{job['branch']} into {jbase(job)}"))
     if CONFIG.get("retro_after_merge"):
-        print(f"{job['id']}: start the retro: `factory/bin/job start {job['id']} retro`")
+        # Started here, not left to the orchestrator: it skipped the hint in two of twelve demo jobs.
+        try:
+            cmd_start(load(job["id"]), "retro", "")
+        except SystemExit:
+            print(f"{job['id']}: the retro didn't start; start it with `factory/bin/job start {job['id']} retro`")
     feature_hint(job)
 
 
@@ -2004,7 +2056,8 @@ def cmd_agents(job, spec):
 
 def role_entry(job, role):
     if role in CONFIG["stages"]:
-        return CONFIG["stages"][role]
+        risk = (job.get("intake") or {}).get("risk")
+        return CONFIG.get("stages_by_risk", {}).get(role, {}).get(risk) or CONFIG["stages"][role]
     require(job["agents"], f"{job['id']} isn't routed yet")
     if role == "builder" or re.fullmatch(r"builder-s\d+", role):
         return job["agents"]["builder"]
@@ -2188,6 +2241,9 @@ def main(argv):
             job = advance(sync(resolve(args[0])), args[1])
             save(sync(job))
             print(f"{job['id']}: {job['stage']} (round {job['round']})")
+            if args[1] == "spec" and job["stage"] == "build":
+                print(f"{job['id']}: spec skipped (small, low risk): spec.md is intake's scope and criteria; "
+                      f"start the builder: `job start {job['id']} builder`")
             switched = (job.get("builder_log") or [{}])[-1]
             if args[1] == "build" and switched.get("round") == job["round"]:
                 print(f"{job['id']}: builder is now {describe(switched['builder'])} ({switched['why']}); "

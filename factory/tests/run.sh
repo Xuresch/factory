@@ -111,7 +111,7 @@ t_local_happy_path() {
   check "ticket done" "$(status_of 01)" "done" &&
   check "master has the work" "$(git show master:y.txt)" "y" &&
   check "history" "$(field "$id" "[h['stage'] for h in d['history']]")" "'review', 'approve', 'merging', 'merged'" &&
-  check "retro hint" "$out" "start the retro"
+  check "retro started" "$out" "started retro on claude/sonnet"
 }
 
 t_review_needs_standards_and_spec() {
@@ -305,6 +305,39 @@ PY
   check "worktree outside" "$(field "$id" "d['worktree']")" "$root/repo/$id" &&
   check "exists there" "$(git -C "$root/repo/$id" branch --show-current)" "factory/$id" &&
   check "nothing in .worktrees" "$(ls .worktrees 2>&1)" "No such file"
+}
+
+t_small_low_skips_spec_and_cheap_models() {
+  new_repo skipspec; ticket 01 Tiny; ticket 02 Medium; commit_all
+  local id; id=$(J create f/01); intake "$id" low none
+  printf '\n## Acceptance criteria\n1. tiny works: `true`\n' >> "factory/jobs/$id/intake.md"
+  factory/bin/route "$id" >/dev/null
+  local out; out=$(J advance "$id" spec)
+  check "spec skipped" "$out" "spec skipped" &&
+  check "in build" "$(field "$id" "d['stage']")" "build" &&
+  check "spec from intake" "$(cat "factory/jobs/$id/spec.md")" "tiny works" &&
+  check "approver on sonnet at low risk" "$(J worker "$id" approver)" "--model sonnet"
+  local id2; id2=$(J create f/02); intake "$id2" medium security; factory/bin/route "$id2" >/dev/null
+  check "medium keeps the spec" "$(J advance "$id2" spec)" "spec (round 0)" &&
+  check "spec on opus at medium" "$(J worker "$id2" spec)" "--model opus" &&
+  check "security on sonnet below high" "$(field "$id2" "d['agents']['reviewers']['security']['model']")" "sonnet"
+}
+
+t_high_risk_security_on_opus() {
+  new_repo riskup; ticket 01 Risky; commit_all
+  local id; id=$(J create f/01); intake "$id" high security; factory/bin/route "$id" >/dev/null
+  check "security upgraded" "$(field "$id" "d['agents']['reviewers']['security']['model']")" "opus"
+}
+
+t_merge_starts_retro_and_commits_ticket() {
+  new_repo retro; ticket 01 One; commit_all
+  local id; id=$(to_build 01 low none); build_commit "$id" y.txt y; to_review "$id"; review "$id" 1 code PASS
+  J advance "$id" approve >/dev/null; printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"
+  local out; out=$(J merge "$id")
+  check "retro started" "$(grep "$id retro" "$CALLS")" "--agent claude --model sonnet" &&
+  check "retro dispatch" "$(field "$id" "d['dispatch'].get('retro')")" "ctx_fake" &&
+  check "ticket committed" "$(git log --oneline -1)" "Close f/01" &&
+  check "ticket clean" "[$(git status --short .scratch)]" "[]"
 }
 
 # ---- runner ----------------------------------------------------------------

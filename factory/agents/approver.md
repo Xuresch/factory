@@ -38,8 +38,11 @@ one file goes there.
 
 APPROVE only if all of these hold:
 
-- Every acceptance criterion in the spec is met, with evidence in build.md that
-  you find convincing. Spot-check at least one criterion yourself.
+- Every acceptance criterion in the spec is met, with evidence in build.md and
+  the code review's `## Spec` section that you find convincing. Trust the gate
+  (`checks.md`, `merge-checks.md`) and the reviews: don't re-run the test
+  suite or re-check criteria they already cover. Run one targeted check only
+  where the evidence is thin or the reviews disagree.
 - The final round's `checks.md` says `GATE: PASS`, every review in it is
   `VERDICT: PASS`, and no Note in them describes a real problem.
 - The change stays inside intake's Scope.

@@ -233,6 +233,15 @@ and the builders share, since every job is a fresh worktree) and the project
 blocks in the briefs. INSTALL.md has notes per stack, and `worktree_root`
 moves job worktrees out of the repo for tools that scan it whole.
 
+**Spend goes where the risk is.** Every Claude worker starts with the user's
+whole Claude Code setup (about 48k tokens of skills, MCP tools and global
+instructions in the measured setup), so each extra worker and each Opus call
+costs, on a subscription as much as on the API. A small, low-risk job skips
+the spec writer (intake writes the acceptance criteria), spec writer and
+approver run on Sonnet at low risk (`stages_by_risk`), the security review
+uses Opus only at high risk (`risk_upgrades`), intake runs on Opus, and the
+approver trusts the gate and the reviews instead of re-running them.
+
 ## What changed from v1
 
 | v1 | v2 | Asked for by |
