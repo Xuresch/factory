@@ -5,6 +5,11 @@
 # the working directory. Keep it fast, deterministic and non-interactive: no
 # watch modes, no prompts, nothing that rewrites files.
 #
+# The gate sets FACTORY_GATE (round | merge) and FACTORY_BASE_REF. A repo with
+# slow checks may skip the ones a round's diff can't affect, using
+# `git diff --name-only "$FACTORY_BASE_REF"...HEAD`; on merge, and when the
+# variables are unset (a manual run), run everything.
+#
 # INSTALL.md replaces the line below with this project's real commands, e.g.:
 #
 #   npm ci --prefer-offline

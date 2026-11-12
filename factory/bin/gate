@@ -14,6 +14,7 @@ branch modifies or deletes a file matching config.json `protected_paths`
 
 import fnmatch
 import json
+import os
 import subprocess
 import sys
 import time
@@ -52,9 +53,15 @@ def protected_changes(worktree, base_ref):
     return hits
 
 
-def run_checks(worktree):
+def run_checks(worktree, base_ref=None, mode="full"):
+    """Run checks.sh. It gets FACTORY_GATE (round, merge or full) and
+    FACTORY_BASE_REF, so a repo may skip slow checks a round's diff can't affect.
+    The merge gate and manual runs always ask for everything."""
+    env = dict(os.environ, FACTORY_GATE=mode)
+    if base_ref:
+        env["FACTORY_BASE_REF"] = base_ref
     start = time.monotonic()
-    res = subprocess.run(["bash", str(CHECKS)], cwd=worktree, capture_output=True, text=True)
+    res = subprocess.run(["bash", str(CHECKS)], cwd=worktree, capture_output=True, text=True, env=env)
     return res.returncode, res.stdout + res.stderr, int(time.monotonic() - start)
 
 
@@ -66,8 +73,9 @@ def gate(job_id, merge):
     round_dir = FACTORY / "jobs" / job_id / f"round-{job['round']}"
     commit = git(worktree, "rev-parse", "HEAD").strip()
     # Local trackers have no remote: the job records which base ref it forked from.
-    protected = protected_changes(worktree, job.get("base_ref", f"origin/{CONFIG['base_branch']}"))
-    code, log, seconds = run_checks(worktree)
+    base_ref = job.get("base_ref", f"origin/{CONFIG['base_branch']}")
+    protected = protected_changes(worktree, base_ref)
+    code, log, seconds = run_checks(worktree, base_ref, "merge" if merge else "round")
     verdict = "PASS" if code == 0 and not protected else "FAIL"
     name = "merge-checks" if merge else "checks"
     (round_dir / f"{name}.log").write_text(log)
