@@ -90,6 +90,18 @@ def merge_config(mine, theirs, path=""):
     return added
 
 
+def differing(mine, theirs, path=""):
+    """Values you have that differ from the template's: kept, but worth a look
+    (a changed default reaches you only if you take it)."""
+    out = []
+    for key, value in theirs.items():
+        if key in mine and isinstance(value, dict) and isinstance(mine[key], dict):
+            out += differing(mine[key], value, path + key + ".")
+        elif key in mine and mine[key] != value and key not in {"base_branch", "concurrency", "tracker"}:
+            out.append(f"{path}{key}: yours {json.dumps(mine[key])}, template {json.dumps(value)}")
+    return out
+
+
 def main(argv):
     dry = "--dry-run" in argv
     args = [a for a in argv if a != "--dry-run"]
@@ -130,7 +142,9 @@ def main(argv):
                 notes += [f"{dst.name}: {x}" for x in n]
             put(dst, text)
         mine = json.loads((FACTORY / "config.json").read_text())
-        added = merge_config(mine, json.loads((tf / "config.json").read_text()))
+        theirs = json.loads((tf / "config.json").read_text())
+        notes += [f"config {d}" for d in differing(mine, theirs)]
+        added = merge_config(mine, theirs)
         if added:
             changes.append(f"config.json: added {', '.join(added)}")
             if not dry:
