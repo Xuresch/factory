@@ -7,7 +7,9 @@ it and refuses anything else. Tracker side effects that belong to a transition
 the orchestrator never improvises them.
 
 Usage:
-  job queue                      what /factory run should do with each labeled issue
+  job queue [<sel>...]           what /factory run should do with each labeled issue; with <sel>,
+                                 only those: 12 14, a range 11-14, locally <feature>/11-14 or a
+                                 whole <feature> (a bare 11 works when one feature has it)
   job tracker                    which issue tracker and labels this repo uses
   job create <issue>             new job for an open `ready-for-agent` issue; prints the job id
   job advance <job> <stage>      move a job to <stage>, or refuse
@@ -1791,19 +1793,63 @@ def cmd_create(number):
     print(job_id)
 
 
-def cmd_queue():
+def local_numbers(feature):
+    return sorted(int(m.group(1)) for p in (SCRATCH / feature / "issues").glob("*.md")
+                  if (m := re.match(r"(\d+)-", p.name)))
+
+
+def selection(args):
+    """The issues `job queue <sel>...` is limited to, in the order given."""
+    out = []
+    for arg in [a for raw in args for a in raw.split(",") if a.strip()]:
+        arg = arg.strip()
+        feature, _, nums = arg.rpartition("/") if "/" in arg else ("", "", arg)
+        if not GITHUB and not feature and (SCRATCH / arg / "issues").is_dir():
+            out += [f"{arg}/{n:02d}" for n in local_numbers(arg)]  # a whole feature
+            continue
+        m = re.fullmatch(r"(\d+)(?:(?:-|\.\.)(\d+))?", nums)
+        if not m:
+            die(f"{arg!r} isn't an issue, a range like 11-14" + ("" if GITHUB else ", or a feature in .scratch/"))
+        lo, hi = int(m.group(1)), int(m.group(2) or m.group(1))
+        if hi < lo:
+            die(f"{arg!r}: the range runs backwards")
+        if GITHUB:
+            if feature:
+                die(f"{arg!r} isn't a GitHub issue number")
+            out += list(range(lo, hi + 1))
+            continue
+        if not feature:
+            having = [d.parent.name for d in sorted(SCRATCH.glob("*/issues")) if lo in local_numbers(d.parent.name)]
+            if len(having) != 1:
+                die(f"{arg!r}: " + (f"tickets with that number are in {', '.join(having)}; write <feature>/{nums}"
+                                    if having else "no local ticket has that number"))
+            feature = having[0]
+        found = set(local_numbers(feature))
+        picked = [n for n in range(lo, hi + 1) if n in found]
+        if not picked:
+            die(f"{arg!r}: no ticket in .scratch/{feature}/issues/ in that range")
+        out += [f"{feature}/{n:02d}" for n in picked]
+    return list(dict.fromkeys(out))
+
+
+def cmd_queue(args=()):
     """Rows in the order to start them. `resume` and `new` rows fit in the
-    concurrency slots; the rest show as `hold` until a running job finishes."""
+    concurrency slots; the rest show as `hold` until a running job finishes.
+    With a selection, only its issues show; jobs outside it still hold slots."""
+    only = selection(args) if args else None
     jobs = {j["issue"]: j for j in all_jobs()}
     # A job is done once its PR is merged on GitHub, which also closes the issue.
     for j in jobs.values():
         if j["stage"] not in TERMINAL and is_merged(j):
             save(advance(sync(j), "merged"))
     issues = list_issues(LABELS["queue"])
+    if only is not None:
+        issues = [i for i in issues if i["number"] in only]
     # Waiting jobs trade the queue label for their waiting label.
     queued = {i["number"] for i in issues}
     for waiting in (LABELS["needs_info"], LABELS["needs_human"]):
-        issues += [i for i in list_issues(waiting) if i["number"] in jobs and i["number"] not in queued]
+        issues += [i for i in list_issues(waiting) if i["number"] in jobs and i["number"] not in queued
+                   and (only is None or i["number"] in only)]
     open_numbers = {i["number"] for i in issues}
     running_rows, replied_rows, new_rows, other_rows = [], [], [], []
     for issue in sorted(issues, key=lambda i: i["number"]):
@@ -1834,8 +1880,12 @@ def cmd_queue():
             other_rows.append(("skip", n, j["id"], j["stage"], "merged"))
         else:
             running_rows.append(("resume", n, j["id"], j["stage"], f"round {j['round']}"))
-    for n, j in sorted(jobs.items()):
-        if n not in open_numbers and j["stage"] not in TERMINAL | WAITING:
+    for n, j in sorted(jobs.items(), key=lambda kv: str(kv[0])):
+        if only is not None and n not in only:
+            continue
+        if only is not None and n not in open_numbers and j["stage"] in TERMINAL:
+            other_rows.append(("skip", n, j["id"], j["stage"], j["stage"]))
+        elif n not in open_numbers and j["stage"] not in TERMINAL | WAITING:
             other_rows.append(("skip", n, j["id"], j["stage"], f"issue is closed or no longer labeled {LABELS['queue']}"))
     # Jobs already in a running stage hold a slot whether or not an agent is on them.
     slots = CONCURRENCY - len(running(jobs.values()))
@@ -1846,6 +1896,12 @@ def cmd_queue():
             slots -= 1
         else:
             rows.append(("hold",) + row[1:4] + (f"concurrency {CONCURRENCY} reached",))
+    if only is not None:  # say why a selected issue isn't in the queue at all
+        shown = {r[1] for r in rows + other_rows}
+        for n in only:
+            if n not in shown:
+                state = "" if GITHUB else f" (Status: {ticket_status(ticket_path(n).read_text())})"
+                other_rows.append(("skip", n, "-", "-", f"not labeled {LABELS['queue']}{state}"))
     for row in rows + other_rows:
         print("\t".join(str(c) for c in row))
 
@@ -2274,8 +2330,8 @@ def main(argv):
         return
     cmd, args = argv[0], argv[1:]
     try:
-        if cmd == "queue" and not args:
-            cmd_queue()
+        if cmd == "queue":
+            cmd_queue(args)
         elif cmd == "tracker" and not args:
             cmd_tracker()
         elif cmd == "reply" and len(args) == 1:

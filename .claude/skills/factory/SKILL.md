@@ -1,6 +1,6 @@
 ---
 name: factory
-description: Run the software factory on GitHub issues. Use when the user types /factory run, /factory run <n>, or /factory followed by anything else (a question, feedback on a job, or a new feature). The session that runs it becomes the one orchestrator for every job.
+description: Run the software factory on GitHub issues. Use when the user types /factory run, /factory run <n> (one or more issues, a range like 11-14), or /factory followed by anything else (a question, feedback on a job, or a new feature). The session that runs it becomes the one orchestrator for every job.
 ---
 
 # Factory
@@ -15,7 +15,8 @@ tell the user; never work around it.
 
 ```
 /factory run          drain the queue: every open `ready-for-agent` issue, `concurrency` at a time; also resumes
-/factory run <n>      run one issue now
+/factory run <sel>    only these issues, same loop: 12, 11 12 14, 11-14; locally also
+                      <feature>/11-14 or a whole <feature>
 /factory <anything>   talk to the factory: ask about jobs, give feedback, file a feature
 ```
 
@@ -311,11 +312,17 @@ starts the approver again; `merging` runs
 `factory/bin/job merge <id>`. A `needs-info` job the author has answered shows
 as `resume`: run `factory/bin/job advance <id> intake` and go to **intake**.
 
-## /factory run <n>
+## /factory run <sel>
 
-Run one issue with the same steps. If `factory/bin/job queue` shows a job for
-it, resume that job; otherwise `factory/bin/job create <n>`. Finish with the
-summary line for that job.
+The same loop as **/factory run**, limited to the issues named: pass the
+issues and ranges the user wrote, as arguments, to every `factory/bin/job queue`
+call of this run (`factory/bin/job queue 11-14`, `factory/bin/job queue demo/03 demo/05`). The
+script resolves them and refuses a selection it can't read; show its message
+to the user. Selected issues that aren't queued show as `skip` with their
+label or Status; tell the user, don't start them. A selected issue blocked by
+another one waits until that one is merged, then comes out as `new`. Jobs
+outside the selection keep running and still hold their slots. Finish with
+`factory/bin/job summary` for the selected jobs.
 
 ## /factory <anything>
 

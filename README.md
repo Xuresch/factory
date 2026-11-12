@@ -75,7 +75,7 @@ Each job gets its own git worktree and branch. All state lives in
 
 ```
 /factory run          drain the queue: every open `ready-for-agent` issue, `concurrency` at a time; also resumes
-/factory run <n>      one issue now
+/factory run <sel>    only these issues: 12, 11 12 14, 11-14 (locally also <feature>/11-14 or <feature>)
 /factory <anything>   talk to the factory: ask about jobs, give feedback, file a feature
 ```
 

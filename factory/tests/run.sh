@@ -257,6 +257,23 @@ t_blocked_by() {
   check "02 waits on 01" "$(J queue)" "blocked by f/01"
 }
 
+t_queue_selection() {
+  new_repo selection
+  for n in 10 11 12 13 14; do ticket $n "T$n"; done
+  sed -i 's/ready-for-agent/needs-triage/' .scratch/f/issues/13-t.md
+  mkdir -p .scratch/g/issues && printf '# 11: Other\n\n**Status:** ready-for-agent\n' > .scratch/g/issues/11-o.md
+  commit_all
+  local out; out=$(J queue f/11-14)
+  check "range picks 11, 12, 14" "$(echo "$out" | awk '$1=="new"{print $2}' | xargs)" "f/11 f/12 f/14" &&
+  check "not-queued ticket said so" "$out" "not labeled ready-for-agent (Status: needs-triage)" &&
+  check "10 left out" "[$(echo "$out" | grep -c 'f/10')]" "[0]" &&
+  check "bare number is ambiguous" "$(J queue 11 2>&1)" "write <feature>/11" &&
+  check "bare unique number" "$(J queue 12 | cut -f2)" "f/12" &&
+  check "whole feature" "$(J queue g | cut -f1,2 | xargs)" "new g/11" &&
+  check "list and concurrency" "$(J queue f/10, f/11,f/12 f/14 | cut -f1 | xargs)" "new new new hold" &&
+  check "bad selection" "$(J queue f/x 2>&1)" "isn't an issue"
+}
+
 t_feature_branch_finish() {
   new_repo feature; mkdir -p .scratch/feat/issues
   printf '# Feat\n\n**Branch:** feature/x\n' > .scratch/feat/spec.md
