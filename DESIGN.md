@@ -184,6 +184,20 @@ after their needs are merged. The merged branch then goes through one gate and
 one set of reviews, and later rounds use a single builder. A slice, like a
 whole build, can report PARTIAL and continue in place.
 
+**The scripts start the workers.** `job start <job> <role>` reads the agent,
+model, worktree and brief from `job.json`, writes the header, runs Orca's
+`worker-start` and records the dispatch; `job send` messages a recorded
+worker. The orchestrator never passes `--agent` or `--model` itself: in the
+first real run it started every reviewer on Claude, so cross-review never
+happened.
+
+**Jobs build on a current base.** Before every build round after the first,
+`job advance` merges the base into the job branch and writes
+`round-<N>/base-sync.md`; a conflict is resolved by the builder at the start
+of that round. A conflict or a failing gate during `job merge` sends the job
+back to the builder too. Only with no round left does it reach a human.
+`job approve` merges an escalated job the same way.
+
 ## What changed from v1
 
 | v1 | v2 | Asked for by |

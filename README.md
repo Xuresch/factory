@@ -76,7 +76,8 @@ Each job gets its own git worktree and branch. All state lives in
 /factory <anything>   talk to the factory: ask about jobs, give feedback, file a feature
 ```
 
-You approve by merging the PR on GitHub. To change an escalated PR, tell the
+You approve by merging the PR on GitHub, or with `/factory approve <job>`,
+which syncs, gates and merges like an APPROVE (the only way on a local tracker). To change an escalated PR, tell the
 factory what you want with `/factory`. To drop a job that waits on you or on
 its author, tell the factory to reject it.
 

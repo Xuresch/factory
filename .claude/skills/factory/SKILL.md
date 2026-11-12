@@ -105,23 +105,32 @@ Every agent is an Orca worker. Before the first command of a run:
    start `/factory run` from an Orca terminal in the main checkout.
 4. Run `ORCA orchestration run-create --objective "factory run"`.
 
-**Start a worker.** `factory/bin/job worker <id> <role>` prints the flags and
-the brief path, tab-separated, for example
-`--agent codex --worktree path:<worktree>` and
-`<repo>/factory/agents/builder.md`. Roles: `intake`, `spec`, `builder`,
-`approver`, `reviewer-<lens>`. Then:
+**Start a worker** with one command, always:
 
 ```bash
-ORCA orchestration worker-start <flags> --task-title "<id> <role> r<N>" --json \
-  --spec "<header> <the step's extra line>
-
-Your brief is <brief path>. Read it in full and follow it exactly. When you're done, report with worker_done; its summary is the one line your brief names."
+factory/bin/job start <id> <role> "<what this step is for>"
 ```
 
-Record the receipt's dispatch id with
-`factory/bin/job dispatch <id> <role> <dispatch_id>`, so a later session can
-reach the worker. Never put issue text in a spec: the issue reaches workers
-only as `issue.md`.
+Roles: `intake`, `spec`, `builder`, `builder-s<k>`, `reviewer-<lens>`,
+`approver`. It takes the agent, model, worktree and brief from `job.json`,
+writes the header (job folder, worktree, branch, base, tracker, issue, round,
+port), runs `worker-start`, and records the dispatch id. Never run
+`worker-start` yourself and never pass `--agent` or `--model`: routing and
+cross-review (code and security never run on the builder's agent) live in
+`job.json`, and only `job start` reads them. If it fails, it says so; don't
+retry it blindly, read the orchestration guide's recovery reference.
+
+**Message a worker** (a later build round, a continue, a refusal it must
+fix) with:
+
+```bash
+factory/bin/job send <id> <role> "<message>"
+```
+
+It refuses when no worker is recorded for the role (a new session, or the
+builder was switched); then `job start` a new one, adding
+`You take over from another builder: read build.md and git log first.`
+Never put issue text in either.
 
 **Then end your turn** with a one-line status. Orca wakes you with each
 worker's `worker_done`; advance that job then. Never poll, never run watch
@@ -141,39 +150,15 @@ scripts, never type into a worker's terminal.
   naming the missing file. If it stops again, leave the job in its stage and
   tell the user.
 
-Every spec starts with the job's header, built from `job.json`:
-
-```
-Job: <id>. Job folder: <repo>/factory/jobs/<id>/. Main checkout: <repo>. Worktree: <worktree>. Branch: <branch>. Base: <base_ref>. Tracker: <tracker>. Issue: <issue>.
-```
-
-`<base_ref>` and `<tracker>` are the job.json fields of those names.
-`<header>` below means that line. Keep `Job folder: <path>/` exactly as shown:
-the job's cost is found by that string.
-
-Agents that open pages get ports. With `n` the job number (`004` → 4), the
-builder gets `5100 + 10n`, `reviewer-ux` `5101 + 10n` and `reviewer-ui`
-`5102 + 10n` (`ports` in `config.json`).
-
-**The builder keeps its worker across rounds.** For round 2 and later, if
-`factory/bin/job dispatch <id> builder` prints an id, message it:
-
-```bash
-ORCA orchestration send --to dispatch:<dispatch_id> --subject "<id> build round <N>" \
-  --body "<header> Build round <N>. Port: <port>. <what this round is for>"
-```
-
-If it prints nothing (a new session, or `job` switched the builder to the
-fallback after UI reviews), start a new builder worker instead, with
-`You take over from another builder: read build.md and git log first.` added
-to the spec.
+Every brief `job start` writes contains `Job folder: <path>/`: the job's
+cost is found by that string.
 
 ## Advancing a job
 
 Each step below runs when the previous agent or script finishes. Report one
 short line per transition, e.g. `004-dark-mode #12: gate PASS → reviewing (code, ux, ui)`.
 
-**intake.** Start the `intake` worker with `<header>`. When it returns, read its
+**intake.** `factory/bin/job start <id> intake`. When it returns, read its
 decision:
 
 - `ACCEPT`: run `factory/bin/route <id>` (it prints the builder and reviewers), then `factory/bin/job advance <id> spec`
@@ -182,13 +167,17 @@ decision:
   the author replies.
 - `REJECT`: `factory/bin/job advance <id> rejected`.
 
-**spec.** Start the `spec` worker with `<header>`. When it returns,
+**spec.** `factory/bin/job start <id> spec`. When it returns,
 `factory/bin/job advance <id> build` and go to **build**.
 
-**build.** Start the `builder` worker for round 1, or message it for later
-rounds (see above), with `Build round <N>. Port: <port>.` plus what this round is for: the
-gate's `round-<N-1>/checks.md`, the reviews in `round-<N-1>/`, or
-`feedback-<k>.md`. When it returns, read `build.md`'s first line:
+**build.** Round 1: `factory/bin/job start <id> builder`. Later rounds:
+`factory/bin/job send <id> builder "<what this round is for>"`: the gate's
+`round-<N-1>/checks.md`, the reviews in `round-<N-1>/`, `feedback-<k>.md`, or
+`round-<N>/merge-back.md`. Every later round starts with the base already
+merged in; when that conflicted, `round-<N>/base-sync.md` says so and the
+builder resolves it first, so mention it. If `send` refuses because no builder
+is recorded, `job start` a new one. When it returns, read `build.md`'s first
+line:
 
 - `STATUS: READY`: `factory/bin/job advance <id> gate`, then go to **gate**. If
   `advance` refuses (nothing pushed, no PR, a dirty tree), resume the builder
@@ -206,17 +195,14 @@ lists them. If it refuses because the slices break a rule, `send` the refusal
 to the spec worker and run `advance <id> build` again when it reports. In round
 1, build the slices instead of one builder:
 
-1. For each `slice-start` command `job slices` prints, run it. It makes the
-   slice's worktree and branch and prints its port. Then start a
-   `builder-s<k>` worker (`factory/bin/job worker <id> builder-s<k>`) with
-   `<header> Slice <k>. Build round 1. Port: <port>.`, where `<header>` has
-   the slice's worktree and branch (`<worktree>-s<k>`, `<branch>-s<k>`), not
-   the job's. Record its dispatch as `builder-s<k>`. Start every ready slice in
-   one message so they run in parallel.
+1. For each `slice-start` command `job slices` prints, run it (it makes the
+   slice's worktree and branch), then `factory/bin/job start <id> builder-s<k>`.
+   `job start` gives the slice builder its own worktree, branch and port. Start
+   every ready slice in one message so they run in parallel.
 2. When a slice worker reports, run `factory/bin/job slice-done <id> <k>`:
-   - it prints `continue`: `send` the worker the line it prints;
-   - it refuses (files outside the slice, a conflict): `send` the worker the
-     refusal; if it refuses again after that, tell the user;
+   - it prints `continue`: `factory/bin/job send <id> builder-s<k> "<the line it prints>"`;
+   - it refuses (files outside the slice, a conflict): `job send` the worker
+     the refusal; if it refuses again after that, tell the user;
    - it lists slices to start: start them as in step 1;
    - `all ... slices merged`: run `factory/bin/job advance <id> gate` and go
      to **gate**;
@@ -230,30 +216,32 @@ start a new `builder` worker told it takes over from the slice builders.
 - PASS: `factory/bin/job advance <id> review` and go to **review**.
 - FAIL: `factory/bin/job advance <id> build`. If it refuses because this was the
   last round, `factory/bin/job advance <id> needs-human` instead. Otherwise
-  resume the builder for the next round with
-  `The gate failed: read round-<N-1>/checks.md and checks.log, fix it, push, and update build.md.`
+  `factory/bin/job send <id> builder "The gate failed: read round-<N-1>/checks.md and checks.log, fix it, push, and update build.md."`
   No reviewer runs on a failing build.
 
-**review.** Start a `reviewer-<r>` worker for every lens in `job.json`
-`agents.reviewers` **in one message**, so they run in parallel, each with
-`Review round <N>.` plus the port for `ux` and `ui`. **WAIT FOR ALL.** Each time one finishes, run
+**review.** `factory/bin/job start <id> reviewer-<r>` for every lens in
+`job.json` `agents.reviewers`, **in one message**, so they run in parallel.
+Each lens runs on the agent `job.json` gives it; that is how a Codex build gets
+a Claude review and the other way round. **WAIT FOR ALL.** Each time one finishes, run
 `factory/bin/job sync <id>` so the dashboard fills in. When every reviewer has
 finished:
 
-- all PASS: `factory/bin/job advance <id> approve`, then start the `approver` worker with
-  `<header> PR: #<pr>. Final round: <N>.` (locally: `PR: none.`)
+- all PASS: `factory/bin/job advance <id> approve`, then
+  `factory/bin/job start <id> approver`.
 - any CHANGES: `factory/bin/job advance <id> build` (or `needs-human` when it
-  refuses because this was the last round), then resume the builder:
-  `Round <N-1> reviews are in round-<N-1>/. Address every VERDICT: CHANGES, push, and update build.md for round <N>.`
+  refuses because this was the last round), then `factory/bin/job send <id> builder "Round <N-1> reviews are in round-<N-1>/. Address every VERDICT: CHANGES, push, and update build.md for round <N>."`
   When ux or ui asked for changes, `advance` switches the builder to the
-  fallback (claude), says so, and clears its dispatch id: start a new builder
-  worker instead of messaging the old one.
+  fallback (claude), says so, and clears its dispatch id: `send` refuses, so
+  `job start <id> builder` with the same message plus the take-over line.
 
 **approve.** When the approver returns, read `decision.md`'s first line:
 
 - `APPROVE`: `factory/bin/job merge <id>`. It syncs the branch with the base,
-  runs the gate again, pushes, and merges the PR, ending in `merged`. If any
-  of that fails it moves the job to `needs-human` and says why.
+  runs the gate again, and merges (the PR, or locally), ending in `merged`. A
+  conflict or a failing gate after the sync is the builder's to fix: it sends
+  the job back to **build** for another round and says so; `job send` the
+  builder `Read round-<N>/merge-back.md and base-sync.md, fix it, and update
+  build.md.` Only with no round left does it go to `needs-human`.
 - `ESCALATE`: `factory/bin/job advance <id> needs-human`. It marks the PR ready,
   posts the decision on it and labels the issue `ready-for-human`.
 
@@ -313,6 +301,11 @@ new feature, ask.
 - **What needs them**: run `factory/bin/job queue`. For each `wait` line, say
   what the job is waiting for: the question in `decision.md` for `needs-human`,
   the question in `intake.md` for `needs-info`.
+- **Approving a `needs-human` job** ("merge 002", "approve it", "passt so"):
+  `factory/bin/job approve <id>`. It merges the way an APPROVE does, with the
+  sync and the merge gate; a conflict goes back to the builder. It refuses when
+  the last round has no passing gate and reviews (a BLOCKED build, say); then
+  ask for feedback instead. Never merge by hand.
 - **Feedback on a `needs-human` job**: pass their words verbatim on stdin:
 
   ```bash

@@ -17,9 +17,13 @@ Usage:
   job slices <job>               a split job's slices and which to start next
   job slice-start <job> <k>      worktree and branch for slice k (when its Needs are merged)
   job slice-done <job> <k>       slice k reported: merge it into the job branch, or continue/park it
+  job approve <job>              needs-human → merging → merged: a human approves an escalated job
   job feedback <job>             needs-human → build, with your feedback (stdin) as feedback-<k>.md
   job reject <job>               needs-info or needs-human → rejected, with your reason (stdin) as rejection.md
   job agents <job> <json>        record the routed agent set (called by factory/bin/route)
+  job start <job> <role> [text]  start <role>'s Orca worker: agent, model, worktree, brief and
+                                 header from job.json; [text] (or - for stdin) is what this step is for
+  job send <job> <role> <text>   message <role>'s recorded worker (later rounds, continues, refusals)
   job worker <job> <role>        the agent, model and Orca worktree to start <role> with
   job dispatch <job> <role> [<id>]  record (or print) the Orca dispatch id of <role>'s worker
   job sync <job>                 refresh reviews, gate and cost from the job's files
@@ -59,8 +63,8 @@ TRANSITIONS = {
     "gate": {"review", "build", "needs-human"},
     "review": {"approve", "build", "needs-human"},
     "approve": {"merging", "needs-human"},
-    "merging": {"needs-human"},
-    "needs-human": {"build", "rejected"},
+    "merging": {"needs-human", "build"},
+    "needs-human": {"build", "rejected", "merging"},
 }
 TERMINAL = {"merged", "rejected"}
 # Any unfinished job can move to merged once its PR is merged on GitHub,
@@ -740,6 +744,33 @@ def maybe_fall_back(job, changes):
         set_builder(job, cfg["fallback"], f"CHANGES from {', '.join(triggers)} in round {job['round']}")
 
 
+def sync_with_base(job):
+    """Merge the base into the job branch before a build round, so a job never
+    builds on a stale base and conflicts surface while a builder can fix them.
+    Writes round-<N>/base-sync.md; the builder reads it."""
+    rd = round_dir(job)
+    if git(job, "status", "--porcelain").stdout.strip():
+        (rd / "base-sync.md").write_text("SYNC: SKIPPED\n\nThe worktree has uncommitted changes.\n")
+        return
+    if GITHUB:
+        git(job, "fetch", "origin", BASE, check=False)
+    ref = job.get("base_ref", BASE_REF)
+    before = git(job, "rev-parse", "HEAD").stdout.strip()
+    res = git(job, "merge", "--no-edit", ref, check=False)
+    if res.returncode != 0:
+        git(job, "merge", "--abort", check=False)
+        (rd / "base-sync.md").write_text(
+            f"SYNC: CONFLICT\n\n{job['branch']} conflicts with {ref}. Before anything else this round, "
+            f"run `git merge {ref}` in the worktree, resolve every conflict so both sides' changes "
+            f"survive, run the checks, and commit.\n\n```\n{(res.stdout or res.stderr).strip()}\n```\n")
+        return
+    after = git(job, "rev-parse", "HEAD").stdout.strip()
+    (rd / "base-sync.md").write_text(
+        f"SYNC: {'MERGED' if after != before else 'UP-TO-DATE'}\n\n"
+        + (f"Merged {ref} into {job['branch']} ({after[:7]}). Check that your change still fits "
+           f"what landed there.\n" if after != before else f"{job['branch']} already contains {ref}.\n"))
+
+
 def next_round(job):
     job["round"] += 1
     round_dir(job).mkdir(exist_ok=True)
@@ -895,6 +926,12 @@ def advance(job, stage):
                 and git(job, "rev-parse", "HEAD").stdout.strip() == job.get("review_head"),
                 "the branch changed after review; the approver only writes decision.md")
 
+    elif old == "needs-human" and stage == "merging":
+        require((d / "approval.md").exists()
+                and (d / "approval.md").stat().st_mtime > (d / "decision.md").stat().st_mtime,
+                "use `job approve` to merge an escalated job")
+        label("issue", job["issue"], add=LABELS["queue"], remove=LABELS["needs_human"])
+
     elif old == "needs-human":
         feedback = sorted(d.glob("feedback-*.md"))
         require(feedback and feedback[-1].stat().st_mtime > (d / "decision.md").stat().st_mtime,
@@ -902,6 +939,16 @@ def advance(job, stage):
         job["round_limit"] = job["round"] + CONFIG["max_rounds"]
         next_round(job)
         label("issue", job["issue"], add=LABELS["queue"], remove=LABELS["needs_human"])
+
+    elif old == "merging" and stage == "build":
+        require(job.get("merge_back"), "only `job merge` sends a job back from merging")
+        next_round(job)
+        (round_dir(job) / "merge-back.md").write_text(
+            f"MERGE: BACK\n\nThe merge after approval didn't go through, so this round fixes it:\n\n"
+            f"{job.pop('merge_back')}\n")
+
+    if stage == "build" and old in {"gate", "review", "needs-human", "merging"}:
+        sync_with_base(job)
 
     if stage == "needs-human":
         body = f"### Factory: needs a human\n\n{(d / 'decision.md').read_text().split(chr(10), 1)[1].strip()}"
@@ -1270,16 +1317,26 @@ def cmd_merge(job):
         save(advance(sync(job), "needs-human"))
         print(f"{job['id']}: needs-human: {why.splitlines()[0]}")
 
+    def back(why):
+        """A conflict or a failing check after syncing is the builder's to fix, not a
+        human decision; only with no round left does it go to a human."""
+        if job["round"] >= job["round_limit"]:
+            return fail(why)
+        job["merge_back"] = why
+        save(advance(sync(job), "build"))
+        print(f"{job['id']}: back to the builder for round {job['round']}: {why.splitlines()[0]} "
+              f"(round-{job['round']}/merge-back.md)")
+
     if GITHUB:
         git(job, "fetch", "origin", BASE)
     merged = git(job, "merge", "--no-edit", BASE_REF, check=False)
     if merged.returncode != 0:
         git(job, "merge", "--abort", check=False)
-        return fail(f"The branch conflicts with {BASE}:\n\n```\n{merged.stdout.strip()}\n```")
+        return back(f"The branch conflicts with {BASE}:\n\n```\n{merged.stdout.strip()}\n```")
     gate = subprocess.run([str(BIN / "gate"), job["id"], "--merge"], capture_output=True, text=True)
     if gate.returncode != 0:
-        return fail(f"The gate failed after syncing with {BASE}. "
-                    f"See round-{job['round']}/merge-checks.md.\n\n{gate.stdout.strip()}")
+        return back(f"The gate failed after syncing with {BASE}. "
+                    f"See round-{job['round']}/merge-checks.md and merge-checks.log.\n\n{gate.stdout.strip()}")
     try:
         if GITHUB:
             git(job, "push", "origin", job["branch"])
@@ -1372,6 +1429,25 @@ def cmd_continue(job):
           "`Continue: read build.md ## Remaining, finish it, and update build.md.`")
 
 
+def cmd_approve(job):
+    """A human approves an escalated job: the same merge as an APPROVE, with the
+    sync and the merge gate, instead of a merge by hand."""
+    if job["stage"] != "needs-human":
+        die(f"{job['id']} is in {job['stage']}, not needs-human")
+    rd = round_dir(job)
+    gate_ok = (rd / "checks.md").exists() and header(rd / "checks.md").get("GATE") == "PASS"
+    reviews_ok = bool(job["reviews"]) and all(v == "PASS" for v in job["reviews"].values())
+    if not (gate_ok and reviews_ok):
+        die(f"round {job['round']} has no passing gate and reviews to approve; "
+            "give feedback with `job feedback` instead")
+    if git(job, "rev-parse", "HEAD").stdout.strip() != job.get("review_head"):
+        die("the branch changed after review; give feedback so it is gated and reviewed again")
+    (job_dir(job["id"]) / "approval.md").write_text(
+        f"APPROVED\n\nBy @{operator()} after the job escalated.\n")
+    save(advance(sync(job), "merging"))
+    cmd_merge(job)
+
+
 def cmd_feedback(job, text):
     if job["stage"] != "needs-human":
         die(f"{job['id']} is in {job['stage']}, not needs-human")
@@ -1427,6 +1503,102 @@ def cmd_worker(job, role):
              else f"path:{job['worktree']}")
     flags = f"--agent {entry['agent']}" + (f" --model {entry['model']}" if entry.get("model") else "")
     print(f"{flags} --worktree {where}	{FACTORY / 'agents' / (agent_file + '.md')}")
+
+
+# ---- Starting and messaging workers through Orca ---------------------------
+#
+# The orchestrator never builds worker commands itself: `job start` takes the
+# agent, model, worktree and brief from job.json, builds the header, runs
+# `orca orchestration worker-start`, and records the dispatch id. `job send`
+# messages a recorded worker. That keeps routing (and cross-review) out of the
+# orchestrator's hands.
+
+
+def orca_cli():
+    """The Orca executable, as the orchestration skill resolves it."""
+    if os.environ.get("ORCA_CLI_COMMAND"):
+        return os.environ["ORCA_CLI_COMMAND"]
+    if os.environ.get("ORCA_DEV_REPO_ROOT"):
+        return "orca-dev"
+    if sys.platform.startswith("linux"):
+        return "orca-ide"  # bare `orca` is the GNOME screen reader on Linux
+    return "orca"
+
+
+def worker_place(job, role):
+    """(worktree path, branch) the role works on."""
+    if role.startswith("builder-s"):
+        k = role.removeprefix("builder-s")
+        return slice_worktree(job, k), slice_branch(job, k)
+    return job["worktree"], job["branch"]
+
+
+def job_header(job, role):
+    where, branch = worker_place(job, role)
+    return (f"Job: {job['id']}. Job folder: {job_dir(job['id'])}/. Main checkout: {REPO}. "
+            f"Worktree: {where}. Branch: {branch}. Base: {job.get('base_ref', BASE_REF)}. "
+            f"Tracker: {job.get('tracker', TRACKER)}. Issue: {job['issue']}.")
+
+
+def role_port(job, role):
+    n = int(job["id"].split("-")[0])
+    base = CONFIG["ports"]["base"] + CONFIG["ports"]["step"] * n
+    if role.startswith("builder-s"):
+        return slice_port(job, role.removeprefix("builder-s"))
+    return {"builder": base, "reviewer-ux": base + 1, "reviewer-ui": base + 2}.get(role)
+
+
+def cmd_start(job, role, extra):
+    entry = role_entry(job, role)
+    agent_file = "spec-writer" if role == "spec" else "builder" if role.startswith("builder-s") else role
+    brief = FACTORY / "agents" / f"{agent_file}.md"
+    where = "current" if role == "intake" else f"path:{worker_place(job, role)[0]}"
+    port = role_port(job, role)
+    lines = [job_header(job, role)]
+    if role.startswith("builder-s"):
+        lines.append(f"Slice {role.removeprefix('builder-s')}.")
+    if role.startswith("builder") or role.startswith("reviewer"):
+        lines.append(f"{'Build' if role.startswith('builder') else 'Review'} round {job['round']}.")
+    if port and (role.startswith("builder") or role in {"reviewer-ux", "reviewer-ui"}):
+        lines.append(f"Port: {port}.")
+    if role == "approver":
+        lines.append(f"PR: {'#' + str(job['pr']) if job['pr'] else 'none'}. Final round: {job['round']}.")
+    if extra:
+        lines.append(extra.strip())
+    spec = (" ".join(lines) + f"\n\nYour brief is {brief}. Read it in full and follow it exactly. "
+            "When you're done, report with worker_done; its summary is the one line your brief names.")
+    cmd = [orca_cli(), "orchestration", "worker-start", "--agent", entry["agent"]]
+    if entry.get("model"):
+        cmd += ["--model", entry["model"]]
+    cmd += ["--worktree", where, "--task-title", f"{job['id']} {role} r{job['round']}",
+            "--spec-file", "-", "--json"]
+    res = subprocess.run(cmd, cwd=REPO, input=spec, capture_output=True, text=True)
+    try:
+        receipt = json.loads(res.stdout)
+    except json.JSONDecodeError:
+        receipt = {}
+    dispatch = (receipt.get("result") or {}).get("dispatchId")
+    if res.returncode != 0 or not dispatch:
+        # Never retry blindly: the orchestration guide's recovery reference says how.
+        die(f"worker-start for {role} failed (don't rerun it; see the orchestration skill's "
+            f"recovery reference):\n{(res.stdout or res.stderr).strip()[:2000]}")
+    job.setdefault("dispatch", {})[role] = dispatch
+    save(job)
+    print(f"{job['id']}: started {role} on {describe(entry)} in {where}, dispatch {dispatch}")
+
+
+def cmd_send(job, role, text):
+    dispatch = (job.get("dispatch") or {}).get(role)
+    if not dispatch:
+        die(f"{job['id']} has no {role} worker recorded (a new session, or the builder was switched); "
+            f"start one with `job start {job['id']} {role} ...`")
+    body = f"{job_header(job, role)} {text.strip()}"
+    cmd = [orca_cli(), "orchestration", "send", "--to", f"dispatch:{dispatch}",
+           "--subject", f"{job['id']} {role} r{job['round']}", "--body", body, "--json"]
+    res = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True)
+    if res.returncode != 0:
+        die(f"send to {role} failed:\n{(res.stdout or res.stderr).strip()[:2000]}")
+    print(f"{job['id']}: sent to {role} ({dispatch})")
 
 
 def cmd_dispatch(job, role, dispatch_id):
@@ -1493,6 +1665,8 @@ def main(argv):
             cmd_slice_done(resolve(args[0]), args[1])
         elif cmd == "continue" and len(args) == 1:
             cmd_continue(resolve(args[0]))
+        elif cmd == "approve" and len(args) == 1:
+            cmd_approve(resolve(args[0]))
         elif cmd == "feedback" and len(args) == 1:
             cmd_feedback(resolve(args[0]), sys.stdin.read())
         elif cmd == "reject" and len(args) == 1:
@@ -1501,6 +1675,12 @@ def main(argv):
             cmd_agents(sync(resolve(args[0])), args[1])
         elif cmd == "worker" and len(args) == 2:
             cmd_worker(resolve(args[0]), args[1])
+        elif cmd == "start" and len(args) in (2, 3):
+            text = sys.stdin.read() if args[2:] == ["-"] else (args[2] if len(args) == 3 else "")
+            cmd_start(resolve(args[0]), args[1], text)
+        elif cmd == "send" and len(args) == 3:
+            text = sys.stdin.read() if args[2] == "-" else args[2]
+            cmd_send(resolve(args[0]), args[1], text)
         elif cmd == "dispatch" and len(args) in (2, 3):
             cmd_dispatch(resolve(args[0]), args[1], args[2] if len(args) == 3 else None)
         elif cmd == "sync" and len(args) == 1:

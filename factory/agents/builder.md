@@ -35,7 +35,14 @@ other jobs.
    after the job escalated. Read `decision.md` and every round folder too, so
    you know the history. The feedback comes before the reviews and the spec
    where they disagree.
-6. When the prompt says you take over from another builder, you are the
+6. From round 2 on, `round-<N>/base-sync.md` in the job folder: the factory
+   merged the base into your branch before this round. `SYNC: CONFLICT` means
+   it couldn't: first run `git merge <base>` in the worktree, resolve every
+   conflict so both sides' changes survive, run the checks, and commit, then
+   do the rest of the round. `SYNC: MERGED` means new work landed on the base;
+   make sure your change still fits it. `round-<N>/merge-back.md` means the
+   merge after approval failed; fix what it says.
+7. When the prompt says you take over from another builder, you are the
    fallback builder: Codex builds by default, and the job came to you because
    the UX or UI review asked for changes. Read `build.md`, `git log` and the
    round's `review-ux.md` and `review-ui.md` first. Keep what works and fix
