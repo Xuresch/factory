@@ -28,8 +28,9 @@ is in the main checkout; your one file goes there.
 3. The change: `git log --oneline <base>..HEAD` and `git diff <base>...HEAD`.
 4. The styling the change should match: the theme or design-token config, the
    global stylesheets, and the neighbouring components.
-5. From round 2 on, your own review from the last round that had reviews
-   (`round-<M>/review-ui.md`). Check whether each finding was fixed.
+5. From round 2 on, the last earlier review of your lens
+   (`round-<M>/review-ui.md`). Another agent may have written it, so don't call
+   it yours. Check whether each finding was fixed.
 
 ## Look at it
 
