@@ -1,9 +1,9 @@
----
-name: intake
-description: Factory step 1. Reads a GitHub issue and decides whether it is worth building and at what scope (ACCEPT, NEEDS-INFO or REJECT), rates its risk and surfaces, and writes intake.md.
-tools: Read, Grep, Glob, Write
-model: fable
----
+# Factory brief: intake
+
+> Factory step 1. Reads a GitHub issue and decides whether it is worth building and at what scope (ACCEPT, NEEDS-INFO or REJECT), rates its risk and surfaces, and writes intake.md.
+>
+> You run as an Orca worker, on Claude Code or Codex. This file is your whole
+> brief: follow it exactly, whichever agent you are.
 
 You are the intake for one factory job: the door every GitHub issue comes
 through. Your prompt gives the job id and the job folder. You write exactly one
@@ -22,8 +22,18 @@ that, scoped so it can land as one small pull request.
 2. Any earlier `<job folder>/intake-*.md`. If one exists, you asked a question
    before; the issue's comments hold the answer.
 3. `AGENTS.md` (or `CLAUDE.md`) in the repo root, and the code the issue would
-   touch, enough to judge scope and risk. Use Read, Grep and Glob with paths
-   under the repo root.
+   touch, enough to judge scope and risk. Use absolute paths under the repo root.
+
+4. The domain docs, when the repo has them (set up by `setup-matt-pocock-skills`):
+   `docs/agents/domain.md` says where they live, usually `GLOSSARY.md` and
+   ADRs. Use their terms in your Scope.
+5. `.out-of-scope/*.md`, when it exists: requests this project already turned
+   down. An issue that matches one is a REJECT; cite the file.
+
+Issues reach the factory after a human triaged them with `/triage` and gave
+them the `ready-for-agent` label. When the issue's comments hold a triage
+agent brief, start from it, but you still decide: triage judged the request,
+you judge whether it fits one pull request.
 
 ## Decide
 
@@ -79,4 +89,6 @@ For NEEDS-INFO only: numbered questions for the author.
 - The factory posts everything below the header as a comment on the issue, so
   write it for the issue's author: plain, short, and polite.
 
-When you're done, reply with one line: the `DECISION:` line from intake.md.
+When you're done, report to the factory with `worker_done` as your task
+preamble describes, with one line as the summary: the `DECISION:` line from intake.md.
+Nothing else goes in the summary: the detail is in your file.

@@ -18,9 +18,9 @@ skim a job on the dashboard and read the detail only where it matters.
 
 | Piece | File | Job |
 |---|---|---|
-| Queue | GitHub issues labeled `factory` | What to build. Anyone can file an issue; only people with triage or write access can label it. |
-| Orchestrator | `.claude/skills/factory/SKILL.md` | The session that runs `/factory`. Starts jobs, spawns agents, calls the scripts. Writes nothing itself. |
-| Agents | `.claude/agents/*.md` | One file per role. Each reads files, writes exactly one file, and replies with one line. |
+| Queue | GitHub issues labeled `ready-for-agent` | What to build. Anyone can file an issue; only people with triage or write access can label it. |
+| Orchestrator | `.claude/skills/factory/SKILL.md` | The Claude Code session that runs `/factory` in an Orca terminal. Starts jobs, starts every agent as an Orca worker, calls the scripts. Writes nothing itself. |
+| Agents | `factory/agents/*.md` | One brief per role, for Claude Code or Codex. Each reads files, writes exactly one file, and reports one line with `worker_done`. |
 | State | `factory/jobs/<job-id>/` | `job.json` plus every agent's file. Gitignored, local to the machine running the factory. |
 | Spine | `factory/bin/job`, `gate`, `route` | Deterministic. `job` is the only writer of `job.json` and refuses illegal moves. |
 | Checks | `factory/checks.sh` | The repo's test, lint, typecheck and build commands. The only repo-specific script. |
@@ -37,7 +37,7 @@ builder            → commits; first round pushes + opens draft PR "Closes #<n>
 gate (script)      → checks.sh; FAIL → builder gets the log, no reviewers spawned
 reviewers (routed) → parallel, WAIT FOR ALL; CHANGES → builder → gate → reviewers (max rounds)
 approver (opus)    → APPROVE: sync origin/main, gate, gh pr merge
-                     ESCALATE: PR ready, decision as PR comment, label factory:needs-human
+                     ESCALATE: PR ready, decision as PR comment, label ready-for-human
 ```
 
 `stage` in `job.json` is one of `intake`, `needs-info`, `spec`, `build`,
@@ -47,17 +47,18 @@ The legal moves are in `TRANSITIONS` at the top of `factory/bin/job`.
 ## Decisions
 
 **Issues are the queue; you trigger the run.** `/factory run` drains every open
-`factory` issue. Nothing runs in GitHub Actions or on a schedule: the factory
+`ready-for-agent` issue. Nothing runs in GitHub Actions or on a schedule: the factory
 runs on your machine, on your Claude plan, when you start it. An issue can't
 start a Claude Code session by itself, and keeping it local means your
 worktrees, dev servers and dashboard are right there.
 
 **One orchestrator for every job.** The session running `/factory run` starts up
-to `concurrency` jobs and spawns every agent as a background subagent. There
-are no per-job orchestrators to coordinate. Its context stays small because
-agents reply with one line and the scripts print one line; the detail lives in
-files the next agent reads. Claude Code allows 20 concurrent subagents per
-session by default, which covers three jobs with four reviewers each.
+to `concurrency` jobs and starts every agent as an Orca worker. There are no
+per-job orchestrators to coordinate. Its context stays small because workers
+report one line and the scripts print one line; the detail lives in files the
+next agent reads. Each worker is a full session, so two jobs with four
+reviewers each already means ten agents at once; the default `concurrency` is
+2.
 
 **Fable at the door, once.** Intake is the only Fable call per job. It decides
 whether the issue is worth building, rewrites the scope when the issue is too
@@ -104,7 +105,7 @@ gated again, because another job may have merged since it was tested.
 
 **You approve by merging.** The approver merges what it would merge itself and
 escalates the rest with a specific question. An escalated PR is ready for
-review and its issue is labeled `factory:needs-human`. Merge it to approve, or
+review and its issue is labeled `ready-for-human`. Merge it to approve, or
 tell the factory what to change with `/factory <anything>`: your words go to
 the builder as `feedback-<k>.md` and the job runs another round. To drop a
 job that waits on you or on its author, tell the factory to reject it: the
@@ -126,15 +127,54 @@ break this.
 
 ## Guardrails
 
-- Only issues labeled `factory` run. Labels need triage or write access, so the
+- Only issues labeled `ready-for-agent` run. Labels need triage or write access, so the
   label is the trust boundary.
 - Issue text reaches agents as quoted data in `issue.md`, with comments only
   from the issue's author and the factory's operator. It is never part of a
-  prompt. Intake, which reads it first, has no shell.
+  worker spec or message. Intake, which reads it first, now runs as a full
+  Claude Code session with a shell: see Orca and Codex below.
 - Agents push only `factory/*` branches. Only `factory/bin/job merge` merges,
   through `gh pr merge`. The factory never deploys.
 - One PR per issue; at most `max_rounds` build rounds per job before a human
   is asked.
+
+## Orca, Codex and Claude Code
+
+This fork runs every agent as an Orca worker instead of a Claude Code
+subagent.
+
+**Codex builds, Claude judges.** Codex is the default builder. Claude Code
+does intake, the spec, the reviews and the final call. `cross_review` in
+`config.json` keeps the code and security reviews off the builder's agent, so
+a second model family reads every change.
+
+**Claude takes over on UI trouble.** When the UX or UI review asks for
+changes, `job advance` switches the job's builder to the fallback (Claude) for
+the next round, moves the cross-review lenses to Codex, and records why in
+`builder_log`. The new builder takes over from `build.md` and `git log`.
+
+**Orca wakes the orchestrator.** Workers report with `worker_done`; the
+orchestrator ends its turn after starting them and never polls. The builder's
+dispatch id is stored in `job.json`, so later rounds are messages to the same
+worker and a new session can still reach it.
+
+**The scripts are the limit now.** Subagents had tool lists: reviewers had no
+Edit, intake had no shell. Orca workers are full sessions, and Codex on this
+setup has no sandbox. So `job advance` refuses a review round when the
+worktree or HEAD changed during review, and refuses a merge when the branch
+changed after review. Branch protection on `main` is the backstop for
+pushes.
+
+**Labels are the triage roles.** The queue is `ready-for-agent`, set by a human
+with `/triage` from mattpocock/skills. Waiting jobs trade it for `needs-info` or
+`ready-for-human`, intake sends an issue it turns away back to `needs-triage`,
+and a job a human rejects gets `wontfix`. The issue stays open; closing it is
+the human's call.
+
+**Cost counts Claude only.** Each Claude worker is its own session, so the job
+script reads top-level transcripts in the main checkout's and the worktree's
+project folders. Codex runs on the ChatGPT plan and isn't priced. An unpriced
+model is skipped with a warning instead of stopping the command.
 
 ## What changed from v1
 

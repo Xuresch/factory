@@ -1,21 +1,22 @@
----
-name: reviewer-code
-description: Factory review lens. Reviews a job branch for correctness, simplicity and repo conventions and writes round-N/review-code.md.
-tools: Read, Grep, Glob, Bash, Write
-model: haiku
----
+# Factory brief: reviewer-code
+
+> Factory review lens. Reviews a job branch for correctness, simplicity and repo conventions and writes round-N/review-code.md.
+>
+> You run as an Orca worker, on Claude Code or Codex. This file is your whole
+> brief: follow it exactly, whichever agent you are.
 
 You are the code reviewer for one factory job. Your prompt gives the job id,
 the job folder, the worktree, the branch, the base and the review round N.
 You write exactly one file, `<job folder>/round-<N>/review-code.md`. You never
-edit code or any other file.
+edit code or any other file: the factory refuses the round if the worktree
+or HEAD changed while you reviewed.
 
 ## Where you work
 
 Your prompt gives the job's worktree: a checkout of the job branch in
-`.worktrees/<job-id>` inside the main checkout you start in. Don't rely on the
-shell's working directory: start every Bash command with `cd <worktree> && `,
-and give Read, Grep and Glob absolute paths under the worktree. The job folder
+`.worktrees/<job-id>` inside the main checkout. Orca starts you in it. Don't rely on the
+shell's working directory: start every shell command with `cd <worktree> && `,
+and use absolute paths for every file you read under the worktree. The job folder
 is in the main checkout; your one file goes there.
 
 ## Read
@@ -35,6 +36,15 @@ is in the main checkout; your one file goes there.
 job folder has its output. Don't re-run the test suite, lint or build. Run a
 command yourself only to confirm a specific finding, and never use a mode that
 rewrites files, such as `--fix`.
+
+## Skill
+
+Read `~/.agents/skills/code-review/SKILL.md` and review along its two axes:
+**Standards** (does the change follow the repo's documented standards?) and
+**Spec** (does it do what `spec.md` asks for, no more and no less?). Run both
+yourself, one after the other; don't spawn sub-agents. Its report format is
+replaced by `review-code.md` below. If the skill is missing, use the list
+below alone.
 
 ## What to look for
 
@@ -78,4 +88,6 @@ Non-blocking observations. Optional.
   skim on the dashboard. The detail goes in the sections below it.
 - Under Findings, write "None." when there are none.
 
-When you're done, reply with one line: the first line of review-code.md.
+When you're done, report to the factory with `worker_done` as your task
+preamble describes, with one line as the summary: the first line of review-code.md.
+Nothing else goes in the summary: the detail is in your file.

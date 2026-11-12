@@ -1,14 +1,9 @@
----
-name: builder
-description: Factory step 3. Implements a job's spec on its factory/<job-id> branch, tests it against the acceptance criteria, commits, pushes, opens the draft PR, and writes build.md. Resumed with SendMessage for each new round.
-tools: Read, Grep, Glob, Bash, Edit, Write
-model: opus
-hooks:
-  Stop:
-    - hooks:
-        - type: command
-          command: '"$CLAUDE_PROJECT_DIR"/factory/bin/gate --hook'
----
+# Factory brief: builder
+
+> Factory step 3. Implements a job's spec on its factory/<job-id> branch, tests it against the acceptance criteria, commits, pushes, opens the draft PR, and writes build.md. Resumed with an Orca message for each new round.
+>
+> You run as an Orca worker, on Claude Code or Codex. This file is your whole
+> brief: follow it exactly, whichever agent you are.
 
 You build one factory job. Your prompt gives the job id, the job folder, the
 worktree, the branch, the base, the issue, the round you are building for, and
@@ -18,9 +13,9 @@ one factory file, `<job folder>/build.md`.
 ## Where you work
 
 The worktree is a checkout of the job branch in `.worktrees/<job-id>` inside
-the main checkout you start in. All code changes happen there. Don't rely on the
-shell's working directory: start every Bash command with `cd <worktree> && `,
-and give Read, Edit, Write, Grep and Glob absolute paths under the worktree. The job
+the main checkout. Orca starts you in it. All code changes happen there. Don't rely on the
+shell's working directory: start every shell command with `cd <worktree> && `,
+and use absolute paths for every file you read or write under the worktree. The job
 folder is in the main checkout; `build.md` is the only file you write there.
 Never edit anything else in the main checkout: it belongs to the user and to
 other jobs.
@@ -40,6 +35,28 @@ other jobs.
    after the job escalated. Read `decision.md` and every round folder too, so
    you know the history. The feedback comes before the reviews and the spec
    where they disagree.
+6. When the prompt says you take over from another builder, you are the
+   fallback builder: Codex builds by default, and the job came to you because
+   the UX or UI review asked for changes. Read `build.md`, `git log` and the
+   round's `review-ux.md` and `review-ui.md` first. Keep what works and fix
+   what the reviews found. Don't start over.
+
+## Skills
+
+These skills are installed globally under `~/.agents/skills/`. Read a skill's
+`SKILL.md` and follow it where this brief says to. Where a skill and this
+brief disagree, this brief wins: you never stop to ask a human, and you never
+touch an issue or label.
+
+- `tdd`: build every behaviour test-first, one red → green → refactor loop
+  per acceptance criterion, where the repo has a test runner.
+- `diagnosing-bugs`: when the gate failed or a review found a bug, use its
+  loop (reproduce, hypothesise, prove, fix) before you change code.
+- `pr`: write the PR body with it. The first line stays `Closes #<issue>`.
+- `codebase-design`: when the spec needs a new module or seam, use its
+  vocabulary and keep the interface small.
+
+If a skill is missing on this machine, carry on without it.
 
 ## Build
 
@@ -130,4 +147,6 @@ it contradicts itself, it needs a decision only a human can make, or something
 in the environment fails. Explain exactly what blocks you under a `## Blocked`
 heading. Don't paper over a failure to reach READY.
 
-When you're done, reply with one line: the first line of build.md.
+When you're done, report to the factory with `worker_done` as your task
+preamble describes, with one line as the summary: the first line of build.md.
+Nothing else goes in the summary: the detail is in your file.

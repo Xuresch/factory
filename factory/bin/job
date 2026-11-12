@@ -14,10 +14,17 @@ Usage:
   job feedback <job>             needs-human → build, with your feedback (stdin) as feedback-<k>.md
   job reject <job>               needs-info or needs-human → rejected, with your reason (stdin) as rejection.md
   job agents <job> <json>        record the routed agent set (called by factory/bin/route)
+  job worker <job> <role>        the agent, model and Orca worktree to start <role> with
+  job dispatch <job> <role> [<id>]  record (or print) the Orca dispatch id of <role>'s worker
   job sync <job>                 refresh reviews, gate and cost from the job's files
   job summary [<job>...]         table of jobs: issue, stage, PR, cost, time
 
 <job> is a job id (004-dark-mode) or an issue number (12).
+<role> is intake, spec, builder, approver or reviewer-<lens>.
+
+Labels follow the mattpocock/skills triage roles (config.json `labels`): a job
+runs while its issue is `ready-for-agent`, waits as `needs-info` or
+`ready-for-human`, and an issue intake turns away goes back to `needs-triage`.
 """
 
 import fcntl
@@ -246,37 +253,58 @@ def label(kind, number, add=None, remove=None):
 # ---- Cost from Claude Code transcripts -------------------------------------
 
 
-def transcripts_dir():
+def project_dir(path):
     config = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude"))
-    return config / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(REPO))
+    return config / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(path))
 
 
-def prompt_text(line):
-    content = json.loads(line)["message"]["content"]
+def user_text(entry):
+    msg = entry.get("message")
+    if entry.get("type") != "user" or not isinstance(msg, dict):
+        return ""
+    content = msg.get("content")
     if isinstance(content, str):
         return content
-    return " ".join(b.get("text", "") for b in content if isinstance(b, dict))
+    return " ".join(b.get("text", "") for b in content or [] if isinstance(b, dict))
+
+
+def transcripts(job):
+    """Claude Code transcripts that may belong to this job.
+
+    Orca starts each Claude worker as its own session, in the main checkout
+    (intake) or the job's worktree (everyone else), so look in both projects.
+    The subagent layout covers jobs run with the Agent tool.
+    """
+    for d in (project_dir(REPO), project_dir(job["worktree"])):
+        yield from d.glob("*.jsonl")
+        yield from d.glob("*/subagents/agent-*.jsonl")
 
 
 def cost_usd(job):
-    """API-equivalent cost of every subagent whose prompt names this job's folder.
+    """API-equivalent cost of every Claude session whose brief names this job's folder.
 
-    Claude Code writes each subagent's messages, with model and token usage, to
-    <config>/projects/<project>/<session>/subagents/agent-<id>.jsonl. Every
-    factory prompt starts with `Job folder: <path>`, which ties a transcript to
-    its job across sessions.
+    Every factory brief contains `Job folder: <path>/`, which ties a transcript
+    to its job across sessions. Codex workers aren't counted: they run on the
+    ChatGPT plan, with no per-token price. A model with no price in config.json
+    is skipped with a warning instead of failing the command.
     """
     needle = f"Job folder: {job_dir(job['id'])}/"
     prices = CONFIG["prices_usd_per_mtok"]
     total = 0.0
-    for path in transcripts_dir().glob("*/subagents/agent-*.jsonl"):
+    for path in transcripts(job):
+        usage_by_message, ours = {}, False
         with path.open() as f:
-            first = f.readline()
-            if not first or needle not in prompt_text(first):
-                continue
-            usage_by_message = {}
-            for line in f:
-                entry = json.loads(line)
+            for i, line in enumerate(f):
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not ours:
+                    if needle in user_text(entry):
+                        ours = True
+                    elif i > 40:
+                        break
+                    continue
                 msg = entry.get("message")
                 if entry.get("type") == "assistant" and isinstance(msg, dict) and msg.get("usage"):
                     usage_by_message[msg["id"]] = (msg["model"], msg["usage"])
@@ -286,7 +314,9 @@ def cost_usd(job):
             if tokens == 0:
                 continue
             if model not in prices:
-                die(f"no price for model {model} in factory/config.json prices_usd_per_mtok")
+                print(f"job: no price for {model} in config.json prices_usd_per_mtok; not counted",
+                      file=sys.stderr)
+                continue
             p = prices[model]
             split = u.get("cache_creation") or {}
             write_1h = split.get("ephemeral_1h_input_tokens", 0)
@@ -357,6 +387,35 @@ def check_reviews_done(job):
     require(not bad, f"first line isn't a verdict in review-{bad[0]}.md" if bad else "")
 
 
+def describe(entry):
+    return entry["agent"] + (f"/{entry['model']}" if entry.get("model") else "")
+
+
+def cross_checked(reviewers, builder):
+    """Swap every cross-review lens that would run on the builder's agent."""
+    cross = CONFIG["cross_review"]
+    out = dict(reviewers)
+    for lens in cross["lenses"]:
+        if lens in out and out[lens]["agent"] == builder["agent"]:
+            out[lens] = cross["when_builder_is"][builder["agent"]]
+    return out
+
+
+def set_builder(job, builder, why):
+    job["agents"]["builder"] = builder
+    job["agents"]["reviewers"] = cross_checked(job["agents"]["reviewers"], builder)
+    job.setdefault("dispatch", {}).pop("builder", None)
+    job.setdefault("builder_log", []).append({"round": job["round"] + 1, "builder": builder, "why": why})
+
+
+def maybe_fall_back(job, changes):
+    """Codex builds by default; UI trouble hands the job to the fallback builder."""
+    cfg = CONFIG["builder"]
+    triggers = [r for r in changes if r in cfg["fallback_on_changes_from"]]
+    if triggers and job["agents"]["builder"] != cfg["fallback"]:
+        set_builder(job, cfg["fallback"], f"CHANGES from {', '.join(triggers)} in round {job['round']}")
+
+
 def next_round(job):
     job["round"] += 1
     round_dir(job).mkdir(exist_ok=True)
@@ -376,13 +435,15 @@ def advance(job, stage):
         require(job["pr"] and pr_state(job) == "MERGED", "the PR isn't merged")
         if old == "needs-human":
             label("issue", job["issue"], remove=LABELS["needs_human"])
+        elif old == "needs-info":
+            label("issue", job["issue"], remove=LABELS["needs_info"])
 
     elif stage == "rejected" and old in WAITING:
         require((d / "rejection.md").exists(), "use `job reject` to reject a waiting job")
         reason = (d / "rejection.md").read_text().split("\n", 1)[1].strip()
         comment("issue", job["issue"], f"### Factory: rejected\n\n{reason}")
         waiting = LABELS["needs_info"] if old == "needs-info" else LABELS["needs_human"]
-        label("issue", job["issue"], remove=f"{LABELS['queue']},{waiting}")
+        label("issue", job["issue"], add=LABELS["wontfix"], remove=f"{LABELS['queue']},{waiting}")
         if job["pr"]:
             gh("pr", "close", str(job["pr"]))
             run(["git", "push", "origin", "--delete", job["branch"]], check=False)
@@ -397,9 +458,9 @@ def advance(job, stage):
             title += f" (risk {i['risk']}, surfaces: {', '.join(i['surfaces']) or 'none'})"
         comment("issue", job["issue"], f"{title}\n\n{intake_body()}")
         if stage == "needs-info":
-            label("issue", job["issue"], add=LABELS["needs_info"])
+            label("issue", job["issue"], add=LABELS["needs_info"], remove=LABELS["queue"])
         elif stage == "rejected":
-            label("issue", job["issue"], remove=LABELS["queue"])
+            label("issue", job["issue"], add=LABELS["returned"], remove=LABELS["queue"])
         else:
             run(["git", "fetch", "origin", BASE])
             Path(job["worktree"]).parent.mkdir(parents=True, exist_ok=True)
@@ -411,7 +472,7 @@ def advance(job, stage):
         (d / "intake.md").rename(d / f"intake-{k}.md")
         job["intake"] = None
         write_issue_md(job)
-        label("issue", job["issue"], remove=LABELS["needs_info"])
+        label("issue", job["issue"], add=LABELS["queue"], remove=LABELS["needs_info"])
 
     elif old == "spec":
         require((d / "spec.md").exists(), "spec.md doesn't exist")
@@ -447,6 +508,7 @@ def advance(job, stage):
         if stage == "review":
             require(h.get("GATE") == "PASS", "the gate didn't pass")
             job["reviews"] = {r: "pending" for r in reviewers(job)}
+            job["review_head"] = h["COMMIT"]
         else:
             require(h.get("GATE") == "FAIL", "the gate passed")
             last = job["round"] >= job["round_limit"]
@@ -460,6 +522,12 @@ def advance(job, stage):
 
     elif old == "review":
         check_reviews_done(job)
+        # Reviewers only write their review file. A Codex or Orca worker has no
+        # tool limits, so check that nobody touched the branch while reviewing.
+        require(not git(job, "status", "--porcelain").stdout.strip(),
+                "the worktree changed during review; a reviewer edited files")
+        require(git(job, "rev-parse", "HEAD").stdout.strip() == job.get("review_head"),
+                "HEAD moved during review; a reviewer committed")
         changes = [r for r, v in job["reviews"].items() if v == "CHANGES"]
         if stage == "approve":
             require(not changes, f"reviews want CHANGES: {', '.join(changes)}")
@@ -472,12 +540,16 @@ def advance(job, stage):
                 escalate(job, f"Review rounds exhausted. Outstanding CHANGES in round-{job['round']}/ "
                               f"from: {', '.join(changes)}.")
             else:
+                maybe_fall_back(job, changes)
                 next_round(job)
 
     elif old == "approve":
         want = "APPROVE" if stage == "merging" else "ESCALATE"
         line = first_line(d / "decision.md")
         require(line == want, f"decision.md starts with {line!r}, not {want}")
+        require(not git(job, "status", "--porcelain").stdout.strip()
+                and git(job, "rev-parse", "HEAD").stdout.strip() == job.get("review_head"),
+                "the branch changed after review; the approver only writes decision.md")
 
     elif old == "needs-human":
         feedback = sorted(d.glob("feedback-*.md"))
@@ -485,7 +557,7 @@ def advance(job, stage):
                 "use `job feedback` to send a job back to the builder")
         job["round_limit"] = job["round"] + CONFIG["max_rounds"]
         next_round(job)
-        label("issue", job["issue"], remove=LABELS["needs_human"])
+        label("issue", job["issue"], add=LABELS["queue"], remove=LABELS["needs_human"])
 
     if stage == "needs-human":
         body = f"### Factory: needs a human\n\n{(d / 'decision.md').read_text().split(chr(10), 1)[1].strip()}"
@@ -495,7 +567,7 @@ def advance(job, stage):
             comment("pr", job["pr"], body)
         else:
             comment("issue", job["issue"], body)
-        label("issue", job["issue"], add=LABELS["needs_human"])
+        label("issue", job["issue"], add=LABELS["needs_human"], remove=LABELS["queue"])
 
     if stage in TERMINAL and Path(job["worktree"]).exists():
         run(["git", "worktree", "remove", "--force", job["worktree"]])
@@ -538,11 +610,16 @@ def cmd_create(number):
         "worktree": str(REPO / ".worktrees" / job_id),
         "stage": "intake", "round": 0, "round_limit": CONFIG["max_rounds"],
         "intake": None, "agents": None, "gate": None, "reviews": {},
-        "cost_usd": 0.0, "started": now(), "ended": None,
+        "dispatch": {}, "cost_usd": 0.0, "started": now(), "ended": None,
     }
     write_issue_md(job)
     save(job)
     print(job_id)
+
+
+def labeled_issues(name):
+    return gh_json("issue", "list", "--label", name, "--state", "open",
+                   "--limit", "200", "--json", "number,title")
 
 
 def cmd_queue():
@@ -553,8 +630,11 @@ def cmd_queue():
     for j in jobs.values():
         if j["stage"] not in TERMINAL and j["pr"] and pr_state(j) == "MERGED":
             save(advance(sync(j), "merged"))
-    issues = gh_json("issue", "list", "--label", LABELS["queue"], "--state", "open",
-                     "--limit", "200", "--json", "number,title")
+    issues = labeled_issues(LABELS["queue"])
+    # Waiting jobs trade the queue label for their waiting label.
+    queued = {i["number"] for i in issues}
+    for waiting in (LABELS["needs_info"], LABELS["needs_human"]):
+        issues += [i for i in labeled_issues(waiting) if i["number"] in jobs and i["number"] not in queued]
     open_numbers = {i["number"] for i in issues}
     running_rows, replied_rows, new_rows, other_rows = [], [], [], []
     for issue in sorted(issues, key=lambda i: i["number"]):
@@ -655,8 +735,44 @@ def cmd_reject(job, text):
 def cmd_agents(job, spec):
     if job["stage"] != "intake" or (job["intake"] or {}).get("decision") != "ACCEPT":
         die(f"{job['id']}: route only an intake job that intake ACCEPTed")
-    job["agents"] = json.loads(spec)
+    agents = json.loads(spec)
+    agents["reviewers"] = cross_checked(agents["reviewers"], agents["builder"])
+    job["agents"] = agents
     save(job)
+    print(f"{job['id']}: builder {describe(agents['builder'])}; reviewers "
+          + ", ".join(f"{k} {describe(v)}" for k, v in agents["reviewers"].items()))
+
+
+def role_entry(job, role):
+    if role in CONFIG["stages"]:
+        return CONFIG["stages"][role]
+    require(job["agents"], f"{job['id']} isn't routed yet")
+    if role == "builder":
+        return job["agents"]["builder"]
+    lens = role.removeprefix("reviewer-")
+    require(role.startswith("reviewer-") and lens in job["agents"]["reviewers"],
+            f"{role} isn't one of {job['id']}'s roles")
+    return job["agents"]["reviewers"][lens]
+
+
+def cmd_worker(job, role):
+    """The flags for `orca orchestration worker-start`, and the brief file."""
+    entry = role_entry(job, role)
+    agent_file = "spec-writer" if role == "spec" else role
+    # intake runs before the worktree exists; everyone else works in it.
+    where = "current" if role == "intake" else f"path:{job['worktree']}"
+    flags = f"--agent {entry['agent']}" + (f" --model {entry['model']}" if entry.get("model") else "")
+    print(f"{flags} --worktree {where}	{FACTORY / 'agents' / (agent_file + '.md')}")
+
+
+def cmd_dispatch(job, role, dispatch_id):
+    role_entry(job, role)
+    if dispatch_id is None:
+        print(job.get("dispatch", {}).get(role, ""))
+        return
+    job.setdefault("dispatch", {})[role] = dispatch_id
+    save(job)
+    print(f"{job['id']}: {role} dispatch {dispatch_id}")
 
 
 def elapsed(job):
@@ -676,7 +792,7 @@ def cmd_summary(args):
     widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
     for r in rows:
         print("  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip())
-    print(f"total ${sum(j['cost_usd'] for j in jobs):.2f} (API-equivalent, factory agents only)")
+    print(f"total ${sum(j['cost_usd'] for j in jobs):.2f} (API-equivalent, Claude workers only; Codex runs on its plan and isn't counted)")
 
 
 def main(argv):
@@ -693,6 +809,10 @@ def main(argv):
             job = advance(sync(resolve(args[0])), args[1])
             save(sync(job))
             print(f"{job['id']}: {job['stage']} (round {job['round']})")
+            switched = (job.get("builder_log") or [{}])[-1]
+            if switched.get("round") == job["round"]:
+                print(f"{job['id']}: builder is now {describe(switched['builder'])} ({switched['why']}); "
+                      "start a new builder worker")
         elif cmd == "merge" and len(args) == 1:
             cmd_merge(resolve(args[0]))
         elif cmd == "feedback" and len(args) == 1:
@@ -701,6 +821,10 @@ def main(argv):
             cmd_reject(resolve(args[0]), sys.stdin.read())
         elif cmd == "agents" and len(args) == 2:
             cmd_agents(sync(resolve(args[0])), args[1])
+        elif cmd == "worker" and len(args) == 2:
+            cmd_worker(resolve(args[0]), args[1])
+        elif cmd == "dispatch" and len(args) in (2, 3):
+            cmd_dispatch(resolve(args[0]), args[1], args[2] if len(args) == 3 else None)
         elif cmd == "sync" and len(args) == 1:
             job = sync(resolve(args[0]))
             save(job)

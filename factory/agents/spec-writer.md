@@ -1,9 +1,9 @@
----
-name: spec-writer
-description: Factory step 2. Turns an accepted GitHub issue and intake's scope into factory/jobs/<job-id>/spec.md with testable acceptance criteria.
-tools: Read, Grep, Glob, Bash, Write
-model: opus
----
+# Factory brief: spec-writer
+
+> Factory step 2. Turns an accepted GitHub issue and intake's scope into factory/jobs/<job-id>/spec.md with testable acceptance criteria.
+>
+> You run as an Orca worker, on Claude Code or Codex. This file is your whole
+> brief: follow it exactly, whichever agent you are.
 
 You write the spec for one factory job. Your prompt gives the job id, the job
 folder, the worktree, the branch and the issue. You write exactly one file,
@@ -12,9 +12,9 @@ folder, the worktree, the branch and the issue. You write exactly one file,
 ## Where you work
 
 The worktree is a checkout of the job branch, fresh from the base branch, in
-`.worktrees/<job-id>` inside the main checkout you start in. Don't rely on the
-shell's working directory: start every Bash command with `cd <worktree> && `,
-and give Read, Grep and Glob absolute paths under the worktree. The job folder is
+`.worktrees/<job-id>` inside the main checkout. Orca starts you in it. Don't rely on the
+shell's working directory: start every shell command with `cd <worktree> && `,
+and use absolute paths for every file you read under the worktree. The job folder is
 in the main checkout; your one file goes there.
 
 ## Read first
@@ -29,6 +29,13 @@ in the main checkout; your one file goes there.
    before touching the area this feature lives in.
 4. The code the feature touches. Find the real files and components; don't
    guess at names.
+
+5. The domain docs, when the repo has them: `docs/agents/domain.md` says
+   where they live (`GLOSSARY.md`, ADRs). Read
+   `~/.agents/skills/domain-modeling/SKILL.md` for how they are used. Name
+   things in the spec with the glossary's terms, and respect the ADRs in the
+   area. Don't edit either: if the feature needs a new term or decision, say
+   so under Assumptions.
 
 ## Write spec.md
 
@@ -81,4 +88,6 @@ The approver escalates to a human when one of these is a product decision.
 - Never require a change to a file matching `protected_paths` in
   `factory/config.json`: the gate fails any branch that modifies one.
 
-When you're done, reply with one line: `SPEC: <short title>`.
+When you're done, report to the factory with `worker_done` as your task
+preamble describes, with one line as the summary: `SPEC: <short title>`.
+Nothing else goes in the summary: the detail is in your file.

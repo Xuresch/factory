@@ -16,6 +16,17 @@ Stop and tell the user if any of these fail:
 - Its default branch (`gh repo view --json defaultBranchRef`) exists on
   `origin`.
 - `claude --version` is 2.1.257 or later (the intake agent runs on Fable).
+- `codex --version` works and Codex is signed in: Codex is the default builder.
+- Orca is installed and running, and the project is added to it
+  (`<orca> repo list --json` lists its path; otherwise `<orca> repo add`).
+  `<orca>` is `$ORCA_CLI_COMMAND` if set, else `orca-ide` on Linux, else `orca`.
+  Never run bare `orca` on Linux outside an Orca terminal: that is the screen
+  reader. The orchestrator starts every agent as an Orca worker.
+- The `orchestration` and `orca-cli` skills are installed (`<orca> skills
+  installed`), and the mattpocock/skills the briefs use exist under
+  `~/.agents/skills/`: `tdd`, `diagnosing-bugs`, `code-review`, `pr`,
+  `domain-modeling`, `codebase-design`, `triage`. A missing one doesn't stop
+  the factory, but tell the user which.
 - `python3 --version` is 3.10 or later. The scripts use only the standard
   library.
 - None of the files in step 1 already exist. If one does, show the user the
@@ -27,14 +38,14 @@ Copy these files to the same paths in the project, unchanged:
 
 ```
 .claude/skills/factory/SKILL.md
-.claude/agents/intake.md
-.claude/agents/spec-writer.md
-.claude/agents/builder.md
-.claude/agents/reviewer-code.md
-.claude/agents/reviewer-security.md
-.claude/agents/reviewer-ux.md
-.claude/agents/reviewer-ui.md
-.claude/agents/approver.md
+factory/agents/intake.md
+factory/agents/spec-writer.md
+factory/agents/builder.md
+factory/agents/reviewer-code.md
+factory/agents/reviewer-security.md
+factory/agents/reviewer-ux.md
+factory/agents/reviewer-ui.md
+factory/agents/approver.md
 factory/config.json
 factory/checks.sh
 factory/bin/job
@@ -70,15 +81,21 @@ It must be non-interactive, must not rewrite files (no `--fix`, no
 - `base_branch`: the default branch.
 - `merge_method`: `merge`, `squash` or `rebase`, one the repo allows
   (`gh api repos/{owner}/{repo} --jq '{allow_merge_commit, allow_squash_merge, allow_rebase_merge}'`).
-- `protected_paths`: keep the two factory entries and don't add the project's
+- `protected_paths`: keep the factory entries and don't add the project's
   tests. Features legitimately change existing tests (a new required field
   changes every fixture), and a protected test blocks the job with no way
   through. The code reviewer catches weakened or special-cased tests instead.
   Add a path only when no job should ever change it. They are fnmatch
   patterns, so `*` also matches `/`.
 - `ports`: move `base` if the project already uses ports 5100–5199.
-- Leave `concurrency`, `max_rounds`, `routing`, `surface_reviewers` and
-  `prices_usd_per_mtok` as they are unless the user asks.
+- `labels`: the mattpocock/skills triage roles. If the repo already ran
+  `/setup-matt-pocock-skills` with other label strings, copy them from
+  `docs/agents/triage-labels.md`: `queue` is ready-for-agent, `needs_info`
+  needs-info, `needs_human` ready-for-human, `returned` needs-triage,
+  `wontfix` wontfix.
+- Leave `concurrency`, `max_rounds`, `stages`, `builder`, `routing`,
+  `surface_reviewers`, `cross_review` and `prices_usd_per_mtok` as they are
+  unless the user asks.
 
 **Agents.** The checklists are general on purpose. Tailor them to the stack
 without changing their structure, file names, first-line formats or one-line
@@ -105,8 +122,11 @@ Then add a short section:
 ```markdown
 ## Software factory
 
-`/factory run` builds every open GitHub issue labeled `factory` through
-intake → spec → build → gate → review → approve, one PR per issue. State is in
+`/factory run` builds every open GitHub issue labeled `ready-for-agent`
+through intake → spec → build → gate → review → approve, one PR per issue.
+Every agent is an Orca worker: Codex builds, Claude Code reviews, and a job
+moves to a Claude builder when the UX or UI review asks for changes. Briefs
+are in `factory/agents/`. State is in
 `factory/jobs/` (gitignored); `factory/bin/job` is its only writer. Checks:
 `factory/checks.sh`. Dashboard: `cd factory && python3 -m http.server`, then
 open http://localhost:8000/dashboard.html.
@@ -126,16 +146,21 @@ read `.gitignore` sees those copies too; exclude `.worktrees/` in its config.
 `factory/jobs/` is runtime state (job metadata, specs, reviews, check logs)
 local to the machine running the factory. Each job's worktree is a full
 checkout in `.worktrees/<job-id>`. Neither belongs in the repo. Everything you
-copied in step 1 does: the skill in `.claude/skills/factory/`, the agents in
-`.claude/agents/` and the rest of `factory/` are part of the project and get
+copied in step 1 does: the skill in `.claude/skills/factory/`, the briefs in
+`factory/agents/` and the rest of `factory/` are part of the project and get
 committed, so ignore only these two paths, never `.claude/` or `factory/`.
 
-**Labels.** Create them on GitHub:
+**Labels.** The triage roles from mattpocock/skills. `--force` keeps labels
+that `/setup-matt-pocock-skills` already made:
 
 ```bash
-gh label create factory --color 5319E7 --description "Build this with the software factory"
-gh label create factory:needs-info --color FBCA04 --description "The factory asked the author a question"
-gh label create factory:needs-human --color D93F0B --description "The factory needs a human decision on the PR"
+gh label create ready-for-agent --force --color 5319E7 --description "Fully specified; the software factory builds it"
+gh label create needs-info --force --color FBCA04 --description "Waiting on the reporter for more information"
+gh label create ready-for-human --force --color D93F0B --description "Needs a human: decision, review or implementation"
+gh label create needs-triage --force --color EDEDED --description "A maintainer needs to evaluate this"
+gh label create wontfix --force --color FFFFFF --description "Will not be actioned"
+gh label create bug --force --color D73A4A --description "Something is broken"
+gh label create enhancement --force --color A2EEEF --description "New feature or improvement"
 ```
 
 ## 3. Verify
@@ -144,9 +169,9 @@ gh label create factory:needs-human --color D93F0B --description "The factory ne
    If it fails there, the factory can never pass a job: fix the
    script (not the project) or tell the user what's broken.
 2. `factory/bin/job queue` runs without an error.
-3. Each file in `.claude/agents/` has only these frontmatter keys: `name`,
-   `description`, `tools`, `model`, and `hooks` on the builder. Claude Code
-   ignores unknown keys without a warning, so a typo silently changes behaviour.
+3. `<orca> worktree current --json` succeeds from the project root inside an
+   Orca terminal, and the agents `config.json` names (`claude`, `codex`) are
+   enabled in Orca on this machine.
 4. `python3 -m json.tool factory/config.json` succeeds.
 5. `git check-ignore factory/jobs/x .worktrees/x` prints both paths, and
    `git status --porcelain --untracked-files=all` lists every file from step 1
@@ -161,12 +186,15 @@ so the install must be on that branch there before the first run.
 
 Then tell the user, in a few lines:
 
-- Label one or two small issues `factory`, then run `/factory run` in Claude
-  Code from the project root.
+- Triage one or two small issues with `/triage` (or label them
+  `ready-for-agent`), then run `/factory run` in Claude Code **from an Orca
+  terminal** in the project root, so Orca can wake the orchestrator.
 - Every job ends as a PR. The approver merges what it approves; the rest wait
-  labeled `factory:needs-human`. Approve one by merging it on GitHub, or tell
+  labeled `ready-for-human`. Approve one by merging it on GitHub, or tell
   the factory what to change with `/factory <anything>`.
 - Intake runs on Fable, once per issue. Depending on their plan, Fable can
   bill to usage credits rather than the plan's included usage.
+- Codex workers run without Claude's tool limits (with this machine's Codex
+  config, no sandbox). Protect `main` on GitHub so only PRs can change it.
 - To start carefully, set `concurrency` to 1 in `factory/config.json` and read
   every PR until they trust it.
