@@ -174,9 +174,21 @@ def ticket_path(key):
     return hits[0]
 
 
+# `Status: x` or, as /to-tickets writes it, `**Status:** x`.
+STATUS_RE = re.compile(r"^(\**Status:\**[ \t]*)(.*?)[ \t]*$", re.M)
+BLOCKED_RE = re.compile(r"^\**Blocked by:\**(.*)$", re.M)
+
+
 def ticket_status(text):
-    m = re.search(r"^Status:\s*(.+?)\s*$", text, re.M)
-    return m.group(1) if m else None
+    m = STATUS_RE.search(text)
+    return m.group(2) if m else None
+
+
+def ticket_blockers(text):
+    """`Blocked by: 12, 13 (why)` → ["12", "13"]; `None (...)` → []. Only the
+    part before a parenthesis counts, so numbers in the reason don't."""
+    m = BLOCKED_RE.search(text)
+    return re.findall(r"\d+", m.group(1).split("(", 1)[0]) if m else []
 
 
 def ticket_comments(text):
@@ -216,7 +228,7 @@ def local_issue(key):
         "labels": [{"name": status}] if status else [],
         "state": "CLOSED" if status in {"done", LABELS["wontfix"]} else "OPEN",
         "url": str(path.relative_to(REPO)), "comments": ticket_comments(text),
-        "blocked_by": re.findall(r"\d+", (re.search(r"^Blocked by:(.*)$", text, re.M) or [None, ""])[1]),
+        "blocked_by": ticket_blockers(text),
     }
 
 
@@ -226,7 +238,7 @@ def set_status(key, status):
     if ticket_status(text) is None:
         text = re.sub(r"^(# .+\n)", rf"\1\nStatus: {status}\n", text, count=1, flags=re.M)
     else:
-        text = re.sub(r"^Status:.*$", f"Status: {status}", text, count=1, flags=re.M)
+        text = STATUS_RE.sub(lambda m: m.group(1) + status, text, count=1)
     path.write_text(text)
 
 
