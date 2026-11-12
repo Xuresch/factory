@@ -58,7 +58,6 @@ factory/bin/gate
 factory/bin/route
 factory/bin/dashboard
 factory/bin/update
-factory/bin/clean-cache
 factory/agents/reviewer-feature.md
 factory/agents/retro.md
 factory/tests/run.sh
