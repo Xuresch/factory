@@ -1850,6 +1850,48 @@ def cmd_queue():
         print("\t".join(str(c) for c in row))
 
 
+def friction(job):
+    """What made this job harder than one clean pass, or [] for a clean job."""
+    d = job_dir(job["id"])
+    out = []
+    if job["round"] > 1:
+        out.append(f"{job['round']} build rounds")
+    if any((job.get("continues") or {}).values()):
+        out.append("the builder stopped early (PARTIAL)")
+    if job.get("builder_log"):
+        out.append("the builder was switched")
+    if list(d.glob("feedback-*.md")):
+        out.append("a human sent feedback or rewound the job")
+    if any(h["stage"] in {"needs-human", "paused"} for h in job.get("history") or []):
+        out.append("it waited for a human")
+    for rd in sorted(d.glob("round-*")):
+        if (rd / "merge-back.md").exists():
+            out.append(f"the merge failed in {rd.name}")
+        if first_line(rd / "base-sync.md") == "SYNC: CONFLICT":
+            out.append(f"a base conflict in {rd.name}")
+        if first_line(rd / "checks.md") == "GATE: FAIL":
+            out.append(f"the gate failed in {rd.name}")
+        if any(first_line(f) == "VERDICT: CHANGES" for f in rd.glob("review-*.md")):
+            out.append(f"reviews asked for changes in {rd.name}")
+    limit = CONFIG.get("retro_cost_usd")
+    if limit and job.get("cost_usd", 0) > limit:
+        out.append(f"it cost ${job['cost_usd']:.2f}, over retro_cost_usd")
+    return out
+
+
+def retro_reason(job):
+    """Whether to run a retro after this merge, and on what: config.json
+    `retro_after_merge` is "friction" (default: only when something went wrong),
+    true (always) or false (never)."""
+    mode = CONFIG.get("retro_after_merge", "friction")
+    if not mode:
+        return None
+    found = friction(job)
+    if mode == "friction":
+        return "; ".join(found) or None
+    return "; ".join(found) or "a clean job, look for what to keep"
+
+
 def cmd_merge(job):
     sync(job)
     if job["stage"] == "approve":
@@ -1901,12 +1943,15 @@ def cmd_merge(job):
         run(["git", "push", "origin", "--delete", job["branch"]], check=False)
     save(advance(sync(job), "merged"))
     print(f"{job['id']}: merged " + (f"PR #{job['pr']}" if GITHUB else f"{job['branch']} into {jbase(job)}"))
-    if CONFIG.get("retro_after_merge"):
+    why = retro_reason(job)
+    if why:
         # Started here, not left to the orchestrator: it skipped the hint in two of twelve demo jobs.
         try:
-            cmd_start(load(job["id"]), "retro", "")
+            cmd_start(load(job["id"]), "retro", f"Look into: {why}.")
         except SystemExit:
             print(f"{job['id']}: the retro didn't start; start it with `factory/bin/job start {job['id']} retro`")
+    elif CONFIG.get("retro_after_merge"):
+        print(f"{job['id']}: no retro: the job went through without friction")
     feature_hint(job)
 
 

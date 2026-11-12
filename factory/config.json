@@ -165,7 +165,7 @@
   },
   "max_cost_usd": null,
   "notify": "auto",
-  "retro_after_merge": true,
+  "retro_after_merge": "friction",
   "feature_review": true,
   "keep_open_roles": [
     "builder"
@@ -201,5 +201,6 @@
       }
     }
   },
-  "commit_tickets": true
+  "commit_tickets": true,
+  "retro_cost_usd": null
 }

@@ -111,7 +111,7 @@ t_local_happy_path() {
   check "ticket done" "$(status_of 01)" "done" &&
   check "master has the work" "$(git show master:y.txt)" "y" &&
   check "history" "$(field "$id" "[h['stage'] for h in d['history']]")" "'review', 'approve', 'merging', 'merged'" &&
-  check "retro started" "$out" "started retro on claude/sonnet"
+  check "clean job, no retro" "$out" "no retro: the job went through without friction"
 }
 
 t_review_needs_standards_and_spec() {
@@ -331,10 +331,11 @@ t_high_risk_security_on_opus() {
 
 t_merge_starts_retro_and_commits_ticket() {
   new_repo retro; ticket 01 One; commit_all
-  local id; id=$(to_build 01 low none); build_commit "$id" y.txt y; to_review "$id"; review "$id" 1 code PASS
+  local id; id=$(to_build 01 low none); build_commit "$id" y.txt y; to_review "$id"; review "$id" 1 code CHANGES
+  J advance "$id" build >/dev/null; build_commit "$id" z.txt z; to_review "$id"; review "$id" 2 code PASS
   J advance "$id" approve >/dev/null; printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"
   local out; out=$(J merge "$id")
-  check "retro started" "$(grep "$id retro" "$CALLS")" "--agent claude --model sonnet" &&
+  check "retro started on friction" "$(grep "$id retro" "$CALLS")" "--agent claude --model sonnet" &&
   check "retro dispatch" "$(field "$id" "d['dispatch'].get('retro')")" "ctx_fake" &&
   check "ticket committed" "$(git log --oneline -1)" "Close f/01" &&
   check "ticket clean" "[$(git status --short .scratch)]" "[]"

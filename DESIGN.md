@@ -240,7 +240,10 @@ costs, on a subscription as much as on the API. A small, low-risk job skips
 the spec writer (intake writes the acceptance criteria), spec writer and
 approver run on Sonnet at low risk (`stages_by_risk`), the security review
 uses Opus only at high risk (`risk_upgrades`), intake runs on Opus, and the
-approver trusts the gate and the reviews instead of re-running them.
+approver trusts the gate and the reviews instead of re-running them. A retro
+runs only after a job with friction (`retro_after_merge: "friction"`): in the
+demo runs, retros after clean jobs were a fifth of the Claude spend and found
+little.
 
 ## What changed from v1
 

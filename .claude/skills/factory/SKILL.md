@@ -256,8 +256,10 @@ intake or spec (the ticket asked for it, or its risk is in `hold.after_spec_risk
 Stop working on it and tell the user which file to review. It resumes only
 through the user (see below).
 
-**retro.** `job merge` starts a retro worker itself after a merge. It looks
-back at the job and writes `retro.md` with suggestions for the environment.
+**retro.** After a merge, `job merge` starts a retro worker itself when the job
+had friction (extra rounds, an early stop, a builder switch, conflicts, human
+feedback, an escalation); a clean job gets none. The retro writes `retro.md`
+with suggestions for the environment.
 Don't wait for it to start the next job; when it reports, tell the user its
 first line and that the candidates are in `factory/jobs/<id>/retro.md`. Never
 apply them yourself. Only if `job merge` says the retro didn't start, start it
