@@ -107,7 +107,8 @@
     "factory/checks.sh",
     "factory/config.json",
     "factory/agents/*",
-    "factory/bin/*"
+    "factory/bin/*",
+    "factory/env.sh"
   ],
   "ports": {
     "base": 5100,
@@ -165,5 +166,9 @@
   "max_cost_usd": null,
   "notify": "auto",
   "retro_after_merge": true,
-  "feature_review": true
+  "feature_review": true,
+  "keep_open_roles": [
+    "builder"
+  ],
+  "worktree_root": null
 }

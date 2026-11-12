@@ -104,6 +104,10 @@ If a skill is missing on this machine, carry on without it.
 
 ## Long commands
 
+Before any build, test or install command, run
+`source <main checkout>/factory/env.sh` in the same shell. It sets the
+project's build settings and shared caches, the same ones the gate uses.
+
 Builds and test suites here can take many minutes. A command that hits your
 tool's time limit has not failed. Run long commands so they can finish: give
 them a long timeout, or start them in the background with output to a log

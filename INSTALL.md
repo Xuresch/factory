@@ -53,6 +53,7 @@ factory/agents/reviewer-ui.md
 factory/agents/approver.md
 factory/config.json
 factory/checks.sh
+factory/env.sh
 factory/bin/job
 factory/bin/gate
 factory/bin/route
@@ -86,6 +87,11 @@ It must be non-interactive, must not rewrite files (no `--fix`, no
 `--update-snapshots`), and must exit non-zero on any failure. Keep
 `set -euo pipefail`.
 
+**`factory/env.sh`.** The build settings and caches that `checks.sh` and the
+builders share: every job is a full checkout in its own worktree, so anything a
+stack caches per checkout is rebuilt per job unless it is shared here. See
+**Stack notes** below.
+
 **`factory/config.json`.**
 
 - `tracker`: leave `auto`; `factory/bin/job tracker` shows what it detected.
@@ -99,6 +105,9 @@ It must be non-interactive, must not rewrite files (no `--fix`, no
   Add a path only when no job should ever change it. They are fnmatch
   patterns, so `*` also matches `/`.
 - `ports`: move `base` if the project already uses ports 5100–5199.
+- `worktree_root`: leave it `null` (worktrees in `.worktrees/`), or set a path
+  such as `~/.factory-worktrees` when a tool in the project scans the whole
+  directory without reading `.gitignore` (see Stack notes).
 - `labels`: leave them. They are only the fallback; the factory reads the real
   strings from `docs/agents/triage-labels.md`.
 - Leave `concurrency`, `max_rounds`, `stages`, `builder`, `routing`,
@@ -174,6 +183,36 @@ gh label create wontfix --force --color FFFFFF --description "Will not be action
 gh label create bug --force --color D73A4A --description "Something is broken"
 gh label create enhancement --force --color A2EEEF --description "New feature or improvement"
 ```
+
+## Stack notes
+
+Every job works in a fresh worktree. What a stack keeps per checkout decides
+how slow and how big each job is. Put the fixes in `factory/env.sh` and
+`factory/checks.sh`, and the project's test and UI tools in the builder's and
+reviewers' project blocks.
+
+| Stack | Per worktree | In `env.sh` / `checks.sh` |
+|---|---|---|
+| Rust | `target/`, many GB | `CARGO_TARGET_DIR` shared in the main checkout, `CARGO_BUILD_JOBS`, `CARGO_INCREMENTAL=0`, `CARGO_PROFILE_DEV_DEBUG=line-tables-only`; one target dir per pinned toolchain |
+| Go | nothing big | `GOCACHE` and `GOMODCACHE` are global already; `go vet ./... && go test ./...` |
+| pnpm | `node_modules`, hard links | `pnpm install --frozen-lockfile --prefer-offline` in `checks.sh`; the store is shared already |
+| bun | `node_modules` | `bun install --frozen-lockfile`; the cache is global already |
+| npm / yarn | `node_modules`, copied | `npm ci --prefer-offline`; set `npm_config_cache` (or yarn's cache folder) to one shared path |
+| Next.js, Vite, Turbo | `.next/`, `.vite/`, `.turbo/` | fine to rebuild; a remote or shared Turbo cache helps big monorepos |
+| Python | `.venv/` | `uv sync --frozen` with `UV_CACHE_DIR` shared; or one venv outside the worktrees |
+| Godot | `.godot/` import cache, re-imports every asset | `godot --headless --import` in `checks.sh`; tests headless with GUT or gdUnit4; put a `.gdignore` file in `.worktrees/` or set `worktree_root` so the editor doesn't import the job checkouts |
+
+Tools that scan the project directory without reading `.gitignore` see every
+job's checkout in `.worktrees/`: some `jest`, `vitest`, `eslint` and `tsc`
+configs, file watchers, and Godot. Exclude `.worktrees/` in their config, or
+set `worktree_root` to keep the worktrees outside the repo.
+
+UI review: the UX and UI reviewers drive a dev server with `agent-browser` by
+default. For anything that isn't a web page (a native app, a CLI, a game),
+write in their project blocks how to see the change instead: headless UI
+tests, screenshots from a headless run, the CLI's output. For a game, where
+feel matters, add `**Factory:** hold after spec` to UI tickets or keep
+`hold.after_spec_risk` and play it yourself before approving.
 
 ## 3. Verify
 

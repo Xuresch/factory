@@ -285,6 +285,28 @@ t_feature_finish_conflict() {
   check "master untouched" "$(cat x.txt)" "z"
 }
 
+t_builder_kept_open_then_released() {
+  new_repo keepopen; ticket 01 One; commit_all
+  local id; id=$(to_build 01 low none); J start "$id" builder >/dev/null
+  check "builder kept open" "$(grep "$id builder r1" "$CALLS")" "--keep-open" &&
+  check "send carries the brief" "$(J send "$id" builder 'round 2' >/dev/null; tail -1 "$CALLS")" "agents/builder.md"
+  build_commit "$id" y.txt y; to_review "$id"; review "$id" 1 code PASS
+  J advance "$id" approve >/dev/null; printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"; J merge "$id" >/dev/null
+  check "released on merge" "$(grep worker-release "$CALLS")" "--dispatch ctx_fake"
+}
+
+t_worktree_root_outside_repo() {
+  new_repo wtroot; ticket 01 One; commit_all
+  local root="$TMP_ROOT/wtroot/outside"
+  python3 - "$root" <<'PY'
+import json, sys; p = "factory/config.json"; c = json.load(open(p)); c["worktree_root"] = sys.argv[1]; json.dump(c, open(p, "w"))
+PY
+  local id; id=$(to_build 01 low none)
+  check "worktree outside" "$(field "$id" "d['worktree']")" "$root/repo/$id" &&
+  check "exists there" "$(git -C "$root/repo/$id" branch --show-current)" "factory/$id" &&
+  check "nothing in .worktrees" "$(ls .worktrees 2>&1)" "No such file"
+}
+
 # ---- runner ----------------------------------------------------------------
 
 all_tests=$(declare -F | awk '{print $3}' | grep '^t_')

@@ -153,6 +153,13 @@ def ref_of(branch):
     return f"origin/{branch}" if GITHUB else branch
 
 
+def worktree_base():
+    """Where job worktrees live: <repo>/.worktrees, or config.json `worktree_root`
+    (outside the repo, so tools that don't read .gitignore never see them)."""
+    root = CONFIG.get("worktree_root")
+    return Path(os.path.expanduser(root)) / REPO.name if root else REPO / ".worktrees"
+
+
 def jbase(job):
     """The branch this job forks from and merges into: base_branch, or the
     target its ticket or feature names (`**Branch:** dev`, `feature/x`)."""
@@ -772,7 +779,9 @@ def set_builder(job, builder, why):
     pinned = set(job.get("pinned_lenses") or [])
     crossed = cross_checked(job["agents"]["reviewers"], builder)
     job["agents"]["reviewers"] = {k: (job["agents"]["reviewers"][k] if k in pinned else v) for k, v in crossed.items()}
-    job.setdefault("dispatch", {}).pop("builder", None)
+    old = job.setdefault("dispatch", {}).pop("builder", None)
+    if old:
+        release_kept_open(job, only=old)
     job.setdefault("builder_log", []).append({"round": job["round"] + 1, "builder": builder, "why": why})
 
 
@@ -1020,6 +1029,8 @@ def advance(job, stage):
         stage = "paused"
     job["stage"] = stage
     job["ended"] = now() if stage in TERMINAL | WAITING else None
+    if stage in TERMINAL | WAITING:
+        release_kept_open(job)
     if stage in WAITING:
         notify(f"{job['id']} ({job['issue']}) waits for you: {stage}"
                + (f" after {job['paused']['after']}" if stage == "paused" else ""))
@@ -1319,6 +1330,26 @@ def create_follow_ups(job):
 BUDGETED = {"spec", "build", "gate", "review", "approve"}
 
 
+def release(dispatch):
+    try:
+        subprocess.run([orca_cli(), "orchestration", "worker-release", "--dispatch", dispatch, "--json"],
+                       cwd=REPO, capture_output=True, timeout=60)
+    except Exception:
+        pass
+
+
+def release_kept_open(job, only=None):
+    """Best effort: hand kept-open workers' terminals back to Orca. `send`
+    reopens a released worker if the job needs it again."""
+    keep = []
+    for dispatch in job.get("kept_open") or []:
+        if only is None or dispatch == only:
+            release(dispatch)
+        else:
+            keep.append(dispatch)
+    job["kept_open"] = keep
+
+
 def notify(text):
     """Best effort: a desktop notification when a job needs the human."""
     cmd = CONFIG.get("notify", "auto")
@@ -1534,7 +1565,7 @@ def cmd_finish(branch):
     temp = None
     if where is None:
         # Kept until the merge: the feature reviewer works in it.
-        temp = str(REPO / ".worktrees" / f"_finish-{slug}")
+        temp = str(worktree_base() / f"_finish-{slug}")
         if not Path(temp).exists():
             run(["git", "worktree", "add", temp, branch])
         if GITHUB:
@@ -1591,7 +1622,7 @@ def cmd_finish(branch):
                       + f" and merged at {now()}.\n")
     if state_file.exists():
         state_file.unlink()
-    wt = REPO / ".worktrees" / f"_finish-{slug}"
+    wt = worktree_base() / f"_finish-{slug}"
     if wt.exists():
         run(["git", "worktree", "remove", "--force", str(wt)], check=False)
     print(f"{branch}: merged into {BASE}")
@@ -1700,7 +1731,7 @@ def cmd_create(number):
         "pr": None, "pr_url": None,
         "branch": f"factory/{job_id}", "base": target, "base_ref": ref_of(target),
         "tracker": TRACKER, "fork_point": None,
-        "worktree": str(REPO / ".worktrees" / job_id),
+        "worktree": str(worktree_base() / job_id),
         "stage": "intake", "round": 0, "round_limit": CONFIG["max_rounds"],
         "intake": None, "agents": None, "gate": None, "reviews": {},
         "dispatch": {}, "cost_usd": 0.0, "started": now(), "ended": None,
@@ -1849,7 +1880,7 @@ def merge_locally(source, target, message, tag):
              "rebase": ["--ff-only"]}[CONFIG["merge_method"]]
     where, temp = branch_worktree(target), None
     if where is None:
-        temp = str(REPO / ".worktrees" / f"_merge-{tag}")
+        temp = str(worktree_base() / f"_merge-{tag}")
         run(["git", "worktree", "add", temp, target])
         where = temp
     try:
@@ -2064,6 +2095,12 @@ def cmd_start(job, role, extra):
         cmd += ["--model", entry["model"]]
     cmd += ["--worktree", where, "--task-title", f"{job['id']} {role} r{job['round']}",
             "--spec-file", "-", "--json"]
+    # Orca releases a worker's terminal soon after worker_done. The builder is
+    # kept open, so later rounds reach the same agent with its context; the
+    # job releases it when it ends or waits for a human.
+    keep = role in CONFIG.get("keep_open_roles", ["builder"])
+    if keep:
+        cmd.insert(cmd.index("--json"), "--keep-open")
     res = subprocess.run(cmd, cwd=REPO, input=spec, capture_output=True, text=True)
     try:
         receipt = json.loads(res.stdout)
@@ -2075,6 +2112,10 @@ def cmd_start(job, role, extra):
         die(f"worker-start for {role} failed (don't rerun it; see the orchestration skill's "
             f"recovery reference):\n{(res.stdout or res.stderr).strip()[:2000]}")
     job.setdefault("dispatch", {})[role] = dispatch
+    if keep:
+        job.setdefault("kept_open", [])
+        if dispatch not in job["kept_open"]:
+            job["kept_open"].append(dispatch)
     save(job)
     print(f"{job['id']}: started {role} on {describe(entry)} in {where}, dispatch {dispatch}")
 
@@ -2084,7 +2125,11 @@ def cmd_send(job, role, text):
     if not dispatch:
         die(f"{job['id']} has no {role} worker recorded (a new session, or the builder was switched); "
             f"start one with `job start {job['id']} {role} ...`")
-    body = f"{job_header(job, role)} {text.strip()}"
+    agent_file = "builder" if role.startswith("builder") else "spec-writer" if role == "spec" else role
+    # The worker may have been closed and reopened as a fresh agent: point it at its brief.
+    body = (f"{job_header(job, role)} {text.strip()}\n\nYour brief is {FACTORY / 'agents' / (agent_file + '.md')}. "
+            "If you don't remember this job, read the brief, build.md and `git log` first. "
+            "When you're done, report with worker_done; its summary is the one line your brief names.")
     cmd = [orca_cli(), "orchestration", "send", "--to", f"dispatch:{dispatch}",
            "--subject", f"{job['id']} {role} r{job['round']}", "--body", body, "--json"]
     res = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True)

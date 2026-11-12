@@ -18,6 +18,8 @@
 #   npm test -- --run
 #   npm run build
 set -euo pipefail
+# Shared with the builders: the project's build settings and caches.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/env.sh"
 
 echo "factory/checks.sh has no checks yet. Add this repo's test, lint, typecheck and build commands." >&2
 exit 1

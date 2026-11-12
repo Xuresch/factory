@@ -220,6 +220,19 @@ feature branch that collects several tickets. When the last ticket for a
 branch is done, `job finish <branch>` syncs it with `base_branch`, runs the
 full checks and merges it; a conflict or a failure is left for a human.
 
+**Builders stay open, everything else closes.** Orca releases a worker's
+terminal soon after `worker_done`. `job start` keeps the builder open
+(`keep_open_roles`), so every round of a job reaches the same agent with its
+context, and releases it when the job ends or waits for a human. `job send`
+always points the worker at its brief, so a worker that was closed and comes
+back fresh still knows its job.
+
+**Any stack.** The scripts don't know the language. A project's stack lives in
+three places: `checks.sh`, `env.sh` (build settings and caches that the gate
+and the builders share, since every job is a fresh worktree) and the project
+blocks in the briefs. INSTALL.md has notes per stack, and `worktree_root`
+moves job worktrees out of the repo for tools that scan it whole.
+
 ## What changed from v1
 
 | v1 | v2 | Asked for by |

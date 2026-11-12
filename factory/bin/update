@@ -16,7 +16,7 @@ What it does:
   template's slots of the same kind (matched by the text after `project:`).
   A block with no matching slot is kept at the end of the file, and said so.
 - factory/config.json: keys the template added are added; your values stay.
-- Never touched: factory/checks.sh, factory/cargo-env.sh, factory/jobs/, and
+- Never touched: factory/checks.sh, factory/env.sh, factory/jobs/, and
   anything outside factory/ and .claude/skills/factory/.
 
 It prints what changed and leaves committing to you.
@@ -35,7 +35,7 @@ FACTORY = REPO / "factory"
 CONFIG = json.loads((FACTORY / "config.json").read_text())
 DEFAULT = CONFIG.get("template", "https://github.com/Xuresch/factory")
 BLOCK_RE = re.compile(r"<!-- project: (.*?) -->\n(.*?)<!-- /project -->\n?", re.S)
-NEVER = {"checks.sh", "cargo-env.sh"}
+NEVER = {"checks.sh", "env.sh", "cargo-env.sh"}
 
 
 def die(msg):
@@ -117,6 +117,8 @@ def main(argv):
                     if not dry and f.stat().st_mode & 0o111:
                         dst.chmod(dst.stat().st_mode | 0o755)
         put(FACTORY / "dashboard.html", (tf / "dashboard.html").read_text())
+        if not (FACTORY / "env.sh").exists() and (tf / "env.sh").exists():  # older installs had none
+            put(FACTORY / "env.sh", (tf / "env.sh").read_text())
         skill = tpl / ".claude" / "skills" / "factory" / "SKILL.md"
         if skill.exists():
             put(REPO / ".claude" / "skills" / "factory" / "SKILL.md", skill.read_text())
@@ -134,7 +136,7 @@ def main(argv):
             if not dry:
                 (FACTORY / "config.json").write_text(json.dumps(mine, indent=2) + "\n")
         if (tf / "checks.sh").exists() and (FACTORY / "checks.sh").exists():
-            notes.append("checks.sh and cargo-env.sh are yours and were left alone")
+            notes.append("checks.sh and env.sh are yours and were left alone")
     print(("would change (dry run):" if dry else "changed:") if changes else "already up to date")
     for c in changes:
         print(f"  {c}")
