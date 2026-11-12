@@ -1231,6 +1231,7 @@ def create_follow_ups(job):
         if title in done:
             continue
         origin = f"Follow-up from {job['issue']} (factory job {job['id']}): intake left this out of that job."
+        why = why[:1].upper() + why[1:]
         body = f"{origin}\n\n{why}".strip()
         if GITHUB:
             url = gh("issue", "create", "--label", LABELS["returned"], "--title", title,
