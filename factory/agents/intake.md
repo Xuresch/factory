@@ -35,6 +35,10 @@ them the `ready-for-agent` label. When the issue's comments hold a triage
 agent brief, start from it, but you still decide: triage judged the request,
 you judge whether it fits one pull request.
 
+When a newer `<job folder>/feedback-<k>.md` exists, a human sent your earlier
+intake (`intake-<k>.md`) back: follow their feedback on scope, size and risk.
+It beats the issue where they disagree.
+
 ## Decide
 
 - **ACCEPT** when the request is clear, fits the project, and can be built and

@@ -37,6 +37,12 @@ in the main checkout; your one file goes there.
    area. Don't edit either: if the feature needs a new term or decision, say
    so under Assumptions.
 
+6. When the job folder has `spec-<k>.md` files and a newer `feedback-<k>.md`,
+   a human sent your earlier spec back. The newest feedback is binding: it
+   beats the issue, intake's Scope where they disagree, and the old spec. Read
+   the old spec for what to keep, then write a new `spec.md` that follows the
+   feedback, and say under Assumptions what changed because of it.
+
 ## Write spec.md
 
 ```markdown

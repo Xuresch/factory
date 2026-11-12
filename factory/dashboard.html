@@ -295,7 +295,7 @@ const COLUMNS = [
   { label: 'Build', who: 'builder · codex → claude on UI · gate', stages: ['build', 'gate'] },
   { label: 'Review', who: 'routed reviewers', stages: ['review'] },
   { label: 'Approve', who: 'approver · merge', stages: ['approve', 'merging'] },
-  { label: 'Needs human', who: 'you', stages: ['needs-human'], cls: 'human' },
+  { label: 'Needs human', who: 'you', stages: ['needs-human', 'paused'], cls: 'human' },
   { label: 'Done', who: 'merged · rejected', stages: ['merged', 'rejected'], cls: 'merged-col' },
 ]
 const STAGES = new Set(COLUMNS.flatMap((c) => c.stages))
@@ -389,7 +389,8 @@ function card(job, rounds) {
   const human = job.stage === 'needs-human'
   const done = job.stage === 'merged' || job.stage === 'rejected'
   const [num, ...slug] = job.id.split('-')
-  const flag = human ? '<span class="flag">your call</span>'
+  const flag = job.stage === 'paused' ? `<span class="flag">review ${esc((job.paused || {}).after || '')}</span>`
+    : human ? '<span class="flag">your call</span>'
     : job.stage === 'needs-info' ? '<span class="flag wait">asked author</span>'
     : job.stage === 'rejected' ? '<span class="flag wait">rejected</span>' : ''
   const risk = job.intake?.risk

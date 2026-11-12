@@ -12,6 +12,9 @@ job moves to a Claude builder only when the UX or UI review asks for changes,
 and the code and security reviews never run on the same agent as the builder.
 Intake sizes every job; a large one that divides cleanly is split into
 slices that several builders build in parallel.
+You can pause a job after intake or spec, edit its spec, send it back with
+feedback, change who builds or reviews it, and collect several tickets on a
+feature branch that is merged once they're all done.
 It works with GitHub issues and PRs, or with local markdown tickets in
 `.scratch/` merged locally, whichever `/setup-matt-pocock-skills` set the repo
 up with. Labels are the [mattpocock/skills](https://github.com/mattpocock/skills)

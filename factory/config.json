@@ -4,6 +4,11 @@
   "max_rounds": 3,
   "max_continues": 3,
   "replace_builder_after_partials": 2,
+  "hold": {
+    "after_spec_risk": [
+      "high"
+    ]
+  },
   "max_parallel_builders": 3,
   "base_branch": "main",
   "merge_method": "merge",

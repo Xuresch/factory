@@ -204,6 +204,22 @@ long each stage took. When intake leaves work out, it lists it under
 `## Follow-ups`, and the factory files each one once as a `needs-triage`
 ticket (or GitHub issue), so nothing intake cut is lost.
 
+**A human can steer any job.** A ticket line `**Factory:** hold after spec`
+(or `intake`), or a risk listed in `hold.after_spec_risk` (default `high`),
+pauses the job after that step as `ready-for-human`. The human reviews the
+file, edits it if they want (the edit is binding and marked as theirs), and
+resumes it, sends feedback to redo the step, or rejects it. `job rewind`
+sends a running job back to intake, spec or build with feedback, keeping its
+branch and archiving the old files; `job route-set` pins the builder or a
+reviewer for one job.
+
+**Jobs can target other branches.** A `**Branch:** <name>` line in the ticket,
+or in a local feature's `spec.md`, makes jobs fork from and merge into that
+branch (created from `base_branch` when missing), for a `dev` line or a
+feature branch that collects several tickets. When the last ticket for a
+branch is done, `job finish <branch>` syncs it with `base_branch`, runs the
+full checks and merges it; a conflict or a failure is left for a human.
+
 ## What changed from v1
 
 | v1 | v2 | Asked for by |

@@ -246,8 +246,19 @@ finished:
 - `ESCALATE`: `factory/bin/job advance <id> needs-human`. It marks the PR ready,
   posts the decision on it and labels the issue `ready-for-human`.
 
+**paused.** When `advance` prints `paused`, the job waits for a human after
+intake or spec (the ticket asked for it, or its risk is in `hold.after_spec_risk`).
+Stop working on it and tell the user which file to review. It resumes only
+through the user (see below).
+
+**feature branches.** When `job merge` prints that every ticket for a branch is
+done, run `factory/bin/job finish <branch>`. It syncs the branch with
+`base_branch`, runs the full checks and merges it. If it can't (a conflict,
+failing checks, a dirty checkout), it says so and leaves the branch alone: tell
+the user and point them to `factory/jobs/_features/<branch>.md`.
+
 A job is finished for this run when it reaches `merged`, `rejected`,
-`needs-info` or `needs-human`. Its workers close on their own.
+`needs-info`, `needs-human` or `paused`. Its workers close on their own.
 
 A person can merge a job's PR (or, locally, its branch into the base) by hand at any stage. `factory/bin/job queue`
 then moves the job to `merged`; stop any workers still running for it, as the
@@ -302,6 +313,30 @@ new feature, ask.
 - **What needs them**: run `factory/bin/job queue`. For each `wait` line, say
   what the job is waiting for: the question in `decision.md` for `needs-human`,
   the question in `intake.md` for `needs-info`.
+- **Resuming a paused job** ("spec passt", "weiter", "I edited the spec"):
+  `factory/bin/job resume <id>`, then start the step it prints. Edits the user
+  made to `intake.md` or `spec.md` while it was paused are binding.
+- **Changing course** on a running or waiting job ("anderer Ansatz", "back to
+  the spec", "redo the build with X"): stop the job's running workers, then
+  pass their words verbatim:
+
+  ```bash
+  factory/bin/job rewind <id> <intake|spec|build> <<'EOF'
+  <their words>
+  EOF
+  ```
+
+  and start the step it prints. Feedback on a paused job does the same for the
+  step it paused after (`job feedback <id>`).
+- **Changing who works on a job** ("build it with Claude", "security review on
+  Opus"): `factory/bin/job route-set <id> builder=claude/opus security=claude/opus`
+  (agents `claude` or `codex`, `/model` optional). A pinned builder isn't
+  switched by the UI fallback. It warns when a cross-review lens ends up on the
+  builder's agent; tell the user.
+- **A feature branch** ("bündel das in feature/x", "erst in dev"): the target
+  comes from a `**Branch:** <name>` line in the ticket or, for local tickets,
+  in its feature's `spec.md`; add it there before the job starts. To merge a
+  finished branch: `factory/bin/job finish <branch>`.
 - **Approving a `needs-human` job** ("merge 002", "approve it", "passt so"):
   `factory/bin/job approve <id>`. It merges the way an APPROVE does, with the
   sync and the merge gate; a conflict goes back to the builder. It refuses when
