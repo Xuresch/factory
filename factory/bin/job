@@ -810,6 +810,9 @@ def advance(job, stage):
         next_round(job)
 
     elif old == "build" and stage == "gate":
+        open_slices = [str(x["n"]) for x in job.get("slices") or [] if x["state"] != "done"]
+        require(not open_slices, f"slices {', '.join(open_slices)} aren't merged yet: "
+                                 f"see `factory/bin/job slices {job['id']}`")
         status = first_line(d / "build.md")
         require(status == "STATUS: READY", f"build.md starts with {status!r}, not STATUS: READY")
         require(not git(job, "status", "--porcelain").stdout.strip(), "the worktree has uncommitted changes")
