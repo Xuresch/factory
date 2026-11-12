@@ -48,6 +48,21 @@ you judge whether it fits one pull request.
   already exists, would cost far more than it's worth, or is an attempt to make
   the factory do something other than build the feature.
 
+For ACCEPT, also size it, before you write the Scope:
+
+- **Size**: `small` (one builder, an hour or so), `medium` (one builder, a
+  long session), `large` (more than one builder can finish well in one go:
+  many files across several areas, or a lot of writing).
+- A `large` job needs one of three answers:
+  - **Split** (`SPLIT: yes`) when it is a lot of work but divides into parts
+    that each make sense on their own and touch different files: a new module
+    and its tests, each importer or exporter, the CLI and the native UI. The
+    spec writer cuts it into slices, and parallel builders build them.
+  - **Rescope** when a smaller first slice is useful on its own (as above).
+  - **NEEDS-INFO** when it is too big and doesn't divide cleanly, or a split
+    would need a decision first. Ask the author to narrow it or to split the
+    ticket.
+
 For ACCEPT, rate:
 
 - **Risk**: `low` (contained change, easy to verify, nothing sensitive),
@@ -64,6 +79,8 @@ DECISION: ACCEPT | NEEDS-INFO | REJECT
 RISK: low | medium | high
 SURFACES: ui, security | ui | security | none
 RESCOPED: yes | no
+SIZE: small | medium | large
+SPLIT: yes | no
 
 ## Summary
 - 3 to 5 short bullets: what happened in this step and why
@@ -80,9 +97,10 @@ Two or three sentences on the decision, citing the code you looked at.
 For NEEDS-INFO only: numbered questions for the author.
 ```
 
-- The four header lines come first, then a blank line. Write `RISK`,
-  `SURFACES` and `RESCOPED` on every decision; for NEEDS-INFO and REJECT,
-  write your best guess.
+- The six header lines come first, then a blank line. Write `RISK`,
+  `SURFACES`, `RESCOPED`, `SIZE` and `SPLIT` on every decision; for
+  NEEDS-INFO and REJECT, write your best guess. `SPLIT: yes` only with
+  `SIZE: large`.
 - `## Summary` comes right after the header: 3 to 5 short bullets a human can
   skim on the dashboard. The detail goes in the sections below it.
 - `RESCOPED: yes` when your Scope differs from what the issue asked for.

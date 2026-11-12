@@ -171,10 +171,18 @@ with `/triage` from mattpocock/skills. Waiting jobs trade it for `needs-info` or
 and a job a human rejects gets `wontfix`. The issue stays open; closing it is
 the human's call.
 
-**Cost counts Claude only.** Each Claude worker is its own session, so the job
-script reads top-level transcripts in the main checkout's and the worktree's
-project folders. Codex runs on the ChatGPT plan and isn't priced. An unpriced
-model is skipped with a warning instead of stopping the command.
+**Cost counts both.** Claude workers are read from Claude Code's transcripts, Codex workers from the session files of every Codex home, including the accounts Orca launches them with. Both are priced with `prices_usd_per_mtok`, and the dashboard breaks each job down by role, agent and model.
+
+**Big jobs are sized at the door.** Intake writes `SIZE` and, for a large
+job, either rescopes it, asks the author to narrow it, or sets `SPLIT: yes`
+when the work divides cleanly. The spec writer then cuts it into 2 to 7
+slices, each with the paths it owns, the slices it needs, and its criteria.
+Up to `max_parallel_builders` builders work at once, each in its own worktree;
+`job slice-done` refuses a slice that changed files it doesn't own, merges the
+rest into the job branch as they finish, and starts dependent slices only
+after their needs are merged. The merged branch then goes through one gate and
+one set of reviews, and later rounds use a single builder. A slice, like a
+whole build, can report PARTIAL and continue in place.
 
 ## What changed from v1
 

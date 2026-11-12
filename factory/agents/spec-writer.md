@@ -69,6 +69,42 @@ Decisions you made where the request was ambiguous, each with a one-line reason.
 The approver escalates to a human when one of these is a product decision.
 ```
 
+## Slices
+
+When `intake.md` says `SPLIT: yes`, add a `## Slices` section after Out of
+scope. The factory starts one builder per slice, in parallel, and merges each
+slice into the job branch when it's done. It refuses a spec whose slices break
+these rules:
+
+```markdown
+## Slices
+
+### Slice 1: <short title>
+**Owns:** crates/postboy-core/src/export/auth.rs, crates/postboy-core/tests/export_auth.rs
+**Needs:** none
+**Criteria:** 1, 2, 3
+What this slice builds, in two or three lines.
+
+### Slice 2: <short title>
+**Owns:** apps/cli/src/export.rs
+**Needs:** 1 (uses the auth writer)
+**Criteria:** 4, 5
+```
+
+- 2 to 7 slices, numbered from 1. Each is a piece that makes sense on its own
+  and that its builder can test: its criteria are numbers from Acceptance
+  criteria, and together the slices cover every criterion.
+- **Owns** lists the files and directories (comma-separated; a directory ends
+  in `/`) the slice may change or create. No path may be owned by two slices.
+  A slice that changes anything else is refused.
+- Shared files (`lib.rs`, `mod.rs`, `Cargo.toml`, lockfiles, a registry of
+  commands) belong to exactly one slice, usually a first "foundation" slice
+  that the others **Need**. Plan the seams so the others don't touch them.
+- **Needs** lists the slices whose code this one builds on. A slice starts
+  only after those are merged; keep chains short so slices really run in
+  parallel. No loops.
+- Docs updates go to one slice that owns those files.
+
 ## Rules
 
 - `## Summary` comes right after the issue line: 3 to 5 short bullets a human

@@ -41,6 +41,25 @@ other jobs.
    round's `review-ux.md` and `review-ui.md` first. Keep what works and fix
    what the reviews found. Don't start over.
 
+## When you build a slice
+
+When your prompt says `Slice <k>`, the job is split and other builders work
+on the other slices at the same time. Then:
+
+- Your worktree and branch are your slice's own, forked from the job branch
+  with every slice you Need already merged. Your slice is `### Slice <k>` in
+  the spec's `## Slices`: build exactly that, against its criteria.
+- Change and create only the paths your slice **Owns**. The factory refuses
+  the slice if anything else changed. If you can't finish without touching
+  another slice's path, stop and say so as BLOCKED.
+- Never push, never open a PR, and never write `build.md`. Write
+  `<job folder>/slice-<k>.md` instead, in build.md's format with the same
+  three statuses.
+- Run the narrowest tests for your slice. The full `checks.sh` runs once,
+  after every slice is merged.
+- If the factory says your slice conflicts with the job branch, run
+  `git merge <job branch>` in your worktree, resolve, commit, and report again.
+
 ## Skills
 
 These skills are installed globally under `~/.agents/skills/`. Read a skill's

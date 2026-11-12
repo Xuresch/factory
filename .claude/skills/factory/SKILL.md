@@ -200,6 +200,31 @@ gate's `round-<N-1>/checks.md`, the reviews in `round-<N-1>/`, or
   `needs-human` itself and says so.
 - `STATUS: BLOCKED`: `factory/bin/job advance <id> needs-human`.
 
+**build, split into slices.** When intake said `SPLIT: yes`, `job advance
+<id> build` has read the slices from `spec.md`; `factory/bin/job slices <id>`
+lists them. If it refuses because the slices break a rule, `send` the refusal
+to the spec worker and run `advance <id> build` again when it reports. In round
+1, build the slices instead of one builder:
+
+1. For each `slice-start` command `job slices` prints, run it. It makes the
+   slice's worktree and branch and prints its port. Then start a
+   `builder-s<k>` worker (`factory/bin/job worker <id> builder-s<k>`) with
+   `<header> Slice <k>. Build round 1. Port: <port>.`, where `<header>` has
+   the slice's worktree and branch (`<worktree>-s<k>`, `<branch>-s<k>`), not
+   the job's. Record its dispatch as `builder-s<k>`. Start every ready slice in
+   one message so they run in parallel.
+2. When a slice worker reports, run `factory/bin/job slice-done <id> <k>`:
+   - it prints `continue`: `send` the worker the line it prints;
+   - it refuses (files outside the slice, a conflict): `send` the worker the
+     refusal; if it refuses again after that, tell the user;
+   - it lists slices to start: start them as in step 1;
+   - `all ... slices merged`: run `factory/bin/job advance <id> gate` and go
+     to **gate**;
+   - `needs-human`: the job is parked; stop its other slice workers.
+
+Later rounds, after the gate or reviews, use one builder for the whole job:
+start a new `builder` worker told it takes over from the slice builders.
+
 **gate.** Run `factory/bin/gate <id>`. It prints `GATE: PASS` or `GATE: FAIL`.
 
 - PASS: `factory/bin/job advance <id> review` and go to **review**.

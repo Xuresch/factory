@@ -10,6 +10,8 @@ Every agent runs as an [Orca](https://github.com/stablyai/orca) worker. Codex
 builds; Claude Code does intake, the spec, the reviews and the final call. A
 job moves to a Claude builder only when the UX or UI review asks for changes,
 and the code and security reviews never run on the same agent as the builder.
+Intake sizes every job; a large one that divides cleanly is split into
+slices that several builders build in parallel.
 It works with GitHub issues and PRs, or with local markdown tickets in
 `.scratch/` merged locally, whichever `/setup-matt-pocock-skills` set the repo
 up with. Labels are the [mattpocock/skills](https://github.com/mattpocock/skills)

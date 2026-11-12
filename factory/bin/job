@@ -14,6 +14,9 @@ Usage:
   job merge <job>                APPROVE → sync with the base branch, gate, merge (the PR, or locally)
   job reply <issue>              post your words (stdin) on the issue as the operator, not the factory
   job continue <job>             build.md says STATUS: PARTIAL → the builder goes on, same round
+  job slices <job>               a split job's slices and which to start next
+  job slice-start <job> <k>      worktree and branch for slice k (when its Needs are merged)
+  job slice-done <job> <k>       slice k reported: merge it into the job branch, or continue/park it
   job feedback <job>             needs-human → build, with your feedback (stdin) as feedback-<k>.md
   job reject <job>               needs-info or needs-human → rejected, with your reason (stdin) as rejection.md
   job agents <job> <json>        record the routed agent set (called by factory/bin/route)
@@ -642,6 +645,8 @@ def sync(job):
             "risk": h.get("RISK"),
             "surfaces": [s.strip() for s in h.get("SURFACES", "").split(",")
                          if s.strip() and s.strip() != "none"],
+            "size": h.get("SIZE"),
+            "split": h.get("SPLIT") == "yes",
         }
     if job["round"]:
         rd = round_dir(job)
@@ -800,6 +805,8 @@ def advance(job, stage):
 
     elif old == "spec":
         require((d / "spec.md").exists(), "spec.md doesn't exist")
+        if (job["intake"] or {}).get("split"):
+            job["slices"] = parse_slices(d / "spec.md")
         next_round(job)
 
     elif old == "build" and stage == "gate":
@@ -906,10 +913,247 @@ def advance(job, stage):
     if stage in TERMINAL and Path(job["worktree"]).exists():
         run(["git", "worktree", "remove", "--force", job["worktree"]])
         run(["git", "branch", "-D", job["branch"]], check=False)
+    if stage in TERMINAL:  # slices left behind by a blocked split
+        for s in job.get("slices") or []:
+            if Path(slice_worktree(job, s["n"])).exists():
+                run(["git", "worktree", "remove", "--force", slice_worktree(job, s["n"])], check=False)
+            run(["git", "branch", "-D", slice_branch(job, s["n"])], check=False)
 
     job["stage"] = stage
     job["ended"] = now() if stage in TERMINAL | WAITING else None
     return job
+
+
+# ---- Slices: one job, several builders at once ------------------------------
+#
+# When intake says SPLIT: yes, spec.md has a `## Slices` section:
+#
+#   ### Slice 1: <title>
+#   Owns: crates/a/src/x.rs, crates/a/src/x/
+#   Needs: none            (or: 1, 2)
+#   Criteria: 1, 2, 5
+#   <what this slice builds>
+#
+# Each slice gets its own builder, worktree (.worktrees/<job>-s<k>) and branch
+# (factory/<job>-s<k>), forked from the job branch once every slice it Needs is
+# merged. A slice may change only the paths it Owns, and no two slices own the
+# same path, so slices merge into the job branch without stepping on each
+# other. When the last one is merged, the job has one branch and one build.md,
+# and goes through the gate and the reviews as a whole. Later rounds use one
+# builder again.
+
+MAX_SLICES = 7  # each slice's builder gets its own port: base + step*n + 2 + k
+
+
+def owns_overlap(a, b):
+    a, b = a.rstrip("/"), b.rstrip("/")
+    return a == b or a.startswith(b + "/") or b.startswith(a + "/")
+
+
+def parse_slices(spec):
+    body = section(spec, "Slices")
+    require(body, "intake asked for a split, but spec.md has no `## Slices` section")
+    slices = []
+    for block in re.split(r"^### Slice ", body, flags=re.M)[1:]:
+        head, _, text = block.partition("\n")
+        m = re.match(r"(\d+):\s*(.+)", head)
+        require(m, f"slice heading {head!r} isn't `### Slice <k>: <title>`")
+
+        def field(name):
+            f = re.search(rf"^\**{name}:\**[ \t]*(.*)$", text, re.M)
+            return f.group(1).strip() if f else ""
+
+        owns = [p.strip().strip("`").strip() for p in field("Owns").split(",") if p.strip()]
+        slices.append({
+            "n": int(m.group(1)), "title": m.group(2).strip(), "owns": owns,
+            "needs": [int(x) for x in re.findall(r"\d+", field("Needs").split("(")[0])],
+            "criteria": [int(x) for x in re.findall(r"\d+", field("Criteria"))],
+            "state": "pending", "fork": None,
+        })
+    numbers = [s["n"] for s in slices]
+    require(2 <= len(slices) <= MAX_SLICES, f"spec.md has {len(slices)} slices; a split needs 2 to {MAX_SLICES}")
+    require(sorted(numbers) == list(range(1, len(slices) + 1)), f"slices must be numbered 1..{len(slices)}")
+    for s in slices:
+        require(s["owns"], f"slice {s['n']} has no Owns line")
+        bad = [n for n in s["needs"] if n not in numbers or n == s["n"]]
+        require(not bad, f"slice {s['n']} needs unknown slices {bad}")
+    for i, a in enumerate(slices):
+        for b in slices[i + 1:]:
+            clash = [(x, y) for x in a["owns"] for y in b["owns"] if owns_overlap(x, y)]
+            if clash:
+                raise Refused(f"slices {a['n']} and {b['n']} both own {clash[0][0]} / {clash[0][1]}")
+    # Needs must not loop.
+    graph = {s["n"]: s["needs"] for s in slices}
+    done, stack = set(), set()
+
+    def visit(n):
+        require(n not in stack, f"slice needs loop through slice {n}")
+        if n in done:
+            return
+        stack.add(n)
+        for m_ in graph[n]:
+            visit(m_)
+        stack.discard(n)
+        done.add(n)
+
+    for n in graph:
+        visit(n)
+    return slices
+
+
+def slice_of(job, k):
+    hits = [s for s in job.get("slices") or [] if s["n"] == int(k)]
+    require(hits, f"{job['id']} has no slice {k}")
+    return hits[0]
+
+
+def slice_branch(job, k):
+    return f"{job['branch']}-s{k}"
+
+
+def slice_worktree(job, k):
+    return f"{job['worktree']}-s{k}"
+
+
+def slice_port(job, k):
+    n = int(job["id"].split("-")[0])
+    return CONFIG["ports"]["base"] + CONFIG["ports"]["step"] * n + 2 + int(k)
+
+
+def ready_slices(job):
+    states = {s["n"]: s["state"] for s in job["slices"]}
+    running = sum(1 for v in states.values() if v == "running")
+    free = CONFIG.get("max_parallel_builders", 3) - running
+    ready = [s for s in job["slices"] if s["state"] == "pending" and all(states[n] == "done" for n in s["needs"])]
+    return ready[:max(free, 0)]
+
+
+def slices_status(job):
+    lines = [f"slice {s['n']} {s['state']}: {s['title']}" for s in job["slices"]]
+    nxt = ready_slices(job)
+    if nxt:
+        lines.append("start: " + ", ".join(f"factory/bin/job slice-start {job['id']} {s['n']}" for s in nxt))
+    return "\n".join(lines)
+
+
+def cmd_slices(job):
+    require(job.get("slices"), f"{job['id']} isn't split into slices")
+    print(slices_status(job))
+
+
+def cmd_slice_start(job, k):
+    require(job["stage"] == "build" and job.get("slices"), f"{job['id']} isn't building slices")
+    s = slice_of(job, k)
+    require(s["state"] == "pending", f"slice {k} is {s['state']}, not pending")
+    require(s in ready_slices(job), f"slice {k} waits for slices {s['needs']} or a free builder "
+                                    f"(max_parallel_builders {CONFIG.get('max_parallel_builders', 3)})")
+    branch, where = slice_branch(job, k), slice_worktree(job, k)
+    run(["git", "worktree", "add", "-b", branch, where, job["branch"]])
+    s["fork"] = run(["git", "rev-parse", job["branch"]]).stdout.strip()
+    s["state"] = "running"
+    save(job)
+    print(f"{job['id']}: slice {k} worktree {where} on {branch}, port {slice_port(job, k)}; "
+          f"start the builder-s{k} worker (`factory/bin/job worker {job['id']} builder-s{k}`)")
+
+
+def changed_outside(job, s):
+    names = run(["git", "diff", "--name-only", f"{s['fork']}...HEAD"], cwd=slice_worktree(job, s["n"])).stdout.split()
+    return [f for f in names if not any(owns_overlap(f, o) or f.startswith(o.rstrip("/") + "/") for o in s["owns"])]
+
+
+def composite_build_md(job, status, blocked=()):
+    d = job_dir(job["id"])
+    spec_title = (first_line(d / "spec.md") or "").lstrip("# ").strip()
+    parts = [f"STATUS: {status}", "", f"# Build: {spec_title} ({len(job['slices'])} slices)", "", "## Summary",
+             f"- Built in {len(job['slices'])} slices by parallel builders, merged into {job['branch']}."]
+    for s in job["slices"]:
+        parts.append(f"- Slice {s['n']} ({s['state']}): {s['title']}")
+    if blocked:
+        def reason(s):
+            f = d / f"slice-{s['n']}.md"
+            if not f.exists():
+                return f"Never started: it waits on slice(s) {', '.join(map(str, s['needs']))}."
+            return section(f, "Blocked") or section(f, "Remaining") or "(no reason given)"
+        parts += ["", "## Blocked"] + [f"Slice {s['n']}, {s['title']}:\n\n{reason(s)}" for s in blocked]
+    parts += ["", "## Slices"]
+    for s in job["slices"]:
+        f = d / f"slice-{s['n']}.md"
+        body = f.read_text().split("\n", 1)[1].strip() if f.exists() else "(no slice file)"
+        body = re.sub(r"^(#+) ", lambda m: "#" * min(len(m.group(1)) + 2, 6) + " ", body, flags=re.M)
+        parts += ["", f"### Slice {s['n']}: {s['title']}", "", body]
+    order = ", ".join(str(n) for n in job.get("slice_merge_order", []))
+    parts += ["", "## Log", f"### Round {job['round']}", f"Slices merged in order: {order or 'none'}."]
+    (d / "build.md").write_text("\n".join(parts) + "\n")
+
+
+def finish_slices(job):
+    """Every slice is done or blocked and none runs: hand the job on."""
+    blocked = [s for s in job["slices"] if s["state"] == "blocked"]
+    if blocked:
+        composite_build_md(job, "BLOCKED", blocked)
+        save(advance(sync(job), "needs-human"))
+        print(f"{job['id']}: needs-human: slices {', '.join(str(s['n']) for s in blocked)} are blocked")
+        return
+    composite_build_md(job, "READY")
+    if GITHUB:
+        git(job, "push", "-u", "origin", job["branch"])
+        if not gh_json("pr", "list", "--head", job["branch"], "--state", "open", "--json", "number"):
+            title = (first_line(job_dir(job["id"]) / "spec.md") or job["title"]).lstrip("# ").strip()
+            gh("pr", "create", "--draft", "--base", BASE, "--head", job["branch"], "--title", title,
+               "--body", f"Closes #{job['issue']}\n\nBuilt in {len(job['slices'])} slices; see build.md.")
+    save(job)
+    print(f"{job['id']}: all {len(job['slices'])} slices merged into {job['branch']}; "
+          f"run `factory/bin/job advance {job['id']} gate`")
+
+
+def cmd_slice_done(job, k):
+    """A slice builder reported. Merge it, send it back, or park it; then say what's next."""
+    require(job["stage"] == "build" and job.get("slices"), f"{job['id']} isn't building slices")
+    s = slice_of(job, k)
+    require(s["state"] == "running", f"slice {k} is {s['state']}, not running")
+    d = job_dir(job["id"])
+    status = first_line(d / f"slice-{k}.md")
+    if status == "STATUS: PARTIAL":
+        counts = job.setdefault("continues", {})
+        key = f"{job['round']}-s{k}"
+        counts[key] = counts.get(key, 0) + 1
+        limit = CONFIG.get("max_continues", 3)
+        if counts[key] <= limit:
+            save(job)
+            print(f"{job['id']}: slice {k} continue {counts[key]}/{limit}: resume builder-s{k} with "
+                  f"`Continue: read slice-{k}.md ## Remaining, finish it, and update slice-{k}.md.`")
+            return
+        s["state"] = "blocked"
+    elif status == "STATUS: BLOCKED":
+        s["state"] = "blocked"
+    else:
+        require(status == "STATUS: READY", f"slice-{k}.md starts with {status!r}, not READY, PARTIAL or BLOCKED")
+        where = slice_worktree(job, k)
+        require(not run(["git", "status", "--porcelain"], cwd=where).stdout.strip(),
+                f"slice {k}'s worktree has uncommitted changes")
+        require(int(run(["git", "rev-list", "--count", f"{s['fork']}..HEAD"], cwd=where).stdout) > 0,
+                f"slice {k} has no commits")
+        outside = changed_outside(job, s)
+        require(not outside, f"slice {k} changed files it doesn't own ({', '.join(s['owns'])}): "
+                             + ", ".join(outside[:10]) + ". Move that work to the slice that owns it, or revert it.")
+        merged = git(job, "merge", "--no-ff", "-m", f"Merge slice {k}: {s['title']}", slice_branch(job, k), check=False)
+        if merged.returncode != 0:
+            git(job, "merge", "--abort", check=False)
+            raise Refused(f"slice {k} conflicts with {job['branch']}. In its worktree, run "
+                          f"`git merge {job['branch']}`, resolve, commit, and report again.")
+        run(["git", "worktree", "remove", "--force", where])
+        run(["git", "branch", "-D", slice_branch(job, k)], check=False)
+        s["state"] = "done"
+        job.setdefault("slice_merge_order", []).append(int(k))
+    save(job)
+    if any(x["state"] == "running" for x in job["slices"]) or ready_slices(job):
+        print(f"{job['id']}: slice {k} {s['state']}\n{slices_status(job)}")
+        return
+    pending = [x for x in job["slices"] if x["state"] == "pending"]
+    if pending:  # they wait on a blocked slice
+        for x in pending:
+            x["state"] = "blocked"
+    finish_slices(job)
 
 
 # ---- Commands --------------------------------------------------------------
@@ -1162,7 +1406,7 @@ def role_entry(job, role):
     if role in CONFIG["stages"]:
         return CONFIG["stages"][role]
     require(job["agents"], f"{job['id']} isn't routed yet")
-    if role == "builder":
+    if role == "builder" or re.fullmatch(r"builder-s\d+", role):
         return job["agents"]["builder"]
     lens = role.removeprefix("reviewer-")
     require(role.startswith("reviewer-") and lens in job["agents"]["reviewers"],
@@ -1173,9 +1417,11 @@ def role_entry(job, role):
 def cmd_worker(job, role):
     """The flags for `orca orchestration worker-start`, and the brief file."""
     entry = role_entry(job, role)
-    agent_file = "spec-writer" if role == "spec" else role
-    # intake runs before the worktree exists; everyone else works in it.
-    where = "current" if role == "intake" else f"path:{job['worktree']}"
+    agent_file = "spec-writer" if role == "spec" else "builder" if role.startswith("builder-s") else role
+    # intake runs before the worktree exists; a slice builder works in its own.
+    where = ("current" if role == "intake"
+             else f"path:{slice_worktree(job, role.removeprefix('builder-s'))}" if role.startswith("builder-s")
+             else f"path:{job['worktree']}")
     flags = f"--agent {entry['agent']}" + (f" --model {entry['model']}" if entry.get("model") else "")
     print(f"{flags} --worktree {where}	{FACTORY / 'agents' / (agent_file + '.md')}")
 
@@ -1236,6 +1482,12 @@ def main(argv):
                       "start a new builder worker")
         elif cmd == "merge" and len(args) == 1:
             cmd_merge(resolve(args[0]))
+        elif cmd == "slices" and len(args) == 1:
+            cmd_slices(resolve(args[0]))
+        elif cmd == "slice-start" and len(args) == 2:
+            cmd_slice_start(resolve(args[0]), args[1])
+        elif cmd == "slice-done" and len(args) == 2:
+            cmd_slice_done(resolve(args[0]), args[1])
         elif cmd == "continue" and len(args) == 1:
             cmd_continue(resolve(args[0]))
         elif cmd == "feedback" and len(args) == 1:
