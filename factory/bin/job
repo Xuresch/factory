@@ -466,13 +466,23 @@ def transcripts(job):
         yield from d.glob("*/subagents/agent-*.jsonl")
 
 
+_warned = set()
+
+
+def warn_unpriced(model):
+    if model not in _warned:
+        _warned.add(model)
+        print(f"job: no price for {model} in config.json prices_usd_per_mtok; not counted",
+              file=sys.stderr)
+
+
 def cost_usd(job):
     """API-equivalent cost of every Claude session whose brief names this job's folder.
 
     Every factory brief contains `Job folder: <path>/`, which ties a transcript
-    to its job across sessions. Codex workers aren't counted: they run on the
-    ChatGPT plan, with no per-token price. A model with no price in config.json
-    is skipped with a warning instead of failing the command.
+    to its job across sessions. Codex sessions are counted by codex_cost_usd.
+    A model with no price in config.json is skipped with a warning instead of
+    failing the command.
     """
     needle = f"Job folder: {job_dir(job['id'])}/"
     prices = CONFIG["prices_usd_per_mtok"]
@@ -500,8 +510,7 @@ def cost_usd(job):
             if tokens == 0:
                 continue
             if model not in prices:
-                print(f"job: no price for {model} in config.json prices_usd_per_mtok; not counted",
-                      file=sys.stderr)
+                warn_unpriced(model)
                 continue
             p = prices[model]
             split = u.get("cache_creation") or {}
@@ -513,6 +522,80 @@ def cost_usd(job):
                       + write_1h * p["cache_write_1h"]
                       + u.get("cache_read_input_tokens", 0) * p["cache_read"]) / 1e6
     return round(total, 2)
+
+
+# ---- Cost from Codex sessions ----------------------------------------------
+
+
+def codex_homes():
+    """Where Codex writes sessions: $CODEX_HOME or ~/.codex, and every account
+    Orca launches Codex workers with (~/.config/orca/codex-accounts/<id>/home)."""
+    homes = [Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))]
+    homes += sorted((Path.home() / ".config" / "orca" / "codex-accounts").glob("*/home"))
+    homes += [Path(p).expanduser() for p in CONFIG.get("codex_homes", [])]
+    return list(dict.fromkeys(homes))
+
+
+def codex_sessions(job):
+    """Rollout files from the job's start date on: sessions/YYYY/MM/DD/rollout-*.jsonl."""
+    start = job["started"][:10]
+    for home in codex_homes():
+        for path in (home / "sessions").glob("*/*/*/rollout-*.jsonl"):
+            day = "-".join(path.parts[-4:-1])
+            if day >= start:
+                yield path
+
+
+def codex_cost_usd(job):
+    """API-equivalent cost of every Codex session whose brief names this job's folder.
+
+    A rollout starts with session_meta, then the task, which holds the brief's
+    `Job folder: <path>/`. Its token_count events carry running totals for the
+    whole session, follow-up rounds included, so the last one counts. A session
+    found twice (two homes, a resumed file) counts once, at its largest total.
+    input_tokens includes cached and cache-write tokens; output_tokens includes
+    reasoning.
+    """
+    needle = f"Job folder: {job_dir(job['id'])}/"
+    prices = CONFIG["prices_usd_per_mtok"]
+    sessions = {}
+    for path in codex_sessions(job):
+        sid, model, total, ours = path.stem, None, None, False
+        with path.open() as f:
+            for i, line in enumerate(f):
+                if not ours and i > 60:
+                    break
+                if not ours and needle in line:
+                    ours = True
+                if '"session_meta"' in line[:80] or '"turn_context"' in line[:80] or '"token_count"' in line:
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    p = entry.get("payload") or {}
+                    if entry.get("type") == "session_meta":
+                        sid = p.get("session_id") or p.get("id") or sid
+                    elif entry.get("type") == "turn_context":
+                        model = p.get("model") or model
+                    elif p.get("type") == "token_count" and p.get("info"):
+                        total = p["info"].get("total_token_usage") or total
+        if ours and total:
+            best = sessions.get(sid)
+            if not best or total.get("total_tokens", 0) > best[1].get("total_tokens", 0):
+                sessions[sid] = (model, total)
+    cost = 0.0
+    for model, u in sessions.values():
+        if model not in prices:
+            warn_unpriced(model)
+            continue
+        p = prices[model]
+        cached = u.get("cached_input_tokens", 0)
+        written = u.get("cache_write_input_tokens", 0)
+        fresh = u.get("input_tokens", 0) - cached - written
+        cost += (fresh * p["input"] + cached * p["cached_input"]
+                 + written * p.get("cache_write", p["input"])
+                 + u.get("output_tokens", 0) * p["output"]) / 1e6
+    return round(cost, 2)
 
 
 # ---- Sync: fields derived from files ---------------------------------------
@@ -540,7 +623,9 @@ def sync(job):
                 line = first_line(rd / f"review-{r}.md")
                 m = re.fullmatch(r"VERDICT:\s*(PASS|CHANGES)", line or "")
                 job["reviews"][r] = m.group(1) if m else ("pending" if line is None else "invalid")
-    job["cost_usd"] = cost_usd(job)
+    claude, codex = cost_usd(job), codex_cost_usd(job)
+    job["cost_by_agent"] = {"claude": claude, "codex": codex}
+    job["cost_usd"] = round(claude + codex, 2)
     return job
 
 
@@ -1045,15 +1130,17 @@ def elapsed(job):
 
 def cmd_summary(args):
     jobs = [resolve(a) for a in args] if args else all_jobs()
-    rows = [("job", "issue", "stage", "round", "pr", "cost", "time")]
+    rows = [("job", "issue", "stage", "round", "pr", "claude", "codex", "cost", "time")]
     for j in jobs:
         sync(j)  # for display only; the orchestrator owns the saved state
         rows.append((j["id"], f"#{j['issue']}" if GITHUB else str(j["issue"]), j["stage"], str(j["round"]),
-                     f"#{j['pr']}" if j["pr"] else "-", f"${j['cost_usd']:.2f}", elapsed(j)))
+                     f"#{j['pr']}" if j["pr"] else "-",
+                     f"${j['cost_by_agent']['claude']:.2f}", f"${j['cost_by_agent']['codex']:.2f}",
+                     f"${j['cost_usd']:.2f}", elapsed(j)))
     widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
     for r in rows:
         print("  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip())
-    print(f"total ${sum(j['cost_usd'] for j in jobs):.2f} (API-equivalent, Claude workers only; Codex runs on its plan and isn't counted)")
+    print(f"total ${sum(j['cost_usd'] for j in jobs):.2f} (API-equivalent at config.json prices; on a subscription it shows relative spend, not your bill)")
 
 
 def main(argv):
