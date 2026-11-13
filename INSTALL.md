@@ -108,6 +108,14 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
 - `worktree_root`: leave it `null` (worktrees in `.worktrees/`), or set a path
   such as `~/.factory-worktrees` when a tool in the project scans the whole
   directory without reading `.gitignore` (see Stack notes).
+- `worktree_cache_dirs`: build directories `env.sh` gives each worktree, as
+  paths in the main checkout with `{name}` for the worktree's folder, such as
+  `"target/factory-jobs/{name}"` for Rust. The factory deletes them with the
+  worktree. Leave it `[]` when builds don't keep a directory per worktree.
+- `review_skip`: leave it `{}`, or let a ux or ui PASS carry over to the next
+  round when that round changes none of the lens's files:
+  `{"ui": {"paths": ["src/components/*"], "except": ["*.test.tsx"]}}`. Code
+  and security reviews always run.
 - `labels`: leave them. They are only the fallback; the factory reads the real
   strings from `docs/agents/triage-labels.md`.
 - Leave `concurrency`, `max_rounds`, `stages`, `builder`, `routing`,
@@ -194,7 +202,7 @@ at the first: each failing gate costs the builder a round.
 
 | Stack | Per worktree | In `env.sh` / `checks.sh` |
 |---|---|---|
-| Rust | `target/`, many GB | `CARGO_TARGET_DIR` shared in the main checkout, `CARGO_BUILD_JOBS`, `CARGO_INCREMENTAL=0`, `CARGO_PROFILE_DEV_DEBUG=line-tables-only`; one target dir per pinned toolchain; `cargo test --no-fail-fast` (otherwise the first failing test binary hides the rest) |
+| Rust | `target/`, many GB | `CARGO_TARGET_DIR` in the main checkout, one per worktree (`target/factory-jobs/<worktree>`, listed in `worktree_cache_dirs`): worktrees sharing one dir overwrite each other's path crates. `CARGO_BUILD_JOBS`, `CARGO_INCREMENTAL=0`, `CARGO_PROFILE_DEV_DEBUG=line-tables-only`; one target dir per pinned toolchain; `cargo test --no-fail-fast` (otherwise the first failing test binary hides the rest) |
 | Go | nothing big | `GOCACHE` and `GOMODCACHE` are global already; `go vet ./... && go test -count=1 ./...` (`-count=1` so the gate never reports a cached result) |
 | pnpm | `node_modules`, hard links | `pnpm install --frozen-lockfile --prefer-offline` in `checks.sh`; the store is shared already |
 | bun | `node_modules` | `bun install --frozen-lockfile`; the cache is global already |

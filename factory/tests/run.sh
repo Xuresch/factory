@@ -25,12 +25,12 @@ new_repo() {  # new_repo <name>: cd into a fresh repo with the factory installed
   cat > "$dir/bin/orca" <<'EOF'
 #!/usr/bin/env bash
 log="$(dirname "$0")/calls.log"; n=$(( $(wc -l < "$log" 2>/dev/null || echo 0) + 1 ))
-[[ " $* " == *" --spec-file - "* ]] && cat > /dev/null
+[[ " $* " == *" --spec-file - "* ]] && cat >> "$(dirname "$0")/specs.log"
 echo "$*" >> "$log"
 echo "{\"ok\":true,\"result\":{\"dispatchId\":\"ctx_fake$n\",\"state\":\"ready\"}}"
 EOF
   chmod +x "$dir/bin/orca"
-  export ORCA_CLI_COMMAND="$dir/bin/orca" CALLS="$dir/bin/calls.log"
+  export ORCA_CLI_COMMAND="$dir/bin/orca" CALLS="$dir/bin/calls.log" SPECS="$dir/bin/specs.log"
   cd "$dir/repo" || exit 1
   git init -q -b master && git config user.email t@t && git config user.name t
   mkdir -p factory && cp -r "$FACTORY_SRC/bin" "$FACTORY_SRC/agents" "$FACTORY_SRC/config.json" factory/
@@ -39,11 +39,12 @@ EOF
   python3 - <<'EOF'
 import json
 p = "factory/config.json"; c = json.load(open(p))
-c.update(base_branch="master", concurrency=3, notify="", tracker="local")
+c.update(base_branch="master", concurrency=3, notify="", tracker="local",
+         worktree_cache_dirs=["target/factory-jobs/{name}", "target/factory-jobs/{name}-native"])
 json.dump(c, open(p, "w"), indent=2)
 EOF
   mkdir -p .scratch/f/issues
-  printf '/factory/jobs/\n/.worktrees/\n' > .gitignore
+  printf '/factory/jobs/\n/.worktrees/\n/target/\n' > .gitignore
   echo base > x.txt
 }
 
@@ -106,8 +107,11 @@ t_local_happy_path() {
   build_commit "$id" y.txt y; to_review "$id"
   review "$id" 1 code PASS
   J advance "$id" approve >/dev/null; printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"
+  mkdir -p "target/factory-jobs/$id/debug" "target/factory-jobs/$id-native" target/factory/debug
   local out; out=$(J merge "$id")
   check "merge reports" "$out" "merged factory/$id into master" &&
+  check "job's target dirs freed" "[$(ls -A target/factory-jobs)]" "[]" &&
+  check "shared target kept" "$(ls target/factory)" "debug" &&
   check "ticket done" "$(status_of 01)" "done" &&
   check "master has the work" "$(git show master:y.txt)" "y" &&
   check "history" "$(field "$id" "[h['stage'] for h in d['history']]")" "'review', 'approve', 'merging', 'merged'" &&
@@ -205,12 +209,47 @@ t_slices() {
   printf 'STATUS: READY\n\n## Self-review\nok\n' > "factory/jobs/$id/slice-1.md"
   check "outside owns refused" "$(J slice-done "$id" 1 2>&1)" "changed files it doesn't own"
   (cd ".worktrees/$id-s1" && git checkout -q HEAD~1 -- x.txt && git commit -qam fix)
+  mkdir -p "target/factory-jobs/$id-s1" "target/factory-jobs/$id"
   check "slice 1 merged" "$(J slice-done "$id" 1)" "slice 1 done"
+  [[ "$(ls target/factory-jobs)" == "$id" ]] || { echo "    FAIL: slice target dir not freed, or job dir gone: $(ls target/factory-jobs)"; return 1; }
   J slice-start "$id" 2 >/dev/null
   (cd ".worktrees/$id-s2" && test -f a/1 && echo 2 > b/2 && git add -A && git commit -qm s2)
   printf 'STATUS: READY\n\n## Self-review\nok\n' > "factory/jobs/$id/slice-2.md"
   check "all merged" "$(J slice-done "$id" 2)" "all 2 slices merged" &&
   check "gate passes" "$(J advance "$id" gate && factory/bin/gate "$id")" "GATE: PASS"
+}
+
+t_blocked_slice_resumes_after_feedback() {
+  new_repo slice-resume; mkdir -p a b c; touch a/.k b/.k c/.k; ticket 01 Big; commit_all
+  local id; id=$(J create f/01)
+  intake "$id" low none; sed -i 's/SPLIT: no/SPLIT: yes/; s/SIZE: small/SIZE: large/' "factory/jobs/$id/intake.md"
+  factory/bin/route "$id" >/dev/null; J advance "$id" spec >/dev/null
+  printf '# Big\n\n## Slices\n### Slice 1: A\n**Owns:** a/\n**Needs:** none\n\n### Slice 2: B\n**Owns:** b/\n**Needs:** 1 (parsers)\n\n### Slice 3: C\n**Owns:** c/\n**Needs:** 2 (mapping, see 7), 1 (parsers)\n' > "factory/jobs/$id/spec.md"
+  J advance "$id" build >/dev/null
+  check "needs keep every number" "$(field "$id" "[s['needs'] for s in d['slices']]")" "[[], [1], [2, 1]]" || return 1
+  J slice-start "$id" 1 >/dev/null
+  (cd ".worktrees/$id-s1" && echo 1 > a/1 && git add -A && git commit -qm s1)
+  printf 'STATUS: READY\n\n## Self-review\nok\n' > "factory/jobs/$id/slice-1.md"; J slice-done "$id" 1 >/dev/null
+  J slice-start "$id" 2 >/dev/null
+  (cd ".worktrees/$id-s2" && echo half > b/2 && git add -A && git commit -qm "s2 half")
+  printf 'STATUS: BLOCKED\n\n## Blocked\nWhich format?\n' > "factory/jobs/$id/slice-2.md"
+  check "parks the job" "$(J slice-done "$id" 2)" "needs-human: slices 2, 3 are blocked" || return 1
+  local out; out=$(echo 'Use JSON.' | J feedback "$id")
+  check "feedback lists the slices" "$out" "slice-start $id 2 (resumes on its branch)" &&
+  check "states" "$(field "$id" "[s['state'] for s in d['slices']]")" "['done', 'resume', 'pending']" &&
+  check "slice 3 still waits" "$(J slice-start "$id" 3 2>&1)" "waits for slices [2, 1]" &&
+  check "resume starts" "$(J slice-start "$id" 2)" "slice 2 resumes in" &&
+  check "work kept" "$(cat ".worktrees/$id-s2/b/2")" "half" &&
+  J start "$id" builder-s2 >/dev/null &&
+  check "builder told to resume" "$(tail -3 "$SPECS")" "read slice-2.md (the last report) and feedback-1.md" || return 1
+  (cd ".worktrees/$id-s2" && echo json > b/2 && git commit -qam "s2 done")
+  printf 'STATUS: READY\n\n## Self-review\nok\n' > "factory/jobs/$id/slice-2.md"
+  check "slice 3 next" "$(J slice-done "$id" 2)" "slice-start $id 3" &&
+  J slice-start "$id" 3 >/dev/null && J start "$id" builder-s3 >/dev/null &&
+  check "slice 3 gets the feedback" "$(tail -3 "$SPECS")" "read feedback-1.md" || return 1
+  (cd ".worktrees/$id-s3" && echo 3 > c/3 && git add -A && git commit -qm s3)
+  printf 'STATUS: READY\n\n## Self-review\nok\n' > "factory/jobs/$id/slice-3.md"
+  check "all merged" "$(J slice-done "$id" 3)" "all 3 slices merged"
 }
 
 t_follow_ups_filed_once() {
@@ -356,6 +395,42 @@ t_merge_starts_retro_and_commits_ticket() {
   check "retro dispatch" "$(field "$id" "d['dispatch'].get('retro')")" "ctx_fake" &&
   check "ticket committed" "$(git log --oneline -1)" "Close f/01" &&
   check "ticket clean" "[$(git status --short .scratch)]" "[]"
+}
+
+t_untouched_lenses_carry_pass() {
+  new_repo skiplens; ticket 01 One; commit_all
+  python3 - <<'EOF'
+import json; p = "factory/config.json"; c = json.load(open(p)); c["max_rounds"] = 5
+lens = {"paths": ["apps/native/*", "apps/shared/*"], "except": ["apps/native/*_tests.rs"]}
+c["review_skip"] = {"ux": lens, "ui": lens}; json.dump(c, open(p, "w"))
+EOF
+  local id; id=$(to_build 01 medium "ui, security"); mkdir -p ".worktrees/$id/apps/native"
+  build_commit "$id" apps/native/a.rs a; to_review "$id"
+  check "round 1 skips nothing" "$(field "$id" "d['skipped_reviews']")" "{}"
+  review "$id" 1 code PASS; review "$id" 1 security PASS; review "$id" 1 ui PASS; review "$id" 1 ux CHANGES
+  J advance "$id" build >/dev/null
+  mkdir -p ".worktrees/$id/crates"; build_commit "$id" crates/core.rs c
+  ready "$id"; J advance "$id" gate >/dev/null; factory/bin/gate "$id" >/dev/null
+  local out; out=$(J advance "$id" review)
+  check "round 2 starts the rest" "$out" "start reviewers: code, ux, security" &&
+  check "ui skipped" "$out" "skipped reviewer-ui: PASS in round 1" &&
+  check "carried file passes" "$(head -1 "factory/jobs/$id/round-2/review-ui.md")" "VERDICT: PASS" &&
+  check "start refuses skipped" "$(J start "$id" reviewer-ui 2>&1)" "reviewer-ui is skipped in round 2" &&
+  check "ux CHANGES not carried" "[$(ls "factory/jobs/$id/round-2")]" "checks.md" &&
+  check "no ux file" "$(test -f "factory/jobs/$id/round-2/review-ux.md" && echo yes || echo no)" "no"
+  review "$id" 2 code CHANGES; review "$id" 2 security PASS; review "$id" 2 ux PASS
+  J advance "$id" build >/dev/null
+  mkdir -p ".worktrees/$id/apps/native/src"; build_commit "$id" apps/native/src/x_tests.rs t
+  ready "$id"; J advance "$id" gate >/dev/null; factory/bin/gate "$id" >/dev/null
+  out=$(J advance "$id" review)
+  check "tests file ignored, code and security run" "$out" "start reviewers: code, security" &&
+  check "ux carried" "$out" "skipped reviewer-ux" && check "ui carried again" "$out" "skipped reviewer-ui"
+  review "$id" 3 code CHANGES; review "$id" 3 security PASS
+  J advance "$id" build >/dev/null; build_commit "$id" apps/native/a.rs b
+  ready "$id"; J advance "$id" gate >/dev/null; factory/bin/gate "$id" >/dev/null
+  out=$(J advance "$id" review)
+  check "native change runs everyone" "$out" "start reviewers: code, ux, ui, security" &&
+  check "nothing skipped" "[$(echo "$out" | grep -c skipped)]" "[0]"
 }
 
 # ---- runner ----------------------------------------------------------------

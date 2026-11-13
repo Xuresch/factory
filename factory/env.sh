@@ -10,7 +10,10 @@
 _factory_main="$(cd "$(git rev-parse --git-common-dir)/.." && pwd)"
 
 # Examples, by stack (see INSTALL.md "Stack notes"):
-#   Rust:   export CARGO_TARGET_DIR="$_factory_main/target/factory" CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0
+#   Rust:   one target dir per worktree (shared ones clash on path crates), and
+#           "worktree_cache_dirs": ["target/factory-jobs/{name}"] in config.json:
+#           export CARGO_TARGET_DIR="$_factory_main/target/factory-jobs/$(basename "$(git rev-parse --show-toplevel)")"
+#           export CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0
 #   npm:    export npm_config_cache="$_factory_main/.cache/npm"   (pnpm, bun and Go share a global cache already)
 #   Python: export UV_CACHE_DIR="$_factory_main/.cache/uv"
 #   Godot:  export FACTORY_GODOT="${FACTORY_GODOT:-godot}"

@@ -212,6 +212,13 @@ to the spec worker and run `advance <id> build` again when it reports. In round
      to **gate**;
    - `needs-human`: the job is parked; stop its other slice workers.
 
+`job feedback` (or `job rewind <id> build`) on a job with slices not yet merged
+reopens them and prints `job slices`: a blocked slice resumes on its own branch
+and worktree with its work kept, and the slices waiting on it are pending
+again. Start them as in step 1, not one builder; `job start <id> builder-s<k>`
+tells each fresh slice builder to read the feedback file (and its slice file
+when it resumes).
+
 Later rounds, after the gate or reviews, use one builder for the whole job:
 start a new `builder` worker told it takes over from the slice builders.
 
@@ -223,8 +230,11 @@ start a new `builder` worker told it takes over from the slice builders.
   `factory/bin/job send <id> builder "The gate failed: read round-<N-1>/checks.md and checks.log, fix it, push, and update build.md."`
   No reviewer runs on a failing build.
 
-**review.** `factory/bin/job start <id> reviewer-<r>` for every lens in
-`job.json` `agents.reviewers`, **in one message**, so they run in parallel.
+**review.** `factory/bin/job start <id> reviewer-<r>` for every lens that
+`job advance <id> review` lists under `start reviewers:`, **in one message**, so they run in parallel.
+From round 2 on, a ux or ui lens that passed last round and whose paths
+(config.json `review_skip`) the round didn't touch is `skipped`: its
+`review-<r>.md` carries the PASS forward, so don't start it (`job start` refuses).
 Each lens runs on the agent `job.json` gives it; that is how a Codex build gets
 a Claude review and the other way round. **WAIT FOR ALL.** Each time one finishes, run
 `factory/bin/job sync <id>` so the dashboard fills in. When every reviewer has
@@ -377,7 +387,8 @@ new feature, ask.
   It saves `feedback-<k>.md` and starts the next round with a fresh round
   budget. Go to **build** with
   `The user gave feedback: read feedback-<k>.md and address it, push, and update build.md for round <N>.`
-  and continue like any job.
+  and continue like any job. If it also lists slices to start, the split never
+  finished: go to **build, split into slices** instead.
 - **Rejecting or benching a `needs-info` or `needs-human` job**: pass their
   reason verbatim on stdin:
 

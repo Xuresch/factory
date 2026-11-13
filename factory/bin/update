@@ -2,7 +2,7 @@
 """Update this installation from the factory template, keeping what's yours.
 
 Usage:
-  update [<source>] [--dry-run]
+  update [<source>] [--dry-run] [--force]
 
 <source> is a git URL or a local checkout of the template (default: config.json
 `template`, else https://github.com/Xuresch/factory). Append `@<ref>` for a
@@ -19,7 +19,12 @@ What it does:
 - Never touched: factory/checks.sh, factory/env.sh, factory/jobs/, and
   anything outside factory/ and .claude/skills/factory/.
 
-It prints what changed and leaves committing to you.
+It prints what changed and leaves committing to you. It refuses while a
+merge, rebase or cherry-pick is in progress, or while the files it replaces
+have uncommitted changes (`--force` skips the second check).
+
+Changes made to factory/bin, the skill or the tests in this installation are
+overwritten: port them to the template first.
 """
 
 import json
@@ -102,9 +107,37 @@ def differing(mine, theirs, path=""):
     return out
 
 
+def busy():
+    """Why updating now could clobber someone's work, or None."""
+    git_dir = Path(subprocess.run(["git", "-C", str(REPO), "rev-parse", "--git-dir"],
+                                  capture_output=True, text=True).stdout.strip() or ".git")
+    git_dir = git_dir if git_dir.is_absolute() else REPO / git_dir
+    for marker, what in [("MERGE_HEAD", "a merge"), ("CHERRY_PICK_HEAD", "a cherry-pick"),
+                         ("REVERT_HEAD", "a revert"), ("rebase-merge", "a rebase"), ("rebase-apply", "a rebase")]:
+        if (git_dir / marker).exists():
+            return f"{what} is in progress in {REPO}; finish or abort it first"
+    return None
+
+
+def dirty():
+    """Uncommitted changes in the files update replaces."""
+    paths = ["factory/bin", "factory/tests", "factory/agents", "factory/config.json",
+             "factory/dashboard.html", ".claude/skills/factory"]
+    out = subprocess.run(["git", "-C", str(REPO), "status", "--porcelain", "--", *paths],
+                         capture_output=True, text=True).stdout
+    return [l[3:] for l in out.splitlines() if "__pycache__" not in l]
+
+
 def main(argv):
     dry = "--dry-run" in argv
-    args = [a for a in argv if a != "--dry-run"]
+    force = "--force" in argv
+    args = [a for a in argv if a not in {"--dry-run", "--force"}]
+    if not dry:
+        if why := busy():
+            die(why)
+        if (changed := dirty()) and not force:
+            die("uncommitted changes in files this would replace: " + ", ".join(changed)
+                + "\ncommit or stash them first (or pass --force)")
     source = args[0] if args else DEFAULT
     with tempfile.TemporaryDirectory() as tmp:
         tpl = fetch(source, Path(tmp) / "template")

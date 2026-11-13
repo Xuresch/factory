@@ -163,6 +163,7 @@
       "Spec"
     ]
   },
+  "review_skip": {},
   "max_cost_usd": null,
   "notify": "auto",
   "retro_after_merge": "friction",
@@ -171,6 +172,7 @@
     "builder"
   ],
   "worktree_root": null,
+  "worktree_cache_dirs": [],
   "stages_by_risk": {
     "spec": {
       "low": {
