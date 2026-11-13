@@ -7,7 +7,8 @@
 # tracker (.scratch/ tickets), a trivial checks.sh and a fake Orca CLI that
 # logs every call and answers like `worker-start --json`. Agents are played by
 # the test: it writes intake.md, spec.md, build.md and the reviews itself. No
-# network, no real agents, nothing outside the temp dir.
+# network, no real agents, nothing outside the temp dir. The t_gh_* tests run the
+# GitHub tracker against a local bare `origin` and a fake `gh` (see new_gh_repo).
 set -uo pipefail
 
 FACTORY_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -98,6 +99,113 @@ check() {  # check <description> <actual> <expected substring>
   echo "    FAIL: $1"; echo "      expected: $3"; echo "      got:      $(echo "$2" | head -5)"
   return 1
 }
+
+# ---- GitHub mode -----------------------------------------------------------
+#
+# new_gh_repo: the same repo, but tracker github, a bare repo as `origin` and a
+# fake `gh` on PATH. The fake keeps its state as JSON next to itself: issue-<n>.json
+# (what `gh issue view` prints), pr.json (one PR: `pr create` writes it, `pr view`
+# prints it with headRefOid read from origin unless pr.json pins one, `pr merge`
+# records mergedHead) and merge-fail.json ({"count": n, "stderr": s, "run": cmd}:
+# the next n `pr merge` calls run cmd, then fail with s).
+# Every call is logged to $GH_LOG; checks.sh logs each gate mode to $GATES_LOG.
+
+new_gh_repo() {  # new_gh_repo <name>: like new_repo, then GitHub mode; commits and pushes master
+  new_repo "$1"
+  local dir="$TMP_ROOT/$1"
+  cat > "$dir/bin/gh" <<'EOF'
+#!/usr/bin/env python3
+import json, subprocess, sys
+from pathlib import Path
+d = Path(__file__).resolve().parent
+args = sys.argv[1:]
+with open(d / "gh.log", "a") as f:
+    f.write(" ".join(args) + "\n")
+load = lambda n: json.loads((d / n).read_text()) if (d / n).exists() else None
+save = lambda n, v: (d / n).write_text(json.dumps(v))
+opt = lambda k: args[args.index(k) + 1] if k in args else None
+cmd, pr = args[:2], load("pr.json")
+head = lambda: subprocess.run(["git", "-C", str(d.parent / "origin.git"), "rev-parse", "refs/heads/" + pr["headRefName"]],
+                              capture_output=True, text=True).stdout.strip()
+if cmd == ["api", "user"]:
+    print("op")
+elif cmd == ["issue", "view"]:
+    print(json.dumps(load(f"issue-{args[2]}.json")))
+elif cmd == ["issue", "list"]:
+    print("[]")
+elif cmd in (["issue", "comment"], ["issue", "edit"], ["pr", "comment"], ["pr", "close"]):
+    pass
+elif cmd == ["pr", "create"]:
+    save("pr.json", {"number": 7, "url": "https://github.com/o/r/pull/7", "headRefName": opt("--head"),
+                     "state": "OPEN", "isDraft": "--draft" in args, "statusCheckRollup": []})
+    print("https://github.com/o/r/pull/7")
+elif cmd == ["pr", "list"]:
+    ok = pr and pr["state"] == "OPEN" and opt("--head") in (None, pr["headRefName"])
+    print(json.dumps([pr] if ok else []))
+elif cmd == ["pr", "view"]:
+    print(json.dumps({"headRefOid": head(), **pr}))
+elif cmd == ["pr", "ready"]:
+    pr["isDraft"] = False; save("pr.json", pr)
+elif cmd == ["pr", "merge"]:
+    fail = load("merge-fail.json")
+    if fail and fail["count"] > 0:
+        fail["count"] -= 1; save("merge-fail.json", fail)
+        subprocess.run(fail.get("run") or "true", shell=True)  # e.g. another PR lands meanwhile
+        sys.exit(fail["stderr"])
+    pr["state"], pr["mergedHead"] = "MERGED", head(); save("pr.json", pr)
+else:
+    sys.exit(f"fake gh: unsupported call: gh {' '.join(args)}")
+EOF
+  # land <file> <content>: another PR lands on origin's master; prints its sha. A merge-fail hook can run it.
+  cat > "$dir/bin/land" <<'EOF'
+#!/usr/bin/env bash
+set -e; tmp="$(dirname "$0")/land-$$"; git clone -q "$(dirname "$0")/../origin.git" "$tmp/c"; cd "$tmp/c"
+git config user.email t@t; git config user.name t
+echo "$2" > "$1"; git add "$1"; git commit -qm "other PR"; git push -q origin master; git rev-parse HEAD
+EOF
+  chmod +x "$dir/bin/gh" "$dir/bin/land"
+  export PATH="$dir/bin:$PATH" GH="$dir/bin" GH_LOG="$dir/bin/gh.log" GATES_LOG="$dir/bin/gates.log"
+  sed -i 's/"tracker": "local"/"tracker": "github"/' factory/config.json
+  printf '#!/usr/bin/env bash\nset -e\necho "$FACTORY_GATE" >> "$GATES_LOG"\ntest ! -f FAIL\n' > factory/checks.sh
+  git init -q --bare "$dir/origin.git" && git remote add origin "$dir/origin.git"
+  commit_all && git push -q -u origin master
+}
+
+gh_issue() {  # gh_issue <n> <title> [body]: an open ready-for-agent issue
+  python3 - "$GH/issue-$1.json" "$1" "$2" "${3:-Do it.}" <<'EOF'
+import json, sys
+p, n, title, body = sys.argv[1:]
+json.dump({"number": int(n), "title": title, "body": body, "author": {"login": "op"},
+           "labels": [{"name": "ready-for-agent"}], "state": "OPEN",
+           "url": f"https://github.com/o/r/issues/{n}", "comments": []}, open(p, "w"))
+EOF
+}
+
+gh_pr_set() {  # gh_pr_set <python statement on pr>: edit the fake's pr.json
+  python3 -c "import json; p='$GH/pr.json'; pr=json.load(open(p)); $1; json.dump(pr, open(p, 'w'))"
+}
+
+gh_to_approve() {  # gh_to_approve <issue>: create .. review on GitHub, PR pushed; stops before approve
+  local id; id=$(J create "$1") || return 1
+  intake "$id" low none; factory/bin/route "$id" >/dev/null && J advance "$id" spec >/dev/null || return 1
+  echo "# Spec" > "factory/jobs/$id/spec.md"; J advance "$id" build >/dev/null
+  build_commit "$id" y.txt y
+  (cd ".worktrees/$id" && git push -q -u origin "factory/$id" 2>/dev/null &&
+   gh pr create --draft --base master --head "factory/$id" --title t --body b >/dev/null)
+  to_review "$id"; review "$id" 1 code PASS
+  echo "$id"
+}
+
+gh_to_merging() {  # gh_to_merging <issue>: .. approve with an APPROVE decision
+  local id; id=$(gh_to_approve "$1") || return 1
+  J advance "$id" approve >/dev/null; printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"
+  echo "$id"
+}
+
+merge_fails() {  # merge_fails <n> <stderr> [cmd]: the next n `gh pr merge` calls run cmd, then fail
+  python3 -c "import json, sys; json.dump({'count': int(sys.argv[1]), 'stderr': sys.argv[2], 'run': sys.argv[3]}, open('$GH/merge-fail.json', 'w'))" "$1" "$2" "${3:-}"
+}
+
 
 # ---- tests -----------------------------------------------------------------
 
@@ -494,6 +602,129 @@ t_codex_model_and_effort() {
   check "preset" "$(J route-set "$id" builder=sol-high)" "codex/gpt-6.1-sol:high" &&
   check "explicit effort" "$(J route-set "$id" builder=codex/gpt-6.1-terra:medium)" "codex/gpt-6.1-terra:medium" &&
   check "bad entry" "$(J route-set "$id" builder=gpt 2>&1)" "terra-low"
+}
+
+t_gh_happy_path() {
+  new_gh_repo ghhappy; gh_issue 1 One
+  local id; id=$(gh_to_merging 1) || return 1
+  local out; out=$(J merge "$id" 2>&1)
+  check "merged" "$out" "merged PR #7" &&
+  check "stage" "$(field "$id" "d['stage']")" "merged" &&
+  check "branch deleted on origin" "[$(git -C "$GH/../origin.git" branch --list "factory/$id")]" "[]" &&
+  check "one merge gate" "$(grep -c merge "$GATES_LOG")" "1"
+}
+
+t_gh_missing_feature_base() {
+  new_gh_repo ghnobase; gh_issue 1 One '**Branch:** dev'
+  printf '# Agents\n\nRelease: delete `dev`, then recreate it from master.\n' > AGENTS.md; commit_all
+  local id; id=$(J create 1) || return 1
+  check "dev created on origin" "$(git -C "$GH/../origin.git" branch --list dev)" "dev" || return 1
+  git -C "$GH/../origin.git" update-ref -d refs/heads/dev
+  intake "$id" low none; factory/bin/route "$id" >/dev/null
+  local out; out=$(J advance "$id" spec 2>&1)
+  check "names the branch" "$out" "origin/dev doesn't exist on GitHub any more" &&
+  check "recreate from base" "$out" "git push origin origin/master:refs/heads/dev" &&
+  check "AGENTS.md hint" "$out" "AGENTS.md mentions it" &&
+  check "no stack trace" "[$(echo "$out" | grep -c Traceback)]" "[0]" &&
+  check "still intake" "$(field "$id" "d['stage']")" "intake" &&
+  check "nothing posted" "[$(grep -c 'issue comment' "$GH_LOG")]" "[0]"
+}
+
+t_gh_missing_base_branch() {
+  new_gh_repo ghnomaster; gh_issue 1 One
+  local id; id=$(J create 1) || return 1
+  git -C "$GH/../origin.git" update-ref -d refs/heads/master
+  intake "$id" low none; factory/bin/route "$id" >/dev/null
+  local out; out=$(J advance "$id" spec 2>&1)
+  check "names the branch" "$out" "origin/master doesn't exist on GitHub any more" &&
+  check "recreate from a commit, not from itself" "$out" "git push origin <commit>:refs/heads/master" &&
+  check "no AGENTS.md hint" "[$(echo "$out" | grep -c AGENTS.md)]" "[0]" &&
+  check "no stack trace" "[$(echo "$out" | grep -c Traceback)]" "[0]"
+}
+
+t_gh_merge_retries_when_base_moved() {
+  new_gh_repo ghretry; gh_issue 1 One
+  local id; id=$(gh_to_merging 1) || return 1
+  # Another PR lands while ours merges: the retry has to merge it in.
+  merge_fails 1 "GraphQL: Base branch was modified. Review and try the merge again. (mergePullRequest)" \
+    "$GH/land o.txt o > $GH/landed"
+  local out; out=$(J merge "$id" 2>&1)
+  check "retry announced" "$out" "master moved during the merge; syncing and trying again (2/3)" &&
+  check "merged head has the other PR" "$(git -C "$GH/../origin.git" merge-base --is-ancestor \
+    "$(cat "$GH/landed")" "$(python3 -c "import json; print(json.load(open('$GH/pr.json'))['mergedHead'])")" && echo yes)" "yes" &&
+  check "merged" "$out" "merged PR #7" &&
+  check "stage" "$(field "$id" "d['stage']")" "merged" &&
+  check "merge gate twice" "$(grep -c merge "$GATES_LOG")" "2" &&
+  check "two merge calls" "$(grep -c '^pr merge' "$GH_LOG")" "2"
+}
+
+t_gh_merge_retry_conflict_goes_back() {
+  new_gh_repo ghretryconflict; gh_issue 1 One
+  local id; id=$(gh_to_merging 1) || return 1
+  merge_fails 1 "GraphQL: Base branch was modified. Review and try the merge again. (mergePullRequest)" \
+    "$GH/land y.txt other >/dev/null"
+  local out; out=$(J merge "$id" 2>&1)
+  check "back to builder" "$out" "back to the builder for round 2" &&
+  check "stage build" "$(field "$id" "d['stage']")" "build" &&
+  check "merge-back names the conflict" "$(cat "factory/jobs/$id/round-2/merge-back.md")" "conflicts with master" &&
+  check "one merge call" "$(grep -c '^pr merge' "$GH_LOG")" "1"
+}
+
+t_gh_merge_gives_up_after_three() {
+  new_gh_repo ghretry3; gh_issue 1 One
+  local id; id=$(gh_to_merging 1) || return 1
+  merge_fails 3 "X Pull request o/r#7 is not up to date with the base branch"
+  local out; out=$(J merge "$id" 2>&1)
+  check "needs-human" "$out" "needs-human: The merge failed" &&
+  check "stage" "$(field "$id" "d['stage']")" "needs-human" &&
+  check "three merge calls" "$(grep -c '^pr merge' "$GH_LOG")" "3" &&
+  check "merge gate three times" "$(grep -c merge "$GATES_LOG")" "3" &&
+  check "decision says why" "$(cat "factory/jobs/$id/decision.md")" "not up to date with the base"
+}
+
+t_gh_merge_other_error_needs_human() {
+  new_gh_repo ghmergeerr; gh_issue 1 One
+  local id; id=$(gh_to_merging 1) || return 1
+  merge_fails 1 "GraphQL: Required status check \"ci\" is failing (mergePullRequest)"
+  local out; out=$(J merge "$id" 2>&1)
+  check "needs-human" "$out" "needs-human: The merge failed" &&
+  check "no retry" "[$(echo "$out" | grep -c 'trying again')]" "[0]" &&
+  check "one merge call" "$(grep -c '^pr merge' "$GH_LOG")" "1" &&
+  check "stage" "$(field "$id" "d['stage']")" "needs-human"
+}
+
+t_gh_ci_at_approve() {
+  local case rollup want
+  for case in fail pass pending stale; do
+    new_gh_repo "ghci-$case"; gh_issue 1 One
+    local id; id=$(gh_to_approve 1) || return 1
+    rollup="[{'__typename': 'CheckRun', 'name': 'build', 'status': 'COMPLETED', 'conclusion': 'SUCCESS'}"
+    case $case in
+      fail) rollup+=", {'__typename': 'StatusContext', 'context': 'ci/test', 'state': 'FAILURE'}]"; want="CI: FAIL" ;;
+      pending) rollup+=", {'__typename': 'CheckRun', 'name': 'lint', 'status': 'IN_PROGRESS', 'conclusion': ''}]"; want="CI: PENDING" ;;
+      *) rollup+="]"; want="CI: PASS" ;;
+    esac
+    gh_pr_set "pr['statusCheckRollup'] = $rollup"
+    [[ $case == stale ]] && gh_pr_set "pr['headRefOid'] = 'f00ba44' * 5"
+    J advance "$id" approve >/dev/null || return 1
+    local ci; ci=$(cat "factory/jobs/$id/round-1/ci.md")
+    check "$case: verdict" "$(head -1 <<< "$ci")" "$want" || return 1
+    case $case in
+      fail) check "fail: names the check" "$ci" "- ci/test: failure" ;;
+      pending) check "pending: names the check" "$ci" "- lint: pending" ;;
+      stale) check "stale: head note" "$ci" "The PR head f00ba44 isn't the reviewed commit" ;;
+      pass) check "pass: no head note" "[$(grep -c "isn't the reviewed commit" <<< "$ci")]" "[0]" ;;
+    esac || return 1
+    if [[ $case == fail ]]; then
+      printf 'ESCALATE\n\n## Why\nCI is red.\n' > "factory/jobs/$id/decision.md"
+      J advance "$id" needs-human >/dev/null || return 1
+      local body; body=$(sed -n '/^pr comment 7/,$p' "$GH_LOG")
+      check "comment has the CI line" "$body" "**CI:** FAIL" &&
+      check "comment lists the failing check" "$body" "- ci/test: failure" &&
+      check "comment leaves out passing checks" "[$(grep -c -- '- build: success' <<< "$body")]" "[0]" &&
+      check "PR marked ready" "$(grep '^pr ready' "$GH_LOG")" "pr ready 7" || return 1
+    fi
+  done
 }
 
 # ---- runner ----------------------------------------------------------------

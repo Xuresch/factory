@@ -774,9 +774,11 @@ def fetch_base(branch, cwd=REPO):
     if "couldn't find remote ref" in res.stderr:
         hint = (" AGENTS.md mentions it: follow its steps to recreate the branch."
                 if (REPO / "AGENTS.md").exists() and branch in (REPO / "AGENTS.md").read_text() else "")
+        source = f"origin/{BASE}" if branch != BASE else "<commit>"
         raise Refused(f"origin/{branch} doesn't exist on GitHub any more (deleted after a release or "
-                      f"a merge?). Recreate it, for example `git push origin origin/main:refs/heads/{branch}` "
-                      f"from the branch it should start from, then run this again.{hint}")
+                      f"a merge?). Recreate it, for example `git push origin {source}:refs/heads/{branch}` "
+                      f"from the {'branch' if branch != BASE else 'commit'} it should start from, "
+                      f"then run this again.{hint}")
     raise Refused(f"`git fetch origin {branch}` failed: {(res.stderr or res.stdout).strip()}")
 
 
