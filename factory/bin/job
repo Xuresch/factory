@@ -1018,8 +1018,7 @@ def advance(job, stage):
             waiting = {"needs-human": LABELS["needs_human"], "needs-info": LABELS["needs_info"]}.get(old)
             label("issue", job["issue"], remove=",".join(x for x in (LABELS["queue"], waiting) if x))
             comment("issue", job["issue"], body)
-            if not rough:  # a clean job is done; one with friction stays open for a look at the retro
-                close_issue(job["issue"])
+            close_issue(job["issue"])  # merged is done, also when a human approved or merged it
 
     elif stage == "rejected" and (old in WAITING | REJECTABLE or (old == "intake" and (d / "rejection.md").exists())):
         require((d / "rejection.md").exists(), "use `job reject` to reject a job")
@@ -2584,10 +2583,12 @@ def merge_summary(job, rough):
         lines += ["", "**Follow-ups**"] + [f"- {f['title']}" + (f" ({f['issue']})" if f.get("issue") else "")
                                            for f in job["follow_ups"]]
     if rough:
-        lines += ["", "**Not a clean run**, so this issue stays open for a look: " + "; ".join(rough) + "."
+        lines += ["", "**Not a clean run:** " + "; ".join(rough) + "."
                   + (" A retro runs and writes factory/jobs/" + job["id"] + "/retro.md." if retro_reason(job) else "")]
     else:
-        lines += ["", "Clean run: no extra rounds, no human needed. Closing this issue."]
+        lines += ["", "Clean run: no extra rounds, no human decision needed."]
+    if merged_by_hand(job):
+        lines += ["", "Merged by a human."]
     return "\n".join(lines)
 
 
@@ -2598,6 +2599,11 @@ def problems(job):
     if any(h["stage"] == "needs-human" for h in job.get("history") or []):
         out.append("it needed a human decision")
     return out
+
+
+def merged_by_hand(job):
+    """The PR was merged outside the factory (by hand on GitHub), not by `job merge`."""
+    return job.get("stage") not in {"merging"} and bool(job.get("pr"))
 
 
 def close_issue(number):

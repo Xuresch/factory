@@ -994,15 +994,25 @@ t_gh_clean_merge_closes_issue() {
   check "says clean" "$(cat "$GH_LOG")" "Clean run"
 }
 
-t_gh_rough_merge_keeps_issue_open() {
+t_gh_approved_merge_closes_issue() {
   new_gh_repo ghopen; gh_issue 1 One
   local id; id=$(gh_to_approve 1) || return 1
   J advance "$id" approve >/dev/null
   printf 'ESCALATE\n\n## Summary\n- needs a look\n\n## Why\nx\n' > "factory/jobs/$id/decision.md"
   J advance "$id" needs-human >/dev/null; echo "ok, merge it" | J approve "$id" >/dev/null 2>&1
   check "merged" "$(field "$id" "d['stage']")" "merged" &&
-  check "issue stays open" "$(python3 -c "import json; print(json.load(open('$GH/issue-1.json'))['state'])")" "OPEN" &&
+  check "issue closed" "$(python3 -c "import json; print(json.load(open('$GH/issue-1.json'))['state'])")" "CLOSED" &&
   check "says why" "$(cat "$GH_LOG")" "it needed a human decision"
+}
+
+t_gh_hand_merge_closes_issue() {
+  new_gh_repo ghhand; gh_issue 1 One
+  local id; id=$(gh_to_approve 1) || return 1
+  gh_pr_set 'pr["state"] = "MERGED"'
+  J queue >/dev/null 2>&1
+  check "merged" "$(field "$id" "d['stage']")" "merged" &&
+  check "issue closed" "$(python3 -c "import json; print(json.load(open('$GH/issue-1.json'))['state'])")" "CLOSED" &&
+  check "summary says by hand" "$(cat "$GH_LOG")" "Merged by a human."
 }
 
 t_gate_strips_coauthor_trailers() {

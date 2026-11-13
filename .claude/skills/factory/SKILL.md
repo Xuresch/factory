@@ -346,8 +346,8 @@ so and leaves the branch alone: tell the user and point them to
 `factory/jobs/_features/<branch>.md`.
 
 On `merged` the script posts a summary on the issue (what changed, why it was
-approved, what a human accepted, follow-ups). A clean run (one round, no human
-decision) also closes the issue; one with problems stays open and says why.
+approved, what a human accepted, follow-ups, and any problems on the way) and
+closes it, also when a human approved the merge or merged the PR by hand.
 The gate strips `Co-Authored-By` and "Generated with" lines from the job's
 commits; nobody co-authors a factory job.
 
