@@ -41,7 +41,9 @@ Usage:
   job agents <job> <json>        record the routed agent set (called by factory/bin/route)
   job start <job> <role> [text]  start <role>'s Orca worker: agent, model, worktree, brief and
                                  header from job.json; [text] (or - for stdin) is what this step is for
-  job send <job> <role> <text>   message <role>'s recorded worker (later rounds, continues, refusals)
+  job send <job> <role> <text>   message <role>'s recorded worker (later rounds, continues, refusals);
+                                 when Orca answers with a follow-up dispatch (the worker had finished
+                                 or died), that one becomes <role>'s dispatch and `job next` waits on it
   job worker <job> <role>        the agent, model and Orca worktree to start <role> with
   job dispatch <job> <role> [<id>]  record (or print) the Orca dispatch id of <role>'s worker
   job sync <job>                 refresh reviews, gate and cost from the job's files
@@ -50,6 +52,11 @@ Usage:
 <job> is a job id (004-dark-mode) or an issue: a GitHub number (12), or a
 local ticket (<feature>/<NN>, or its path .scratch/<feature>/issues/NN-slug.md).
 <role> is intake, spec, builder, approver or reviewer-<lens>.
+
+A command holds each job it touches until it exits; `job merge` holds its job for
+the whole merge gate. `job next`, `queue`, `summary`, `worker` and `tracker`
+don't wait for that: after 2 s they show the job as "merge in progress since
+HH:MM (pid N)" and go on. Any other command on that job says so, then waits.
 
 While another live Claude Code session holds the claim, this session is a
 stand-in: `job create` and a new `job queue` selection refuse; everything that
@@ -421,21 +428,85 @@ def job_dir(job_id):
     return JOBS / job_id
 
 
+# Each job has a lock, factory/jobs/<job>/.lock, that a command holds from its
+# first read of the job until it exits; the holder writes its command, pid and
+# start into the file. `job merge` holds it for minutes (the merge gate), so the
+# read-only commands (next, queue, summary, worker, tracker, dispatch without an
+# id) don't wait for it: after LOCK_WAIT_SECONDS they read the job without the
+# lock, report "merge in progress since HH:MM (pid N)", and never save it. The
+# other commands say whom they wait for, then wait.
+
 _locks = {}
+_busy = {}  # job id -> the lock holder, for jobs this process read without the lock
+COMMAND = "job"  # this process's command, for the lock file (main sets it)
+NO_WAIT = False  # main sets it for read-only commands
+LOCK_WAIT_SECONDS = 2
+
+
+def lock_holder(job_id):
+    """{command, pid, since} as the job lock's holder wrote it, or {}."""
+    try:
+        return json.loads((job_dir(job_id) / ".lock").read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def busy_note(info):
+    """What holds a job's lock: "merge in progress since 14:02 (pid 4711)"."""
+    cmd = info.get("command")
+    what = "merge" if cmd == "merge" else f"`job {cmd}`" if cmd else "another job command"
+    since = clock(info["since"]) if info.get("since") else "?"
+    return f"{what} in progress since {since}" + (f" (pid {info['pid']})" if info.get("pid") else "")
+
+
+def busy(job):
+    """The busy note when this process read <job> without its lock, else None."""
+    return busy_note(_busy[job["id"]]) if job["id"] in _busy else None
+
+
+def take_lock(job_id):
+    """Hold <job>'s lock until this process exits. Tries for LOCK_WAIT_SECONDS;
+    then a read-only command gives up (False), any other says whom it waits for
+    and waits."""
+    f = open(job_dir(job_id) / ".lock", "a+")
+    deadline = time.monotonic() + LOCK_WAIT_SECONDS
+    while True:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            pass
+        if time.monotonic() < deadline:
+            time.sleep(0.1)
+            continue
+        if NO_WAIT:
+            f.close()
+            return False
+        print(f"job: {job_id}: {busy_note(lock_holder(job_id))}; waiting for it to finish",
+              file=sys.stderr, flush=True)
+        fcntl.flock(f, fcntl.LOCK_EX)
+        break
+    f.seek(0)
+    f.truncate()
+    f.write(json.dumps({"command": COMMAND, "pid": os.getpid(), "since": time.time()}) + "\n")
+    f.flush()
+    _locks[job_id] = f
+    return True
 
 
 def load(job_id):
-    """Read a job, holding its lock until this process exits."""
+    """Read a job, holding its lock until this process exits (see take_lock)."""
     path = job_dir(job_id) / "job.json"
     if not path.exists():
         die(f"no job {job_id}")
-    if job_id not in _locks:
-        _locks[job_id] = open(job_dir(job_id) / ".lock", "w")
-        fcntl.flock(_locks[job_id], fcntl.LOCK_EX)
-    return json.loads(path.read_text())
+    if job_id not in _locks and job_id not in _busy and not take_lock(job_id):
+        _busy[job_id] = lock_holder(job_id)
+    return json.loads(path.read_text())  # save() replaces it whole: safe to read without the lock
 
 
 def save(job):
+    if job["id"] in _busy:
+        raise Refused(f"{job['id']}: {busy(job)}; not saved, try again when it's done")
     path = job_dir(job["id"]) / "job.json"
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(job, indent=2) + "\n")
@@ -2520,7 +2591,7 @@ def cmd_queue(args=()):
     jobs = {j["issue"]: j for j in all_jobs()}
     # A job is done once its PR is merged on GitHub, which also closes the issue.
     for j in jobs.values():
-        if j["stage"] not in TERMINAL and is_merged(j):
+        if j["stage"] not in TERMINAL and not busy(j) and is_merged(j):
             save(advance(sync(j), "merged"))
     issues = list_issues(LABELS["queue"])
     if only is not None:
@@ -2541,6 +2612,8 @@ def cmd_queue(args=()):
                 other_rows.append(("wait", n, "-", "-", f"blocked by {', '.join(blockers)}"))
             else:
                 new_rows.append(("new", n, "-", "-", issue["title"]))
+        elif busy(j):
+            other_rows.append(("wait", n, j["id"], j["stage"], busy(j)))
         elif j["stage"] == "needs-info":
             if replied_since_question(fetch_issue(n)):
                 replied_rows.append(("resume", n, j["id"], j["stage"], "author replied"))
@@ -3062,8 +3135,31 @@ def note_worker(job, role, dispatch, how):
                                            "at": time.time(), "how": how}
 
 
+def live_dispatch(job, dispatch):
+    """The dispatch a worker lives on now: a send to a finished, closed or dead
+    worker may start a follow-up dispatch, recorded in job["followed_by"]
+    (old id → new id); this follows that chain to its end."""
+    moves, seen = job.get("followed_by") or {}, {dispatch}
+    while dispatch in moves and moves[dispatch] not in seen:
+        dispatch = moves[dispatch]
+        seen.add(dispatch)
+    return dispatch
+
+
+def follow_up_of(receipt, dispatch):
+    """The new dispatch id when `send --json` started a follow-up instead of
+    delivering to <dispatch>, else None. A follow-up receipt names the new
+    `dispatchId` and `followUpOf`; a delivered message names a `messageId` (and
+    its target's `dispatchId` when relayed)."""
+    r = receipt.get("result") or {}
+    new = r.get("dispatchId")
+    return new if new and new != dispatch else None
+
+
 def cmd_send(job, role, text):
     dispatch = (job.get("dispatch") or {}).get(role)
+    if dispatch:
+        dispatch = live_dispatch(job, dispatch)
     if not dispatch:
         die(f"{job['id']} has no {role} worker recorded (a new session, or the builder was switched); "
             f"start one with `job start {job['id']} {role} ...`")
@@ -3077,9 +3173,29 @@ def cmd_send(job, role, text):
     res = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True)
     if res.returncode != 0:
         die(f"send to {role} failed:\n{(res.stdout or res.stderr).strip()[:2000]}")
-    note_worker(job, role, dispatch, "messaged")
+    try:
+        receipt = json.loads(res.stdout)
+    except json.JSONDecodeError:
+        receipt = {}
+    new = follow_up_of(receipt, dispatch)
+    if not new:
+        note_worker(job, role, dispatch, "messaged")
+        save(job)
+        print(f"{job['id']}: sent to {role} ({dispatch})")
+        return
+    # The worker had finished or died (an Orca restart): Orca started a follow-up
+    # dispatch. `job next` waits on that one from now on.
+    moves = job.setdefault("followed_by", {})
+    moves[dispatch] = new
+    old = (receipt.get("result") or {}).get("followUpOf")
+    if old and old != new:
+        moves.setdefault(old, new)
+    job["dispatch"][role] = new
+    if dispatch in (job.get("kept_open") or []) and new not in job["kept_open"]:
+        job["kept_open"].append(new)
+    note_worker(job, role, new, "follow-up")
     save(job)
-    print(f"{job['id']}: sent to {role} ({dispatch})")
+    print(f"{job['id']}: sent to {role}: Orca started follow-up dispatch {new} (of {dispatch})")
 
 
 def cmd_dispatch(job, role, dispatch_id):
@@ -3138,7 +3254,7 @@ def step_report(job, role, path, since):
     step and its worker is done, ("running", w), ("silent", w) when the worker
     settled without writing it, or ("idle", None) when no worker was started."""
     w = (job.get("workers") or {}).get(role)
-    w = w if w and w["at"] >= since else None
+    w = dict(w, dispatch=live_dispatch(job, w["dispatch"])) if w and w["at"] >= since else None
     start = max(since, w["at"]) if w else since
     if path.exists() and path.stat().st_mtime >= start:
         if not w or dispatch_state(w["dispatch"]) != "running":
@@ -3146,7 +3262,8 @@ def step_report(job, role, path, since):
         return "running", w
     if not w:
         return "idle", None
-    if w["how"] == "started" and dispatch_state(w["dispatch"]) == "settled":
+    # A start or a follow-up is a task of its own: settling without the file is silence.
+    if w["how"] in {"started", "follow-up"} and dispatch_state(w["dispatch"]) == "settled":
         return "silent", w
     return "running", w
 
@@ -3354,6 +3471,8 @@ NEXT = {"intake": next_intake, "spec": next_spec, "build": next_build, "gate": n
 
 def next_steps(job):
     """[(verb, what)]: what moves the job on now."""
+    if busy(job):  # another command (a merge) holds the job: its steps can wait
+        return [("wait", busy(job))]
     if job["stage"] in TERMINAL:
         return [("done", job["stage"])]
     try:
@@ -3398,7 +3517,13 @@ def cmd_summary(args):
     widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
     for r in rows:
         print("  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip())
+    for j in jobs:
+        if busy(j):
+            print(f"{j['id']}: {busy(j)}")
     print(f"total ${sum(j['cost_usd'] for j in jobs):.2f} (API-equivalent at config.json prices; on a subscription it shows relative spend, not your bill)")
+
+
+READ_ONLY = {"next", "queue", "summary", "worker", "tracker"}  # they don't wait for a job's lock
 
 
 def main(argv):
@@ -3406,6 +3531,9 @@ def main(argv):
         print(__doc__.strip())
         return
     cmd, args = argv[0], argv[1:]
+    global COMMAND, NO_WAIT
+    COMMAND = cmd
+    NO_WAIT = cmd in READ_ONLY or (cmd == "dispatch" and len(args) == 2)
     try:
         if cmd != "claim":
             refresh_claim()

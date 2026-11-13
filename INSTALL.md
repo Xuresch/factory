@@ -119,6 +119,12 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
   them: copy that script here. `ORCA_ROOT_PATH` and `FACTORY_MAIN_CHECKOUT`
   point at the main checkout. A failing setup is logged in the job folder
   (`worktree-setup.log`) and doesn't stop the job.
+- `gate_parallel`: how many gates (round and merge) run `checks.sh` at once
+  on this machine for this repo; default 1, `0` for no limit. Raise it only
+  when two `checks.sh` runs can't fight over ports, a database, a shared cache
+  or the CPU. A gate that waits prints `gate: waiting for <job>'s gate (since
+  HH:MM)`, and checks.md records the wait apart from `checks.sh`'s own time.
+  The builder's `gate --hook` self-check doesn't wait for other gates.
 - `rerun_every_round`: which lenses review every round, by risk (default
   code always, security at high). From round 2 on every other lens that passed
   carries its PASS forward; only the lenses that asked for CHANGES run again,

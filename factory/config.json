@@ -269,5 +269,6 @@
       "effort": "high"
     }
   },
-  "worktree_setup": ""
+  "worktree_setup": "",
+  "gate_parallel": 1
 }

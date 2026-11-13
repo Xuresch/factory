@@ -141,6 +141,9 @@ fix) with:
 factory/bin/job send <id> <role> "<message>"
 ```
 
+If the worker had finished or died (an Orca restart), Orca starts a follow-up
+dispatch; `job send` then prints `Orca started follow-up dispatch <new> (of
+<old>)`, records it as the role's worker, and `job next` waits on that one.
 It refuses when no worker is recorded for the role (a new session, or the
 builder was switched); then `job start` a new one, adding
 `You take over from another builder: read build.md and git log first.`
@@ -198,6 +201,10 @@ Each line is `<job>: <verb>: <what>`:
   nudge for a file it didn't write, a refusal it must fix).
 - `wait: <who> ...`: a worker is still on it, or a human or the issue's author
   has to act. Nothing to do; end your turn.
+- `wait: merge in progress since HH:MM (pid N)`: a `job merge` holds the job
+  (its merge gate takes minutes). `job next`, `job queue` (a `wait` row) and
+  `job summary` don't wait for it; other commands on that job say so and wait.
+  Let the merge finish; don't start a second one.
 - `done: merged` or `done: rejected`.
 
 Run it again after each step for that job, until it says `wait`. A worker's
@@ -279,6 +286,9 @@ Later rounds, after the gate or reviews, use one builder for the whole job:
 start a new `builder` worker told it takes over from the slice builders.
 
 **gate.** Run `factory/bin/gate <id>`. It prints `GATE: PASS` or `GATE: FAIL`.
+Gates take turns (config.json `gate_parallel`): one may print `gate: waiting
+for <job>'s gate` first; let it wait. A failing checks.md lists the failure
+lines under `## Failures`.
 
 - PASS: `factory/bin/job advance <id> review` and go to **review**.
 - FAIL: `factory/bin/job advance <id> build`. If it refuses because this was the
