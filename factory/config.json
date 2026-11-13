@@ -176,6 +176,12 @@
       "cache_write_5m": 10.0,
       "cache_write_1h": 16.0,
       "cache_read": 0.2
+    },
+    "gpt-6.1-sol": {
+      "input": 2.0,
+      "cached_input": 0.1,
+      "cache_write": 2.5,
+      "output": 10.0
     }
   },
   "review_sections": {
