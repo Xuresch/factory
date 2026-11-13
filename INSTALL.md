@@ -189,11 +189,12 @@ gh label create enhancement --force --color A2EEEF --description "New feature or
 Every job works in a fresh worktree. What a stack keeps per checkout decides
 how slow and how big each job is. Put the fixes in `factory/env.sh` and
 `factory/checks.sh`, and the project's test and UI tools in the builder's and
-reviewers' project blocks.
+reviewers' project blocks. Let `checks.sh` report every failing test, not stop
+at the first: each failing gate costs the builder a round.
 
 | Stack | Per worktree | In `env.sh` / `checks.sh` |
 |---|---|---|
-| Rust | `target/`, many GB | `CARGO_TARGET_DIR` shared in the main checkout, `CARGO_BUILD_JOBS`, `CARGO_INCREMENTAL=0`, `CARGO_PROFILE_DEV_DEBUG=line-tables-only`; one target dir per pinned toolchain |
+| Rust | `target/`, many GB | `CARGO_TARGET_DIR` shared in the main checkout, `CARGO_BUILD_JOBS`, `CARGO_INCREMENTAL=0`, `CARGO_PROFILE_DEV_DEBUG=line-tables-only`; one target dir per pinned toolchain; `cargo test --no-fail-fast` (otherwise the first failing test binary hides the rest) |
 | Go | nothing big | `GOCACHE` and `GOMODCACHE` are global already; `go vet ./... && go test -count=1 ./...` (`-count=1` so the gate never reports a cached result) |
 | pnpm | `node_modules`, hard links | `pnpm install --frozen-lockfile --prefer-offline` in `checks.sh`; the store is shared already |
 | bun | `node_modules` | `bun install --frozen-lockfile`; the cache is global already |

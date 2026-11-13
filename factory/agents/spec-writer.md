@@ -109,10 +109,18 @@ What this slice builds, in two or three lines.
 - **Needs** lists the slices whose code this one builds on. A slice starts
   only after those are merged; keep chains short so slices really run in
   parallel. No loops.
+- Logic two slices both need (a shared helper, a common output line) goes in
+  the slice that owns the shared module, and its text names it, so the other
+  slices call it instead of each writing their own copy.
 - Docs updates go to one slice that owns those files.
 
 ## Rules
 
+- When the change removes or reverses a behaviour (a refusal, a block, a
+  default), search the whole repo for tests and fixtures that assert the old
+  one, for example by its error message. List each file in Requirements as a
+  test that must change, and in a split job put it in one slice's **Owns**.
+  Otherwise the gate finds them one failing run at a time.
 - `## Summary` comes right after the issue line: 3 to 5 short bullets a human
   can skim on the dashboard. The detail goes in the sections below it.
 - Don't stop to ask. Intake already asked the author everything only they

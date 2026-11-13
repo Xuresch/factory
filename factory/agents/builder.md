@@ -64,6 +64,10 @@ on the other slices at the same time. Then:
   three statuses.
 - Run the narrowest tests for your slice. The full `checks.sh` runs once,
   after every slice is merged.
+- Don't add lint suppressions (`#![allow(...)]`, `eslint-disable`, `# noqa`,
+  `//nolint`) so your slice compiles or passes alone: nothing removes them
+  after the merge. If one is unavoidable, name the file and line under
+  `## Self-review`.
 - If the factory says your slice conflicts with the job branch, run
   `git merge <job branch>` in your worktree, resolve, commit, and report again.
 
