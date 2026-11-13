@@ -119,6 +119,9 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
 - `review_skip`: leave it `{}`, or name a lens's files so it runs again when a
   later round touches them:
   `{"ui": {"paths": ["src/components/*"], "except": ["*.test.tsx"]}}`.
+- `notify`: how the factory tells the user that a job waits on them (see
+  **Notifications** below). Leave `["desktop"]` unless they want more; ask
+  whether they want push on their phone.
 - `labels`: leave them. They are only the fallback; the factory reads the real
   strings from `docs/agents/triage-labels.md`.
 - Agents: every `{"agent": ...}` entry may name a `model` and an `effort`
@@ -200,6 +203,41 @@ gh label create bug --force --color D73A4A --description "Something is broken"
 gh label create enhancement --force --color A2EEEF --description "New feature or improvement"
 ```
 
+## Notifications
+
+Most of a job's time is spent waiting on the human, so `factory/bin/job` sends
+one message each time a job starts waiting (`paused`, including budget and
+new-dependency pauses, `needs-human`, `needs-info`), saying which job, why,
+and what to do (`Do: merge PR #235, or give feedback with /factory`). Merged and
+rejected jobs get a low-priority message, and `job queue` sends `run finished`
+once when nothing is left to start or running. `config.json` `notify` lists the
+channels; each one is best effort with a 5 s timeout, and a failing one never
+fails a job command:
+
+| Channel | What it does |
+|---|---|
+| `"desktop"` | `notify-send` on this machine (the default) |
+| `"orca"` | the main checkout's card in Orca gets the message as its comment and an unread dot |
+| `{"ntfy_env": "FACTORY_NTFY_URL"}` | POST to [ntfy](https://ntfy.sh), URL from that environment variable; a tap opens the PR or GitHub issue |
+| `{"ntfy": "https://ntfy.sh/<topic>"}` | the same with the URL in the config (the topic is then in the repo) |
+| `{"command": "<shell command>"}` | the title and message on stdin; `FACTORY_NOTIFY_TITLE`, `_PRIORITY` (`low`, `default`, `high`) and `_URL` in its environment |
+
+Any channel takes `"min": "high"` to get only the waiting messages (`orca`
+defaults to `"default"`, the rest to `"low"`). A ntfy channel takes
+`"token_env": "<VAR>"` for an access token. `"auto"` (the old default) still
+means desktop, `""` turns notifications off. Nothing outside this machine is
+contacted unless a channel says so.
+
+Push to a phone with ntfy, without putting the topic in the repo:
+
+1. Install the ntfy app and subscribe to a long random topic, e.g. `factory-$(openssl rand -hex 12)`.
+2. `export FACTORY_NTFY_URL=https://ntfy.sh/<that topic>` in the shell profile of the session that runs `/factory run`.
+3. Set `"notify": ["desktop", {"ntfy_env": "FACTORY_NTFY_URL"}]` and check it with
+   `curl -d test "$FACTORY_NTFY_URL"`.
+
+Anyone who knows a topic on the public ntfy.sh server can read it, so keep it
+long and random, or use a self-hosted server with `token_env`.
+
 ## Stack notes
 
 Every job works in a fresh worktree. What a stack keeps per checkout decides
@@ -262,6 +300,8 @@ Then tell the user, in a few lines:
 - Every job ends as a PR. The approver merges what it approves; the rest wait
   labeled `ready-for-human`. Approve one by merging it on GitHub, or tell
   the factory what to change with `/factory <anything>`.
+- A job that waits on them sends a desktop notification saying what to do.
+  For push on their phone, see **Notifications** (ntfy, three steps).
 - Intake runs on Fable, once per issue. Depending on their plan, Fable can
   bill to usage credits rather than the plan's included usage.
 - Codex workers run without Claude's tool limits (with this machine's Codex

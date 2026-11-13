@@ -301,6 +301,14 @@ so and leaves the branch alone: tell the user and point them to
 A job is finished for this run when it reaches `merged`, `rejected`,
 `needs-info`, `needs-human` or `paused`. Its workers close on their own.
 
+**Notifications.** `job advance` itself tells the user, on the channels in
+`config.json` `notify`, each time a job starts waiting on them (with why and
+what to do), and when one is merged or rejected; `job queue` says `run finished`
+once when nothing is left to start or running. Don't send notifications
+yourself, and don't change `notify`; if the user asks for phone push, point
+them to the Notifications section of the factory's INSTALL.md (ntfy, the URL in
+an environment variable, never in the repo).
+
 A person can merge a job's PR (or, locally, its branch into the base) by hand at any stage. `factory/bin/job queue`
 then moves the job to `merged`; stop any workers still running for it, as the
 `orchestration` guide's recovery reference says.

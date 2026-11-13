@@ -1203,9 +1203,11 @@ def advance(job, stage):
     job["ended"] = now() if stage in TERMINAL | WAITING else None
     if stage in TERMINAL | WAITING:
         release_kept_open(job)
-    if stage in WAITING:
-        notify(f"{job['id']} ({job['issue']}) waits for you: {stage}"
-               + (f" after {job['paused']['after']}" if stage == "paused" else ""))
+    if stage != old:
+        try:
+            announce(job, old)
+        except Exception:
+            pass  # a notification never fails a transition
     job.setdefault("history", []).append({"stage": stage, "round": job["round"], "at": now()})
     return job
 
@@ -1559,21 +1561,193 @@ def release_kept_open(job, only=None):
     job["kept_open"] = keep
 
 
-def notify(text):
-    """Best effort: a desktop notification when a job needs the human."""
-    cmd = CONFIG.get("notify", "auto")
-    if not cmd:
-        return
-    if cmd == "auto":
-        if not shutil.which("notify-send"):
-            return
-        argv = ["notify-send", "--app-name=factory", "Software factory", text]
+# ---- Notifications: tell the human when a job starts waiting on them ---------
+#
+# config.json `notify` is a list of channels. Each gets every message at or
+# above its `min` priority (low, default or high; `orca` defaults to default,
+# the others to low):
+#
+#   "desktop"                              notify-send on this machine
+#   "orca"                                 the main checkout's card in Orca: comment + unread dot
+#   {"ntfy": "https://ntfy.sh/<topic>"}    HTTP POST to ntfy (phone push); a click opens the PR/issue
+#   {"ntfy_env": "FACTORY_NTFY_URL"}       the same, the URL read from that environment variable
+#   {"command": "<shell command>"}         the message on stdin, FACTORY_NOTIFY_* in its environment
+#
+# A ntfy channel may add "token_env": "<VAR>" for an access token. The old
+# string forms still work: "auto" is ["desktop"], "" is off, and any other
+# string is a command that gets the message as its last argument.
+# Every channel is best effort with a short timeout: a failing one never fails
+# the job command, and the others still get the message.
+
+PRIORITIES = {"low": 1, "default": 2, "high": 3}
+URGENCY = {"low": "low", "default": "normal", "high": "critical"}
+NOTIFY_TIMEOUT = 5
+NOTIFY_STATE = JOBS / "_notify.json"
+
+
+def notify_channels():
+    """config.json `notify` as a list of channel dicts."""
+    value = CONFIG.get("notify", "auto")
+    if not value:
+        return []
+    out = []
+    for ch in value if isinstance(value, list) else [value]:
+        if isinstance(ch, str) and ch in {"desktop", "orca", "auto"}:
+            out.append({"desktop" if ch == "auto" else ch: True})
+        elif isinstance(ch, str):
+            out.append({"command": ch, "as_arg": True})  # the old string form
+        elif isinstance(ch, dict):
+            out.append(ch)
+    return out
+
+
+def ascii_header(value):
+    """HTTP header values must be latin-1; ntfy decodes RFC 2047 for the rest."""
+    if value.isascii():
+        return value
+    import base64
+    return "=?UTF-8?B?" + base64.b64encode(value.encode()).decode() + "?="
+
+
+def send_ntfy(url, title, text, priority, click, tags, token=None):
+    import urllib.request
+    headers = {"Title": ascii_header(title), "Priority": priority, "Tags": ",".join(tags)}
+    if click:
+        headers["Click"] = click
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, data=text.encode(), headers=headers, method="POST")
+    urllib.request.urlopen(req, timeout=NOTIFY_TIMEOUT).close()
+
+
+def send_channel(ch, title, text, priority, click, tags):
+    """Deliver one message on one channel. May raise: notify() swallows it."""
+    if ch.get("desktop"):
+        if shutil.which("notify-send"):
+            subprocess.run(["notify-send", "--app-name=factory", f"--urgency={URGENCY[priority]}", title, text],
+                           capture_output=True, timeout=NOTIFY_TIMEOUT)
+    elif ch.get("orca"):
+        subprocess.run([orca_cli(), "worktree", "set", "--worktree", f"path:{REPO}",
+                        "--comment", f"{title}. {text.splitlines()[-1]}"[:200], "--unread", "--json"],
+                       cwd=REPO, capture_output=True, timeout=NOTIFY_TIMEOUT)
+    elif ch.get("ntfy") or ch.get("ntfy_env"):
+        url = ch.get("ntfy") or os.environ.get(ch["ntfy_env"], "")
+        token = os.environ.get(ch["token_env"], "") if ch.get("token_env") else None
+        if url.startswith(("http://", "https://")):
+            send_ntfy(url, title, text, priority, click, tags, token)
+    elif ch.get("command"):
+        env = {**os.environ, "FACTORY_NOTIFY_TITLE": title, "FACTORY_NOTIFY_PRIORITY": priority,
+               "FACTORY_NOTIFY_URL": click or ""}
+        if ch.get("as_arg"):
+            subprocess.run([*ch["command"].split(), f"{title}: {text}"], capture_output=True,
+                           timeout=NOTIFY_TIMEOUT, env=env)
+        else:
+            subprocess.run(["sh", "-c", ch["command"]], input=f"{title}\n{text}\n", text=True,
+                           capture_output=True, timeout=NOTIFY_TIMEOUT, env=env, cwd=REPO)
+
+
+def notify(title, text, priority="high", click=None, tags=()):
+    """Best effort: one message on every configured channel."""
+    for ch in notify_channels():
+        try:
+            if PRIORITIES[priority] < PRIORITIES.get(ch.get("min", "default" if ch.get("orca") else "low"), 1):
+                continue
+            send_channel(ch, title, text, priority, click, list(tags))
+        except Exception:
+            pass
+
+
+def link_of(job):
+    """Where a click on the notification goes: the PR, else a GitHub issue."""
+    url = job.get("pr_url") or job.get("issue_url") or ""
+    return url if url.startswith(("http://", "https://")) else None
+
+
+def first_text_line(text):
+    """The first line of prose in a markdown body, without its bullet or number.
+    A line ending in a colon ("The builder is blocked:") takes the next one along."""
+    lines = [re.sub(r"^\s*(?:[-*]|\d+[.)])\s+", "", l).strip() for l in (text or "").splitlines()]
+    lines = [l for l in lines if l and not l.startswith(("#", "```"))]
+    out = " ".join(lines[:2]) if lines and lines[0].endswith(":") else (lines or [""])[0]
+    return out[:200]
+
+
+def wait_reason(job):
+    """(why, what to do) for a job that just started waiting on the human."""
+    d, jid = job_dir(job["id"]), job["id"]
+    rel = f"factory/jobs/{jid}"
+    if job["stage"] == "paused":
+        p = job["paused"]
+        if p["after"] == "budget":
+            limit = job.get("cost_allowance", CONFIG["max_cost_usd"])
+            return (f"over budget, ${job.get('cost_usd', 0):.2f} of its ${limit:.2f} allowance",
+                    f"/factory resume {jid} to allow ${CONFIG['max_cost_usd']:.2f} more, give feedback, or reject it")
+        if p["after"] == "dependencies":
+            return (f"the spec adds dependencies: {', '.join(x.split(':')[0] for x in new_dependencies(job))}",
+                    f"read {rel}/spec.md (## New dependencies), then /factory resume {jid} to approve them, "
+                    "or edit the spec to drop one, or give feedback")
+        f = "intake.md" if p["after"] == "intake" else "spec.md"
+        risk = (job.get("intake") or {}).get("risk")
+        held = p["after"] == "spec" and risk in CONFIG.get("hold", {}).get("after_spec_risk", [])
+        why = f"{risk} risk, held for your review" if held else "the ticket asks for a hold here"
+        return why, f"read {rel}/{f} (edit it if you want), then /factory resume {jid}, or give feedback"
+    if job["stage"] == "needs-info":
+        q = section(d / "intake.md", "Questions") if (d / "intake.md").exists() else None
+        where = (f"on issue #{job['issue']}" if GITHUB
+                 else f"in {job.get('issue_url') or job['issue']} under ## Comments, or tell /factory")
+        return f"intake asks: {first_text_line(q) or f'see {rel}/intake.md'}", f"answer the question {where}"
+    why = ""
+    if (d / "decision.md").exists():
+        why = first_text_line(section(d / "decision.md", "Why") or (d / "decision.md").read_text().split("\n", 1)[-1])
+    if job["pr"]:
+        action = f"merge PR #{job['pr']}, or give feedback with /factory"
+    elif not GITHUB and job.get("review_head"):
+        action = f"read {rel}/decision.md, then /factory approve {jid}, or give feedback with /factory"
     else:
-        argv = [*cmd.split(), text]
+        action = f"read {rel}/decision.md, then give feedback with /factory, or reject it"
+    return why or "escalated", action
+
+
+def announce(job, old):
+    """One message when a job moves into a waiting or a final stage."""
+    stage = job["stage"]
+    name = f"{job['id']} ({'#' if GITHUB else ''}{job['issue']})"
+    if stage in WAITING:
+        why, action = wait_reason(job)
+        what = f"paused after {job['paused']['after']}" if stage == "paused" else stage
+        notify(f"Factory: {name} waits for you", f"{what}: {why}\nDo: {action}",
+               "high", link_of(job), ["hourglass"])
+    elif stage == "merged":
+        how = f"PR #{job['pr']} merged" if job["pr"] else f"merged into {jbase(job)}"
+        notify(f"Factory: {name} merged", f"{job['title']}: {how}", "low", link_of(job), ["white_check_mark"])
+    elif stage == "rejected":
+        d = job_dir(job["id"])
+        if (d / "rejection.md").exists():  # REJECTED, By @who ..., then the reason
+            why = first_text_line((d / "rejection.md").read_text().split("\n\n", 2)[-1])
+        else:  # intake turned it away
+            why = "intake: " + first_text_line(section(d / "intake.md", "Why") if (d / "intake.md").exists() else "")
+        notify(f"Factory: {name} rejected", f"{job['title']}: {why}", "low", link_of(job), ["x"])
+
+
+def announce_idle(busy_now, jobs):
+    """Once per run, when the queue empties: nothing to start and nothing running.
+    `job queue` runs after every finished job, so this is where a run ends."""
     try:
-        subprocess.run(argv, capture_output=True, timeout=10)
-    except Exception:
-        pass
+        was_busy = json.loads(NOTIFY_STATE.read_text()).get("busy", False)
+    except (OSError, ValueError):
+        was_busy = False
+    if busy_now != was_busy:
+        JOBS.mkdir(parents=True, exist_ok=True)
+        NOTIFY_STATE.write_text(json.dumps({"busy": busy_now, "at": now()}) + "\n")
+    if was_busy and not busy_now:
+        waiting = [j for j in jobs if j["stage"] in WAITING]
+        if waiting:
+            text = (f"{len(waiting)} job(s) wait for you: "
+                    + ", ".join(f"{j['id']} ({j['stage']})" for j in waiting)
+                    + "\nDo: ask /factory what needs you")
+        else:
+            text = "Nothing waits for you."
+        notify("Factory: run finished", text, "default", None, ["checkered_flag"])
 
 
 def spec_from_intake(job):
@@ -2157,6 +2331,11 @@ def cmd_queue(args=()):
                 other_rows.append(("skip", n, "-", "-", f"not labeled {LABELS['queue']}{state}"))
     for row in rows + other_rows:
         print("\t".join(str(c) for c in row))
+    every = all_jobs()
+    try:
+        announce_idle(bool(rows) or bool(running(every)), every)
+    except Exception:
+        pass  # a notification never fails the queue
 
 
 def friction(job):

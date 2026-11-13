@@ -192,7 +192,9 @@
   },
   "review_skip": {},
   "max_cost_usd": null,
-  "notify": "auto",
+  "notify": [
+    "desktop"
+  ],
   "retro_after_merge": "friction",
   "feature_review": true,
   "keep_open_roles": [
