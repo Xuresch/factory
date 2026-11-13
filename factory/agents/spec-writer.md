@@ -121,6 +121,13 @@ What this slice builds, in two or three lines.
   one, for example by its error message. List each file in Requirements as a
   test that must change, and in a split job put it in one slice's **Owns**.
   Otherwise the gate finds them one failing run at a time.
+- When the change adds a value that must never be printed (a secret, token
+  or key), list every output sink in Requirements up front: history, report
+  formats (JSON, JUnit, console), runner progress, stdout and stderr, errors,
+  prompts and URLs shown to the user, WebSocket records, exports, codegen and
+  the native UI. Give each sink its own acceptance criterion with a test
+  against a known synthetic value, and say which sinks are out of scope.
+  Otherwise reviewers find the sinks one round at a time.
 - `## Summary` comes right after the issue line: 3 to 5 short bullets a human
   can skim on the dashboard. The detail goes in the sections below it.
 - Don't stop to ask. Intake already asked the author everything only they
