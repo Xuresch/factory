@@ -230,6 +230,32 @@
   }
   .md .summary ul { margin: 0 0 .6em; }
 
+  /* Views */
+  nav.views { display: flex; gap: 4px; margin-right: auto; margin-left: 18px; }
+  nav.views a {
+    color: var(--muted); text-decoration: none; font-size: 13px; padding: 3px 10px;
+    border-radius: 6px; border: 1px solid transparent;
+  }
+  nav.views a.on { color: var(--text); border-color: var(--line); background: var(--panel); }
+  .costs-view { padding: 20px 32px 40px; max-width: 1400px; }
+  .costs-view[hidden], .board[hidden] { display: none; }
+  .costs-view h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 28px 0 10px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+  .tile { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+  .tile .v { font-family: var(--mono); font-size: 20px; font-weight: 600; }
+  .tile .k { color: var(--muted); font-size: 12px; }
+  .tile .s { color: var(--faint); font-size: 11px; font-family: var(--mono); }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(560px, 1fr)); gap: 0 28px; }
+  .costs-view table.costs th, .costs-view table.costs td { white-space: nowrap; }
+  .md table.costs th[data-sort] { cursor: pointer; user-select: none; }
+  .md table.costs th[data-sort].on { color: var(--active); }
+  .md table.costs tr[data-job] { cursor: pointer; }
+  .md table.costs tr[data-job]:hover td { background: var(--card-hover); }
+  .md table.costs td.t { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .md table.costs .stage-merged { color: var(--merged); }
+  .md table.costs .stage-rejected { color: var(--faint); }
+  .md table.costs .stage-human { color: var(--human); }
+
   footer {
     padding: 0 32px 32px; font-family: var(--mono); font-size: 11px; color: var(--faint);
     display: flex; gap: 20px; flex-wrap: wrap;
@@ -243,6 +269,8 @@
     header { padding: 20px 16px 4px; }
     .banner { margin: 12px 16px 0; }
     .board { grid-template-columns: 1fr; padding: 16px 16px 32px; }
+    .costs-view { padding: 16px 16px 32px; }
+    .grid2 { grid-template-columns: 1fr; }
     footer { padding: 0 16px 24px; }
     .d-head { padding: 16px; }
     .d-body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
@@ -260,13 +288,15 @@
 <body>
 <header>
   <h1>Software factory</h1>
+  <nav class="views"><a href="#board" id="v-board">Board</a><a href="#costs" id="v-costs">Costs</a></nav>
   <div class="status" id="status">connecting…</div>
 </header>
 <div id="banner"></div>
 <main class="board" id="board"></main>
+<main class="costs-view md" id="costsview" hidden></main>
 <footer>
   <span>/factory run</span>
-  <span>/factory run &lt;n&gt;</span>
+  <span>/factory run 11-14</span>
   <span>/factory &lt;anything&gt;</span>
   <span id="totals"></span>
 </footer>
@@ -308,6 +338,8 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
 
 let jobs = []
 let lastRender = ''
+let lastCosts = ''
+let costSort = { key: 'started', dir: -1 }
 const roundCache = new Map() // "<job>/<n>" -> verdicts of a finished round
 let openJobId = null
 let openPath = null
@@ -416,6 +448,15 @@ function card(job, rounds) {
 }
 
 async function render() {
+  const costsView = location.hash === '#costs'
+  $('board').hidden = costsView
+  $('costsview').hidden = !costsView
+  $('v-board').className = costsView ? '' : 'on'
+  $('v-costs').className = costsView ? 'on' : ''
+  if (costsView) {
+    const html = costsPage()
+    if (html !== lastCosts) { lastCosts = html; $('costsview').innerHTML = html }
+  }
   const problems = []
   const cards = new Map(COLUMNS.map((c) => [c, []]))
   for (const job of jobs) {
@@ -625,6 +666,141 @@ function costTable(job) {
     <p class="note">API-equivalent at factory/config.json prices. A builder keeps one session across rounds, so its row covers every round. Input is uncached input plus cache writes.</p>`
 }
 
+// ---- Costs view ----------------------------------------------------------
+
+const WAIT = new Set(['needs-human', 'paused', 'needs-info'])
+const money = (n) => `$${Number(n || 0).toFixed(2)}`
+const pct = (part, whole) => (whole ? Math.round((100 * part) / whole) : 0)
+const bar = (share) => `<span class="bar" style="--w:${share}%"></span>${share}%`
+const shortModel = (m) => String(m || '?').replace(/^claude-/, '').replace(/-\d+(-\d+)*$/, '')
+
+// Time a job spent working and waiting on a human, from job.history.
+function times(job) {
+  const h = job.history || []
+  const end = job.ended ? Date.parse(job.ended) : Date.now()
+  let wait = 0
+  h.forEach((e, i) => {
+    const to = i + 1 < h.length ? Date.parse(h[i + 1].at) : (TERMINAL_STAGES.has(e.stage) ? Date.parse(e.at) : end)
+    if (WAIT.has(e.stage)) wait += to - Date.parse(e.at)
+  })
+  const total = job.started ? end - Date.parse(job.started) : 0
+  return { total, wait, work: Math.max(0, total - wait) }
+}
+const TERMINAL_STAGES = new Set(['merged', 'rejected'])
+
+function group(rows, keyOf) {
+  const out = new Map()
+  for (const r of rows) {
+    const k = keyOf(r)
+    const g = out.get(k) || { key: k, sessions: 0, input: 0, cached: 0, output: 0, cost: 0, jobs: new Set() }
+    g.sessions += Number(r.sessions || 0); g.input += Number(r.input_tokens || 0)
+    g.cached += Number(r.cached_tokens || 0); g.output += Number(r.output_tokens || 0)
+    g.cost += Number(r.cost_usd || 0); g.jobs.add(r.job)
+    out.set(k, g)
+  }
+  return [...out.values()].sort((a, b) => b.cost - a.cost)
+}
+
+function tokenTable(title, groups, total, label) {
+  const body = groups.map((g) => `<tr><td>${esc(g.key)}</td><td class="n">${g.jobs.size}</td>
+    <td class="n">${g.sessions}</td><td class="n">${tokens(g.input)}</td><td class="n">${tokens(g.cached)}</td>
+    <td class="n">${tokens(g.output)}</td><td class="n">${money(g.cost)}</td><td class="n">${bar(pct(g.cost, total))}</td></tr>`).join('')
+  return `<div><h2>${title}</h2><table class="costs"><thead><tr><th>${label}</th><th class="n">jobs</th>
+    <th class="n">sessions</th><th class="n">input</th><th class="n">cached</th><th class="n">output</th>
+    <th class="n">cost</th><th class="n">share</th></tr></thead><tbody>${body}</tbody></table></div>`
+}
+
+function costsPage() {
+  if (!jobs.length) return '<p class="note">No jobs yet.</p>'
+  const rows = jobs.flatMap((j) => (j.cost_breakdown || []).map((r) => ({ ...r, job: j.id })))
+  const total = jobs.reduce((s, j) => s + Number(j.cost_usd || 0), 0)
+  const agent = (a) => jobs.reduce((s, j) => s + Number((j.cost_by_agent || {})[a] || 0), 0)
+  const merged = jobs.filter((j) => j.stage === 'merged')
+  const t = new Map(jobs.map((j) => [j.id, times(j)]))
+  const avg = (list, f) => (list.length ? list.reduce((s, j) => s + f(j), 0) / list.length : 0)
+  const counts = { merged: merged.length, rejected: jobs.filter((j) => j.stage === 'rejected').length }
+  counts.open = jobs.length - counts.merged - counts.rejected
+  const tile = (v, k, sub = '') => `<div class="tile"><div class="v">${v}</div><div class="k">${k}</div>${sub ? `<div class="s">${sub}</div>` : ''}</div>`
+  const tiles = `<div class="tiles">
+    ${tile(money(total), 'total', `claude ${money(agent('claude'))} · codex ${money(agent('codex'))}`)}
+    ${tile(jobs.length, 'jobs', `${counts.merged} merged · ${counts.open} open · ${counts.rejected} rejected`)}
+    ${tile(money(avg(merged, (j) => Number(j.cost_usd || 0))), 'per merged job', merged.length ? `max ${money(Math.max(...merged.map((j) => Number(j.cost_usd || 0))))}` : '')}
+    ${tile(avg(merged, (j) => j.round).toFixed(1), 'rounds per merged job', `${merged.filter((j) => j.round > 1).length} needed more than one`)}
+    ${tile(mins(avg(merged, (j) => t.get(j.id).work)), 'working time per merged job', `waiting on you ${mins(avg(merged, (j) => t.get(j.id).wait))}`)}
+    ${tile(jobs.filter((j) => j.spec_skipped).length, 'specs skipped', 'small, low-risk jobs')}
+  </div>`
+
+  const byModel = group(rows, (r) => `${r.agent} · ${shortModel(r.model)}`)
+  const byRole = group(rows, (r) => String(r.role).replace(/-s\d+$/, ' (slices)'))
+  const riskRows = new Map()
+  for (const j of jobs) {
+    const k = `${(j.intake || {}).risk || '?'} · ${(j.intake || {}).size || '?'}`
+    const g = riskRows.get(k) || { key: k, n: 0, cost: 0, rounds: 0, work: 0 }
+    g.n++; g.cost += Number(j.cost_usd || 0); g.rounds += j.round; g.work += t.get(j.id).work
+    riskRows.set(k, g)
+  }
+  const riskBody = [...riskRows.values()].sort((a, b) => b.cost - a.cost).map((g) => `<tr><td>${esc(g.key)}</td>
+    <td class="n">${g.n}</td><td class="n">${money(g.cost)}</td><td class="n">${money(g.cost / g.n)}</td>
+    <td class="n">${(g.rounds / g.n).toFixed(1)}</td><td class="n">${mins(g.work / g.n)}</td>
+    <td class="n">${bar(pct(g.cost, total))}</td></tr>`).join('')
+  const days = new Map()
+  for (const j of jobs) {
+    const d = (j.started || '').slice(0, 10) || '?'
+    days.set(d, (days.get(d) || 0) + Number(j.cost_usd || 0))
+  }
+  const peak = Math.max(...days.values(), 0)
+  const dayBody = [...days.entries()].sort().reverse().map(([d, c]) => `<tr><td>${esc(d)}</td>
+    <td class="n">${jobs.filter((j) => (j.started || '').startsWith(d)).length}</td><td class="n">${money(c)}</td>
+    <td class="n"><span class="bar" style="--w:${pct(c, peak)}%"></span></td></tr>`).join('')
+
+  const cols = [
+    ['job', 'job', (j) => j.title || j.id], ['stage', 'stage', (j) => j.stage],
+    ['risk', 'risk · size', (j) => `${(j.intake || {}).risk || '?'} · ${(j.intake || {}).size || '?'}`],
+    ['round', 'rounds', (j) => j.round], ['work', 'working', (j) => t.get(j.id).work],
+    ['wait', 'waiting', (j) => t.get(j.id).wait],
+    ['claude', 'claude', (j) => Number((j.cost_by_agent || {}).claude || 0)],
+    ['codex', 'codex', (j) => Number((j.cost_by_agent || {}).codex || 0)],
+    ['cost', 'total', (j) => Number(j.cost_usd || 0)], ['started', 'started', (j) => j.started || ''],
+  ]
+  const sortCol = cols.find((c) => c[0] === costSort.key) || cols[cols.length - 1]
+  const sorted = [...jobs].sort((a, b) => {
+    const x = sortCol[2](a), y = sortCol[2](b)
+    return (x < y ? -1 : x > y ? 1 : 0) * costSort.dir
+  })
+  const models = (j) => [...new Set((j.cost_breakdown || []).map((r) => shortModel(r.model)))].join(', ')
+  const stageCls = (s) => s === 'merged' ? 'stage-merged' : s === 'rejected' ? 'stage-rejected' : WAIT.has(s) ? 'stage-human' : ''
+  const jobBody = sorted.map((j) => {
+    const tj = t.get(j.id)
+    return `<tr data-job="${esc(j.id)}" tabindex="0"><td class="t" title="${esc(j.title || j.id)}">${esc(j.title || j.id)}</td>
+      <td class="${stageCls(j.stage)}">${esc(j.stage)}${j.spec_skipped ? ' · no spec' : ''}</td>
+      <td>${esc(cols[2][2](j))}</td><td class="n">${j.round}</td>
+      <td class="n">${tj.work ? mins(tj.work) : '–'}</td><td class="n">${tj.wait ? mins(tj.wait) : '–'}</td>
+      <td class="n">${money((j.cost_by_agent || {}).claude)}</td><td class="n">${money((j.cost_by_agent || {}).codex)}</td>
+      <td class="n">${money(j.cost_usd)}</td>
+      <td class="n">${j.started ? esc(new Date(j.started).toLocaleDateString([], { day: '2-digit', month: '2-digit' })) : '–'}</td>
+      <td>${esc(models(j))}</td></tr>`
+  }).join('')
+  const head = cols.map(([k, label]) => `<th data-sort="${k}" class="${['job', 'stage', 'risk'].includes(k) ? '' : 'n'}${k === costSort.key ? ' on' : ''}">${label}${k === costSort.key ? (costSort.dir > 0 ? ' ↑' : ' ↓') : ''}</th>`).join('')
+
+  return `${tiles}
+    <h2>Jobs</h2>
+    <table class="costs"><thead><tr>${head}<th>models</th></tr></thead><tbody>${jobBody}</tbody>
+      <tfoot><tr><td colspan="6">total</td><td class="n">${money(agent('claude'))}</td><td class="n">${money(agent('codex'))}</td>
+      <td class="n">${money(total)}</td><td colspan="2"></td></tr></tfoot></table>
+    <div class="grid2">
+      ${tokenTable('By model', byModel, total, 'agent · model')}
+      ${tokenTable('By role', byRole, total, 'role')}
+      <div><h2>By risk and size</h2><table class="costs"><thead><tr><th>risk · size</th><th class="n">jobs</th>
+        <th class="n">cost</th><th class="n">per job</th><th class="n">rounds</th><th class="n">working</th>
+        <th class="n">share</th></tr></thead><tbody>${riskBody}</tbody></table></div>
+      <div><h2>By day started</h2><table class="costs"><thead><tr><th>day</th><th class="n">jobs</th>
+        <th class="n">cost</th><th class="n"></th></tr></thead><tbody>${dayBody}</tbody></table></div>
+    </div>
+    <p class="note">API-equivalent at factory/config.json prices; on a subscription it shows relative spend, not your bill.
+      Working time is the job's wall clock minus the time it waited on you (needs-human, paused, needs-info).
+      Click a job to open it, a column to sort.</p>`
+}
+
 async function openDrawer(id) {
   openJobId = id
   openPath = null
@@ -644,6 +820,12 @@ function closeDrawer() {
 
 document.addEventListener('click', (e) => {
   if (e.target.closest('a')) return
+  const sortEl = e.target.closest('[data-sort]')
+  if (sortEl) {
+    const key = sortEl.dataset.sort
+    costSort = { key, dir: costSort.key === key ? -costSort.dir : (['job', 'stage', 'risk'].includes(key) ? 1 : -1) }
+    return render()
+  }
   const ticketEl = e.target.closest('[data-ticket]')
   if (ticketEl) {
     e.stopPropagation()
@@ -768,6 +950,7 @@ function markdown(src) {
   return html
 }
 
+window.addEventListener('hashchange', () => render())
 poll()
 setInterval(poll, POLL_MS)
 </script>
