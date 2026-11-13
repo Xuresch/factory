@@ -70,6 +70,11 @@ every item must be checkable by someone who only has the repo.
 What a reasonable builder might be tempted to do but must not, including
 everything intake left out.
 
+## Needs a human
+None. Or one bullet per thing only a human can check or do before this ships,
+each with the exact command or place to look:
+`- <what>: <command or URL>; done when <result>`.
+
 ## New dependencies
 None. Or one bullet per package, tool or service the change adds:
 `- <name>: why, and why what the repo already has isn't enough`.
@@ -132,6 +137,13 @@ What this slice builds, in two or three lines.
   the native UI. Give each sink its own acceptance criterion with a test
   against a known synthetic value, and say which sinks are out of scope.
   Otherwise reviewers find the sinks one round at a time.
+- `## Needs a human` lists only what nobody in the factory can check: the
+  state of production or of a live service, a secret or account, an external
+  dashboard, an operator step from intake's `Operator prerequisites`, a
+  product decision you can't make. Not what tests or reviewers can verify. A
+  high-risk job pauses after the spec only when this section lists something,
+  so don't pad it, and don't leave out a real one: it is the human's one look
+  before the build.
 - Decide about new dependencies now, not in review: list every package,
   tool or service the change adds under `## New dependencies`. A listed
   dependency pauses the job for the human's OK before anything is built, so

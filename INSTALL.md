@@ -124,6 +124,10 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
   them: copy that script here. `ORCA_ROOT_PATH` and `FACTORY_MAIN_CHECKOUT`
   point at the main checkout. A failing setup is logged in the job folder
   (`worktree-setup.log`) and doesn't stop the job.
+- `hold.after_spec_risk` with `hold.only_when_needed` (default `true`): a job
+  of that risk pauses after the spec only when the spec's `## Needs a human`
+  lists something for the human to check or do; set it `false` to hold every
+  one. A ticket that says `**Factory:** hold after spec` always pauses.
 - `rerun_every_round`: which lenses review every round, by risk (default
   code always, security at high). From round 2 on every other lens that passed
   carries its PASS forward; only the lenses that asked for CHANGES run again,

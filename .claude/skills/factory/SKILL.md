@@ -323,6 +323,9 @@ finished:
 **paused.** When `advance` prints `paused`, the job waits for a human after
 intake or spec (the ticket asked for it, or its risk is in `hold.after_spec_risk`),
 or after a spec whose `## New dependencies` lists any (`paused after dependencies`).
+A job whose risk is in `hold.after_spec_risk` pauses after the spec only when
+its `## Needs a human` lists something (`hold.only_when_needed`, default on);
+tell the user those items, they are what the human has to do.
 Stop working on it and tell the user which file to review. Resuming a
 dependencies pause approves them; the approver won't ask about them again. It resumes only
 through the user (see below).

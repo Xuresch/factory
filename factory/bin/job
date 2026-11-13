@@ -1731,6 +1731,11 @@ def wait_reason(job):
             return (f"the spec adds dependencies: {', '.join(x.split(':')[0] for x in new_dependencies(job))}",
                     f"read {rel}/spec.md (## New dependencies), then /factory resume {jid} to approve them, "
                     "or edit the spec to drop one, or give feedback")
+        todo = needs_a_human(job) if p["after"] == "spec" else []
+        if todo:
+            return (f"needs you: {todo[0]}" + (f" (+{len(todo) - 1} more)" if len(todo) > 1 else ""),
+                    f"do what {rel}/spec.md lists under ## Needs a human, then /factory resume {jid} "
+                    "with what you found, or give feedback")
         f = "intake.md" if p["after"] == "intake" else "spec.md"
         risk = (job.get("intake") or {}).get("risk")
         held = p["after"] == "spec" and risk in CONFIG.get("hold", {}).get("after_spec_risk", [])
@@ -1822,20 +1827,33 @@ def spec_from_intake(job):
     return True
 
 
-def new_dependencies(job):
-    """The bullets of spec.md `## New dependencies`, or [] when it says None."""
+def spec_bullets(job, heading):
+    """The `- ` bullets of a spec.md section, or [] when it's missing or says None."""
     f = job_dir(job["id"]) / "spec.md"
-    body = section(f, "New dependencies") if f.exists() else None
+    body = section(f, heading) if f.exists() else None
     return [l[2:].strip() for l in (body or "").splitlines() if l.startswith("- ")]
+
+
+def new_dependencies(job):
+    return spec_bullets(job, "New dependencies")
+
+
+def needs_a_human(job):
+    """What only a human can check or do before this job ships (spec.md `## Needs a human`)."""
+    return spec_bullets(job, "Needs a human")
 
 
 def hold_point(job, old, stage):
     limit = CONFIG.get("max_cost_usd")
     if limit and stage in BUDGETED and job.get("cost_usd", 0) > job.get("cost_allowance", limit):
         return "budget"
-    holds = set(job.get("holds") or [])
-    if (job.get("intake") or {}).get("risk") in CONFIG.get("hold", {}).get("after_spec_risk", []):
-        holds.add("spec")
+    holds = set(job.get("holds") or [])  # the ticket asked for these: always
+    hold = CONFIG.get("hold", {})
+    if (job.get("intake") or {}).get("risk") in hold.get("after_spec_risk", []):
+        # A risky job waits for the human only when the spec has something for them to do,
+        # unless config says to hold every one (`hold.only_when_needed: false`).
+        if not hold.get("only_when_needed", True) or old != "spec" or needs_a_human(job):
+            holds.add("spec")
     if old == "intake" and stage == "spec" and "intake" in holds:
         return "intake"
     if old == "spec" and stage == "build" and "spec" in holds:
@@ -1860,6 +1878,15 @@ def pause(job, after, resume):
                 f"### Factory: new dependencies need your OK\n\nThe spec adds:\n\n{deps}\n\nResume to "
                 f"approve them (the approver then won't ask again), edit `factory/jobs/{job['id']}/spec.md` "
                 f"to drop one, or send feedback.")
+        return label("issue", job["issue"], add=LABELS["needs_human"], remove=LABELS["queue"])
+    todo = needs_a_human(job) if after == "spec" else []
+    if todo:
+        items = "\n".join(f"- {x}" for x in todo)
+        comment("issue", job["issue"],
+                f"### Factory: paused after spec, needs you\n\nBefore this job is built, the spec "
+                f"needs from you:\n\n{items}\n\nDo them, then resume with one line of what you found "
+                f"(it goes to accepted.md for the approver). Review `factory/jobs/{job['id']}/spec.md` "
+                f"too if you like; your edits are binding. Or send feedback, or reject the job.")
         return label("issue", job["issue"], add=LABELS["needs_human"], remove=LABELS["queue"])
     f = "intake.md" if after == "intake" else "spec.md"
     comment("issue", job["issue"],

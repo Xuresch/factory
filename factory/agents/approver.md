@@ -61,6 +61,11 @@ again for the same reason. A resume accepts the design the paused file
 describes, nothing beyond it.
 Escalate only when the change goes beyond what they decided.
 
+**Needs a human.** Every item in spec.md `## Needs a human` must be answered
+by a human: a line in `accepted.md` or a `feedback-*.md` that says it was done
+and what they found. An item nobody answered is a reason to ESCALATE, quoting
+it, even when everything else passes.
+
 **Silence is not agreement.** An open question stays open until a human
 answers it. A human who reported something else (a failing test, a CI error)
 and didn't mention the question hasn't approved it: escalate it again,
