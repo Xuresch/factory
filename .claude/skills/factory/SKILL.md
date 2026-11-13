@@ -104,7 +104,8 @@ Every agent is an Orca worker. Before the first command of a run:
 3. Run `ORCA worktree current --json`. If it fails, you aren't in an
    Orca-managed workspace and Orca can't wake you: stop and tell the user to
    start `/factory run` from an Orca terminal in the main checkout.
-4. Run `ORCA orchestration run-create --objective "factory run"`.
+4. Run `ORCA orchestration run-create --objective "factory run <sel>"` with the
+   selection the user typed (just `"factory run"` without one).
 
 **Start a worker** with one command, always:
 
@@ -294,7 +295,8 @@ then moves the job to `merged`; stop any workers still running for it, as the
 
 ## /factory run
 
-1. Run `factory/bin/job queue`. Each line is `action  issue  job  stage  note`:
+1. Run `factory/bin/job queue --clear` (it forgets the selection of an earlier
+   `/factory run <sel>`). Each line is `action  issue  job  stage  note`:
    `resume` (pick it up from its stage), `new` (no job yet), `hold` (no free
    slot), `wait` (needs the author or you) or `skip`. The script enforces
    `concurrency`: every job in a running stage holds a slot, and only as many
@@ -305,7 +307,7 @@ then moves the job to `merged`; stop any workers still running for it, as the
    yourself: every new issue goes to intake, which decides whether it gets
    built. For a new issue, `factory/bin/job create <n>` prints the job id;
    start it at **intake**.
-3. Each time a job finishes, run `factory/bin/job queue` again and start its
+3. Each time a job finishes, run `factory/bin/job queue` (no arguments) again and start its
    `resume` lines you aren't already running and its `new` lines.
 4. When nothing is queued or running, print `factory/bin/job summary <ids>`
    for the jobs this run touched, then list what waits on a human: PRs to
@@ -324,11 +326,16 @@ as `resume`: run `factory/bin/job advance <id> intake` and go to **intake**.
 
 ## /factory run <sel>
 
-The same loop as **/factory run**, limited to the issues named: pass the
-issues and ranges the user wrote, as arguments, to every `factory/bin/job queue`
-call of this run (`factory/bin/job queue 11-14`, `factory/bin/job queue demo/03 demo/05`). The
-script resolves them and refuses a selection it can't read; show its message
-to the user. Selected issues that aren't queued show as `skip` with their
+The same loop as **/factory run**, limited to the issues named. In step 1,
+pass the issues and ranges the user wrote as arguments instead of `--clear`
+(`factory/bin/job queue 11-14`, `factory/bin/job queue demo/03 demo/05`). The
+script resolves them, refuses a selection it can't read (show its message to
+the user) and keeps the selection in `factory/jobs/_run.json`: every later
+bare `factory/bin/job queue` stays inside it and says so in a `note` line, and
+`job create` refuses an issue outside it. So when you wake up without the
+context of how the run started, plain `factory/bin/job queue` is still right;
+never pass `--clear` or `--all` in a selected run, and never start an issue
+the queue didn't list as `new`. Selected issues that aren't queued show as `skip` with their
 label or Status; tell the user, don't start them. A selected issue blocked by
 another one waits until that one is merged, then comes out as `new`. Jobs
 outside the selection keep running and still hold their slots. Finish with
@@ -344,7 +351,7 @@ new feature, ask.
 - **A question** (status, cost, why a job escalated, what a reviewer said):
   answer from `factory/bin/job summary`, `job.json` and the job's files. Here
   you may read a file in full when the answer is in it.
-- **What needs them**: run `factory/bin/job queue`. For each `wait` line, say
+- **What needs them**: run `factory/bin/job queue --all` (it shows every issue and keeps a running selection). For each `wait` line, say
   what the job is waiting for: the question in `decision.md` for `needs-human`,
   the question in `intake.md` for `needs-info`.
 - **Resuming a paused job** ("spec passt", "weiter", "I edited the spec"):

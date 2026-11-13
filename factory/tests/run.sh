@@ -310,7 +310,15 @@ t_queue_selection() {
   check "bare unique number" "$(J queue 12 | cut -f2)" "f/12" &&
   check "whole feature" "$(J queue g | cut -f1,2 | xargs)" "new g/11" &&
   check "list and concurrency" "$(J queue f/10, f/11,f/12 f/14 | cut -f1 | xargs)" "new new new hold" &&
-  check "bad selection" "$(J queue f/x 2>&1)" "isn't an issue"
+  check "bad selection" "$(J queue f/x 2>&1)" "isn't an issue" &&
+  J queue f/12 >/dev/null &&
+  check "bare queue keeps the selection" "$(J queue | awk '$1=="new"{print $2}' | xargs)" "f/12" &&
+  check "says it is limited" "$(J queue)" "limited to this run's selection: f/12" &&
+  check "create refuses outside it" "$(J create f/14 2>&1)" "outside this run's selection" &&
+  check "--all shows every issue" "$(J queue --all | awk '$1=="new"{print $2}' | xargs)" "f/10 f/11 f/12" &&
+  check "--all keeps it" "$(J create f/14 2>&1)" "outside this run's selection" &&
+  J queue --clear >/dev/null &&
+  check "--clear drops it" "[$(J queue | grep -c limited)]" "[0]"
 }
 
 t_feature_branch_finish() {

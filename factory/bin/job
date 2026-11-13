@@ -9,7 +9,11 @@ the orchestrator never improvises them.
 Usage:
   job queue [<sel>...]           what /factory run should do with each labeled issue; with <sel>,
                                  only those: 12 14, a range 11-14, locally <feature>/11-14 or a
-                                 whole <feature> (a bare 11 works when one feature has it)
+                                 whole <feature> (a bare 11 works when one feature has it). The
+                                 selection is kept for the run: a later bare `job queue` and
+                                 `job create` stay inside it
+  job queue --clear              forget the run's selection and show every issue (/factory run)
+  job queue --all                show every issue, keep the run's selection (status questions)
   job tracker                    which issue tracker and labels this repo uses
   job create <issue>             new job for an open `ready-for-agent` issue; prints the job id
   job advance <job> <stage>      move a job to <stage>, or refuse
@@ -1868,6 +1872,10 @@ def ensure_branch(branch):
 
 def cmd_create(number):
     number = issue_key(number)
+    only = run_selection()
+    if only is not None and number not in only:
+        die(f"issue {number} is outside this run's selection ({' '.join(map(str, only))}); "
+            "`factory/bin/job queue --clear` drops the selection")
     existing = [j for j in all_jobs() if j["issue"] == number]
     if existing:
         die(f"issue #{number} already has job {existing[0]['id']} ({existing[0]['stage']})")
@@ -1948,11 +1956,39 @@ def selection(args):
     return list(dict.fromkeys(out))
 
 
+RUN_SELECTION = JOBS / "_run.json"
+
+
+def run_selection():
+    """The issues the current run is limited to (set by `job queue <sel>`), or None.
+    It lives in a file so an orchestrator that lost its context stays inside it."""
+    try:
+        return json.loads(RUN_SELECTION.read_text())["selection"]
+    except (OSError, ValueError, KeyError):
+        return None
+
+
 def cmd_queue(args=()):
     """Rows in the order to start them. `resume` and `new` rows fit in the
     concurrency slots; the rest show as `hold` until a running job finishes.
     With a selection, only its issues show; jobs outside it still hold slots."""
-    only = selection(args) if args else None
+    flags = {a for a in args if a in {"--all", "--clear"}}
+    args = [a for a in args if a not in flags]
+    if args and flags:
+        die("give a selection or --all/--clear, not both")
+    if "--clear" in flags:
+        RUN_SELECTION.unlink(missing_ok=True)
+    if args:
+        only = selection(args)
+        JOBS.mkdir(parents=True, exist_ok=True)
+        RUN_SELECTION.write_text(json.dumps({"selection": only, "as_given": args, "set": now()}) + "\n")
+    elif flags:
+        only = None
+    else:
+        only = run_selection()
+        if only is not None:
+            print("note\t-\t-\t-\tlimited to this run's selection: "
+                  + " ".join(map(str, only)) + " (job queue --clear for every issue)")
     jobs = {j["issue"]: j for j in all_jobs()}
     # A job is done once its PR is merged on GitHub, which also closes the issue.
     for j in jobs.values():
