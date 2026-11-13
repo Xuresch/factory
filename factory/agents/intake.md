@@ -23,6 +23,12 @@ that, scoped so it can land as one small pull request.
    before; the issue's comments hold the answer.
 3. `AGENTS.md` (or `CLAUDE.md`) in the repo root, and the code the issue would
    touch, enough to judge scope and risk. Use absolute paths under the repo root.
+   Read the `CONTEXT.md` (or README) of every area it touches, and look there
+   for steps an operator must take before or at release: a cleanup script, a
+   data migration, a flag to flip, a check in production. Name each one in your
+   Scope under `Operator prerequisites:` with the doc it comes from. When the
+   change can't be built safely without knowing whether one was done, ask it
+   (NEEDS-INFO).
 
 4. The domain docs, when the repo has them (set up by `setup-matt-pocock-skills`):
    `docs/agents/domain.md` says where they live, usually `GLOSSARY.md` and

@@ -22,6 +22,11 @@ Stop and tell the user if any of these fail:
   - Anything else (GitLab): stop and tell the user it isn't supported.
 - `claude --version` is 2.1.257 or later (the intake agent runs on Fable).
 - `codex --version` works and Codex is signed in: Codex is the default builder.
+  Set `check_for_update_on_startup = false` at the top of the Codex config
+  Orca starts workers with (`~/.config/orca/codex-accounts/*/home/config.toml`,
+  and `~/.codex/config.toml`): otherwise an update prompt at startup blocks
+  every Codex worker until someone answers it. Update Codex deliberately
+  (`codex update` or `npm i -g @openai/codex`) between runs.
 - Orca is installed and running, and the project is added to it
   (`<orca> repo list --json` lists its path; otherwise `<orca> repo add`).
   `<orca>` is `$ORCA_CLI_COMMAND` if set, else `orca-ide` on Linux, else `orca`.
