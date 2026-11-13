@@ -264,6 +264,12 @@ at the first: each failing gate costs the builder a round.
 | Python | `.venv/` | `uv sync --frozen` with `UV_CACHE_DIR` shared; or one venv outside the worktrees |
 | Godot | `.godot/` import cache, re-imports every asset | `godot --headless --import` in `checks.sh`; tests headless with GUT or gdUnit4; put a `.gdignore` file in `.worktrees/` or set `worktree_root` so the editor doesn't import the job checkouts |
 
+The project's linters and formatters must leave `factory/` alone: its scripts,
+`dashboard.html` and `config.json` follow the template's style, and
+`factory/jobs/` is runtime state. Exclude `factory` in their config (Biome
+`files.includes` `"!factory"`, ESLint `ignores`, Prettier `.prettierignore`),
+or the first gate fails on the factory's own files.
+
 Tools that scan the project directory without reading `.gitignore` see every
 job's checkout in `.worktrees/`: some `jest`, `vitest`, `eslint` and `tsc`
 configs, file watchers, and Godot. Exclude `.worktrees/` in their config, or
