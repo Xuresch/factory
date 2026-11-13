@@ -121,6 +121,11 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
   `{"ui": {"paths": ["src/components/*"], "except": ["*.test.tsx"]}}`.
 - `labels`: leave them. They are only the fallback; the factory reads the real
   strings from `docs/agents/triage-labels.md`.
+- Agents: every `{"agent": ...}` entry may name a `model` and an `effort`
+  (Orca passes both on). Without a model, Codex uses whatever is the default
+  in its own config at that moment. `builder.by_risk` picks the builder's model
+  per risk; `model_presets` are short names for `job route-set`. Add each
+  model you use to `prices_usd_per_mtok`, or its cost shows as unpriced.
 - Leave `concurrency`, `max_rounds`, `stages`, `builder`, `routing`,
   `surface_reviewers`, `cross_review` and `prices_usd_per_mtok` as they are
   unless the user asks.

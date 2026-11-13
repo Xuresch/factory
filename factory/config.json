@@ -39,7 +39,9 @@
   },
   "builder": {
     "default": {
-      "agent": "codex"
+      "agent": "codex",
+      "model": "gpt-6.1-terra",
+      "effort": "high"
     },
     "fallback": {
       "agent": "claude",
@@ -48,7 +50,24 @@
     "fallback_on_changes_from": [
       "ux",
       "ui"
-    ]
+    ],
+    "by_risk": {
+      "low": {
+        "agent": "codex",
+        "model": "gpt-6.1-terra",
+        "effort": "low"
+      },
+      "medium": {
+        "agent": "codex",
+        "model": "gpt-6.1-terra",
+        "effort": "high"
+      },
+      "high": {
+        "agent": "codex",
+        "model": "gpt-6.1-sol",
+        "effort": "high"
+      }
+    }
   },
   "routing": {
     "low": {
@@ -99,7 +118,9 @@
         "model": "opus"
       },
       "claude": {
-        "agent": "codex"
+        "agent": "codex",
+        "model": "gpt-6.1-sol",
+        "effort": "medium"
       }
     }
   },
@@ -216,5 +237,27 @@
       "code",
       "security"
     ]
+  },
+  "model_presets": {
+    "terra-low": {
+      "agent": "codex",
+      "model": "gpt-6.1-terra",
+      "effort": "low"
+    },
+    "terra-high": {
+      "agent": "codex",
+      "model": "gpt-6.1-terra",
+      "effort": "high"
+    },
+    "sol-medium": {
+      "agent": "codex",
+      "model": "gpt-6.1-sol",
+      "effort": "medium"
+    },
+    "sol-high": {
+      "agent": "codex",
+      "model": "gpt-6.1-sol",
+      "effort": "high"
+    }
   }
 }

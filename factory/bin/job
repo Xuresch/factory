@@ -904,7 +904,8 @@ def skip_unchanged_reviews(job):
 
 
 def describe(entry):
-    return entry["agent"] + (f"/{entry['model']}" if entry.get("model") else "")
+    return (entry["agent"] + (f"/{entry['model']}" if entry.get("model") else "")
+            + (f":{entry['effort']}" if entry.get("effort") else ""))
 
 
 def cross_checked(reviewers, builder):
@@ -1740,10 +1741,17 @@ def cmd_rewind(job, target, text):
 
 
 def parse_entry(value):
-    agent, _, model = value.partition("/")
+    """`claude`, `codex/gpt-6.1-terra`, `codex/gpt-6.1-sol:high`, or a preset
+    from config.json `model_presets` such as `terra-high`."""
+    presets = CONFIG.get("model_presets", {})
+    if value in presets:
+        return dict(presets[value])
+    rest, _, effort = value.partition(":")
+    agent, _, model = rest.partition("/")
     if agent not in {"claude", "codex"}:
-        die(f"{value!r}: the agent is claude or codex, optionally with /<model>")
-    return {"agent": agent, **({"model": model} if model else {})}
+        die(f"{value!r}: use claude or codex, optionally /<model> and :<effort>, or a preset: "
+            + ", ".join(presets))
+    return {"agent": agent, **({"model": model} if model else {}), **({"effort": effort} if effort else {})}
 
 
 def cmd_route_set(job, assignments):
@@ -1908,6 +1916,8 @@ def cmd_feature_review(branch):
     cmd = [orca_cli(), "orchestration", "worker-start", "--agent", entry["agent"]]
     if entry.get("model"):
         cmd += ["--model", entry["model"]]
+    if entry.get("effort"):
+        cmd += ["--effort", entry["effort"]]
     cmd += ["--worktree", f"path:{state['worktree']}", "--task-title", f"feature-review {branch}",
             "--spec-file", "-", "--json"]
     res = subprocess.run(cmd, cwd=REPO, input=spec, capture_output=True, text=True)
@@ -2530,6 +2540,8 @@ def cmd_start(job, role, extra):
     cmd = [orca_cli(), "orchestration", "worker-start", "--agent", entry["agent"]]
     if entry.get("model"):
         cmd += ["--model", entry["model"]]
+    if entry.get("effort"):
+        cmd += ["--effort", entry["effort"]]
     cmd += ["--worktree", where, "--task-title", f"{job['id']} {role} r{job['round']}",
             "--spec-file", "-", "--json"]
     # Orca releases a worker's terminal soon after worker_done. The builder is

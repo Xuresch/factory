@@ -47,7 +47,8 @@ def main(argv):
     for lens, entry in CONFIG.get("risk_upgrades", {}).get(intake["risk"], {}).items():
         if lens in reviewers:  # a stronger model for this lens at this risk
             reviewers[lens] = entry
-    agents = {"builder": CONFIG["builder"]["default"], "reviewers": reviewers}
+    builder = CONFIG["builder"].get("by_risk", {}).get(intake["risk"]) or CONFIG["builder"]["default"]
+    agents = {"builder": builder, "reviewers": reviewers}
     res = subprocess.run([job_bin, "agents", job_id, json.dumps(agents)], capture_output=True, text=True)
     if res.returncode != 0:
         die(res.stderr.strip())

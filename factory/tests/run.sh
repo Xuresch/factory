@@ -485,6 +485,17 @@ t_no_dependencies_no_pause() {
   check "builds right away" "$(J advance "$id" build)" "build (round 1)"
 }
 
+t_codex_model_and_effort() {
+  new_repo codexmodel; ticket 01 One; ticket 02 Two; commit_all
+  local id; id=$(to_build 01 low none)
+  check "low builds on terra low" "$(field "$id" "d['agents']['builder']")" "'effort': 'low'" &&
+  J start "$id" builder >/dev/null &&
+  check "model and effort reach Orca" "$(tail -1 "$CALLS")" "--agent codex --model gpt-6.1-terra --effort low" &&
+  check "preset" "$(J route-set "$id" builder=sol-high)" "codex/gpt-6.1-sol:high" &&
+  check "explicit effort" "$(J route-set "$id" builder=codex/gpt-6.1-terra:medium)" "codex/gpt-6.1-terra:medium" &&
+  check "bad entry" "$(J route-set "$id" builder=gpt 2>&1)" "terra-low"
+}
+
 # ---- runner ----------------------------------------------------------------
 
 all_tests=$(declare -F | awk '{print $3}' | grep '^t_')
