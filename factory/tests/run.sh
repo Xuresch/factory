@@ -1063,5 +1063,11 @@ for t in "${selected[@]}"; do
   fi
 done
 echo
-echo "$PASS passed, $FAIL failed (temp files in $TMP_ROOT)"
+cd /
+if [[ $FAIL -eq 0 && -z "${FACTORY_TEST_TMP:-}" && -z "${FACTORY_TEST_KEEP:-}" ]]; then
+  rm -rf "$TMP_ROOT"  # /tmp is often in RAM; keep it only when there's something to look at
+  echo "$PASS passed, $FAIL failed"
+else
+  echo "$PASS passed, $FAIL failed (temp files in $TMP_ROOT)"
+fi
 [[ $FAIL -eq 0 ]]
