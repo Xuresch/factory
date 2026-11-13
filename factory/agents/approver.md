@@ -52,7 +52,11 @@ APPROVE only if all of these hold:
 - The change stays inside intake's Scope.
 - The final round's `ci.md`, when there is one, isn't `CI: FAIL`. A failing
   check is a reason to ESCALATE with its name, even when the gate passed.
-  `CI: PENDING` or `CI: NONE` alone isn't.
+  `CI: PENDING` or `CI: NONE` alone isn't: at approve time `CI: NONE` means
+  no check has reported yet, not that CI passed or that the repo has none.
+  You don't wait for CI: after your APPROVE, `job merge` waits for the PR's
+  CI on the commit it merges, sends a failing check back to the builder and
+  merges only when nothing fails.
 
 **Decisions a human already made count.** A point a human decided in a
 `feedback-*.md`, an edit marked binding in `spec.md` or `intake.md`, or

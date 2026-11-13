@@ -269,5 +269,8 @@
       "effort": "high"
     }
   },
-  "worktree_setup": ""
+  "worktree_setup": "",
+  "lockfile_regenerate": {},
+  "ci_wait_minutes": 30,
+  "ci_start_grace_seconds": 180
 }
