@@ -31,6 +31,15 @@ echo "$*" >> "$log"
 if [[ "$1 $2" == "orchestration worker-show" ]]; then  # FAKE_WORKER=running|settled (default)
   echo "{\"ok\":true,\"result\":{\"stage\":\"${FAKE_WORKER:-settled}\"}}"; exit 0
 fi
+if [[ "$1 $2" == "orchestration send" ]]; then  # FAKE_SEND_NEW=1: the worker was gone, Orca starts a follow-up
+  to="${*#*--to dispatch:}"; to="${to%% *}"
+  if [[ -n "${FAKE_SEND_NEW:-}" ]]; then
+    echo "{\"ok\":true,\"result\":{\"delivery\":\"started_fresh\",\"followUpOf\":\"$to\",\"dispatchId\":\"ctx_fake$n\",\"state\":\"ready\"}}"
+  else
+    echo "{\"ok\":true,\"result\":{\"messageId\":\"msg_$n\"}}"
+  fi
+  exit 0
+fi
 echo "{\"ok\":true,\"result\":{\"dispatchId\":\"ctx_fake$n\",\"state\":\"ready\"}}"
 EOF
   chmod +x "$dir/bin/orca"
@@ -1062,6 +1071,114 @@ t_high_risk_holds_only_when_needed() {
   check "something for the human: pauses" "$(J advance "$id2" build)" "paused" &&
   check "comment lists it" "$(cat .scratch/f/issues/02-t.md)" "run the cleanup dry-run" &&
   check "next names it" "$(J next "$id2")" "wait"
+}
+
+t_gate_failures_readable() {
+  new_repo gatefail; ticket 01 One; commit_all
+  local id; id=$(to_build 01 low none)
+  cat > factory/checks.sh <<'EOF'
+#!/usr/bin/env bash
+for i in $(seq 1 30); do echo "noise line $i"; done
+printf '\033[31mFAIL\033[0m src/a.test.ts > adds\n'
+echo "  expected 2, got 3"
+printf '\033[1;31m✗ subtracts\033[0m\n'
+printf '\033[31mFAIL\033[0m src/a.test.ts > adds\n'
+for i in $(seq 1 100); do printf '\033[2mmore noise %s\033[0m\n' "$i"; done
+exit 1
+EOF
+  factory/bin/gate "$id" >/dev/null
+  local md; md="$(cat "factory/jobs/$id/round-1/checks.md")"
+  check "verdict line kept" "$(head -2 "factory/jobs/$id/round-1/checks.md")" $'GATE: FAIL\nCOMMIT: ' &&
+  check "no ANSI in checks.md" "[$(grep -c $'\033' "factory/jobs/$id/round-1/checks.md")]" "[0]" &&
+  check "no ANSI in checks.log" "[$(grep -c $'\033' "factory/jobs/$id/round-1/checks.log")]" "[0]" &&
+  check "failures section" "$md" "## Failures" &&
+  check "failure listed once" "[$(grep -c '^- `FAIL src/a.test.ts > adds`' <<< "$md")]" "[1]" &&
+  check "second failure listed" "$md" '- `✗ subtracts`' &&
+  check "first failure with its context" "$md" $'FAIL src/a.test.ts > adds\n  expected 2, got 3' &&
+  check "failures above the tail" "$(grep '^## ' <<< "$md" | cut -c4- | tr '\n' ,)" "Protected paths,Failures,checks.sh," || return 1
+  printf '#!/usr/bin/env bash\nfor i in $(seq 1 50); do echo ok $i; done\n' > factory/checks.sh
+  factory/bin/gate "$id" >/dev/null
+  md="$(cat "factory/jobs/$id/round-1/checks.md")"
+  check "PASS: no failures section" "[$(grep -c '## Failures' <<< "$md")]" "[0]" &&
+  check "PASS: short tail" "$md" "Last 20 lines of checks.log"
+}
+
+t_gates_take_turns() {
+  new_repo gatelock; ticket 01 One; ticket 02 Two; commit_all
+  local a b; a=$(to_build 01 low none); b=$(to_build 02 low none)
+  export TURNS="$TMP_ROOT/gatelock/turns.log"
+  printf '#!/usr/bin/env bash\necho "start $(date +%%s.%%N)" >> "$TURNS"\nsleep 2\necho "end $(date +%%s.%%N)" >> "$TURNS"\n' > factory/checks.sh
+  factory/bin/gate "$a" > "$TMP_ROOT/gatelock/a.out" 2>&1 &
+  sleep 0.5
+  local err; err=$(factory/bin/gate "$b" 2>&1 >/dev/null); wait
+  check "the second gate says whom it waits for" "$err" "gate: waiting for $a's gate (since " &&
+  check "it says so once" "[$(grep -c waiting <<< "$err")]" "[1]" &&
+  check "one after the other" "$(awk '{print $1}' "$TURNS" | tr '\n' ' ')" "start end start end" &&
+  check "the wait is recorded apart" "$(cat "factory/jobs/$b/round-1/checks.md")" "for another gate ($a) before checks.sh ran; not counted in its 2s" &&
+  check "checks.sh's own time" "$(cat "factory/jobs/$b/round-1/checks.md")" "checks.sh passed in 2s" &&
+  check "holder recorded" "$(cat factory/jobs/_gate.lock)" "\"job\": \"$b\"" || return 1
+  python3 - <<'EOF'
+import json; p = "factory/config.json"; c = json.load(open(p)); c["gate_parallel"] = 0; json.dump(c, open(p, "w"))
+EOF
+  : > "$TURNS"
+  factory/bin/gate "$a" >/dev/null 2>&1 &
+  sleep 0.5
+  err=$(factory/bin/gate "$b" 2>&1 >/dev/null); wait
+  check "gate_parallel 0: no waiting" "[$err]" "[]" &&
+  check "gate_parallel 0: together" "$(awk '{print $1}' "$TURNS" | tr '\n' ' ')" "start start end end"
+}
+
+t_send_records_follow_up_dispatch() {
+  new_repo followup; ticket 01 One; commit_all
+  local id; id=$(to_build 01 low none); J start "$id" builder >/dev/null
+  local d1; d1=$(J dispatch "$id" builder)
+  J send "$id" builder "plain" >/dev/null
+  check "a delivered message keeps the dispatch" "$(J dispatch "$id" builder)" "$d1" || return 1
+  local out; out=$(FAKE_SEND_NEW=1 J send "$id" builder "round 2")
+  local d2; d2=$(J dispatch "$id" builder)
+  check "send says so" "$out" "follow-up dispatch $d2 (of $d1)" &&
+  check "a new dispatch is recorded" "[$([[ "$d2" != "$d1" ]] && echo new)]" "[new]" &&
+  check "chain recorded" "$(field "$id" "d['followed_by']['$d1']")" "$d2" &&
+  check "still kept open" "$(field "$id" "d['kept_open']")" "$d2" &&
+  check "next waits on the follow-up" "$(FAKE_WORKER=running J next "$id")" "wait: builder running (follow-up" &&
+  check "next asks Orca about it" "$(grep worker-show "$CALLS" | tail -1)" "--dispatch $d2" || return 1
+  # An older record of the worker still names the first dispatch: next follows the chain.
+  python3 - "$id" "$d1" <<'EOF'
+import json, sys; p = f"factory/jobs/{sys.argv[1]}/job.json"; j = json.load(open(p))
+j["workers"]["builder"]["dispatch"] = sys.argv[2]; json.dump(j, open(p, "w"))
+EOF
+  check "next follows the chain" "$(FAKE_WORKER=running J next "$id")" "dispatch $d2" &&
+  check "settled follow-up without build.md: nudge" "$(J next "$id")" "send: factory/bin/job send $id builder" &&
+  check "the next send goes to the follow-up" "$(J send "$id" builder again >/dev/null; grep 'orchestration send' "$CALLS" | tail -1)" "--to dispatch:$d2"
+}
+
+t_read_only_commands_skip_a_merge() {
+  new_repo busy; ticket 01 One; commit_all
+  local id; id=$(to_build 01 low none)
+  python3 - "factory/jobs/$id/.lock" <<'EOF' &
+import fcntl, json, os, sys, time
+f = open(sys.argv[1], "a+"); fcntl.flock(f, fcntl.LOCK_EX); f.seek(0); f.truncate()
+f.write(json.dumps({"command": "merge", "pid": os.getpid(), "since": time.time()})); f.flush()
+time.sleep(60)
+EOF
+  local holder=$!
+  for _ in $(seq 50); do grep -q merge "factory/jobs/$id/.lock" 2>/dev/null && break; sleep 0.1; done
+  local t0 out q s err; t0=$(date +%s)
+  out=$(J next "$id"); local t1=$(date +%s)
+  q=$(J queue); local t2=$(date +%s)
+  s=$(J summary); local t3=$(date +%s)
+  err=$(timeout 4 factory/bin/job advance "$id" gate 2>&1 >/dev/null)
+  kill "$holder"; wait "$holder" 2>/dev/null
+  check "next reports the merge" "$out" "$id: wait: merge in progress since " &&
+  check "with the holder's pid" "$out" "(pid $holder)" &&
+  check "next returns promptly" "[$(( t1 - t0 < 5 ))]" "[1]" &&
+  check "queue shows a wait row" "$q" "$(printf 'wait\tf/01\t%s\tbuild\tmerge in progress since ' "$id")" &&
+  check "queue returns promptly" "[$(( t2 - t1 < 5 ))]" "[1]" &&
+  check "summary notes it" "$s" "$id: merge in progress since " &&
+  check "summary returns promptly" "[$(( t3 - t2 < 5 ))]" "[1]" &&
+  check "a mutating command says why it waits" "$err" "job: $id: merge in progress since " &&
+  check "job.json untouched by the readers" "$(field "$id" "d['stage']")" "build" &&
+  check "once free, next works again" "$(J next "$id")" "$id: start: factory/bin/job start $id builder"
 }
 
 # ---- runner ----------------------------------------------------------------

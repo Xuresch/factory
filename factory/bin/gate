@@ -10,11 +10,23 @@ The gate runs the main checkout's factory/checks.sh inside the job's worktree,
 so a branch can't change the checks it is judged by. It also fails when the
 branch modifies or deletes a file matching config.json `protected_paths`
 (fnmatch patterns, where `*` also matches `/`). Adding new files is fine.
+
+Gates take turns: config.json `gate_parallel` (default 1) is how many round and
+merge gates may run checks.sh at once on this machine for this repo (0: no
+limit). A gate that has to wait says for whom, once, and checks.md records the
+wait apart from checks.sh's own time. The builder's hook doesn't wait: it is a
+quick self-check inside the builder's turn, and the gate after it runs anyway.
+
+checks.log and checks.md have ANSI color codes removed. checks.md lists the
+lines that look like failures under `## Failures`, with the first one's
+context, above the log's tail.
 """
 
+import fcntl
 import fnmatch
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -25,6 +37,8 @@ FACTORY = REPO / "factory"
 CONFIG = json.loads((FACTORY / "config.json").read_text())
 CHECKS = FACTORY / "checks.sh"
 TAIL = 80
+PASS_TAIL = 20
+GATE_LOCK = FACTORY / "jobs" / "_gate.lock"
 
 
 def die(msg):
@@ -91,7 +105,103 @@ def run_checks(worktree, base_ref=None, mode="full"):
         env["FACTORY_BASE_REF"] = base_ref
     start = time.monotonic()
     res = subprocess.run(["bash", str(CHECKS)], cwd=worktree, capture_output=True, text=True, env=env)
-    return res.returncode, res.stdout + res.stderr, int(time.monotonic() - start)
+    return res.returncode, strip_ansi(res.stdout + res.stderr), int(time.monotonic() - start)
+
+
+ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
+
+
+def strip_ansi(text):
+    """The log without color and cursor codes; a carriage-return redraw keeps its last state."""
+    text = ANSI_RE.sub("", text).replace("\r\n", "\n")
+    return "\n".join(line.rsplit("\r", 1)[-1] for line in text.split("\n"))
+
+
+# Lines test runners and compilers print for a failure: pytest, unittest, jest,
+# vitest, go test, cargo, tsc, mocha, the factory's own tests.
+FAILURE_RE = re.compile(
+    r"\bFAILED\b|^\s*!! |\bFAIL\b|✗|✘|×|\bError:|\berror TS\d+|\berror(\[E\d+\])?:|panicked"
+    r"|^\s*--- FAIL|AssertionError|^\s*not ok \d+")
+MAX_FAILURES = 40
+BLOCK_AFTER = 15
+
+
+def failures(log):
+    """(distinct failure lines, at most MAX_FAILURES; the first one with
+    BLOCK_AFTER lines of context after it)."""
+    lines = log.splitlines()
+    hits = [i for i, line in enumerate(lines) if FAILURE_RE.search(line)]
+    seen, distinct = set(), []
+    for i in hits:
+        key = lines[i].strip()
+        if key not in seen:
+            seen.add(key)
+            distinct.append(key)
+    block = lines[hits[0]:hits[0] + 1 + BLOCK_AFTER] if hits else []
+    return distinct[:MAX_FAILURES], len(distinct), block
+
+
+def failures_section(log):
+    """checks.md's `## Failures` for a failed run."""
+    distinct, total, block = failures(log)
+    if not distinct:
+        return "## Failures\nNo line looks like a failure summary; see the tail below.\n\n"
+    more = f"\n- ... and {total - len(distinct)} more in the log" if total > len(distinct) else ""
+    return ("## Failures\n" + "\n".join(f"- `{d}`" if "`" not in d else f"- {d}" for d in distinct) + more
+            + "\n\nThe first failure:\n\n```\n" + "\n".join(block) + "\n```\n\n")
+
+
+# ---- Gate lock: gates take turns --------------------------------------------
+
+
+def gate_slots():
+    """Lock files for config.json `gate_parallel` slots; none when 0 (no limit)."""
+    n = int(CONFIG.get("gate_parallel", 1) or 0)
+    if n <= 0:
+        return []
+    return [GATE_LOCK] + [GATE_LOCK.with_name(f"_gate-{k}.lock") for k in range(2, n + 1)]
+
+
+def holder(path):
+    """Who holds a gate slot, as it wrote itself into the lock file."""
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def take_slot(job_id, mode):
+    """Wait for a free gate slot and hold it until this process exits. Returns
+    (seconds waited, the job waited for or None)."""
+    slots = gate_slots()
+    if not slots:
+        return 0, None
+    GATE_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    start, told, other = time.monotonic(), False, None
+    while True:
+        for path in slots:
+            f = open(path, "a+")
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                f.close()
+                continue
+            f.seek(0)
+            f.truncate()
+            f.write(json.dumps({"job": job_id, "mode": mode, "pid": os.getpid(), "since": time.time()}) + "\n")
+            f.flush()
+            _held.append(f)
+            return int(time.monotonic() - start), other
+        if not told:
+            h = holder(slots[0])
+            other = h.get("job") or "another job"
+            since = time.strftime("%H:%M", time.localtime(h["since"])) if h.get("since") else "?"
+            print(f"gate: waiting for {other}'s gate (since {since})", file=sys.stderr, flush=True)
+            told = True
+        time.sleep(0.5)
+
+
+_held = []
 
 
 WAIT_NOTE_MINUTES = 5
@@ -119,11 +229,13 @@ def gate(job_id, merge):
     commit = git(worktree, "rev-parse", "HEAD").strip()
     protected = protected_changes(worktree, base_ref)
     waited = waited_minutes(job) if not merge else None
+    queued, other = take_slot(job_id, "merge" if merge else "round")
     code, log, seconds = run_checks(worktree, base_ref, "merge" if merge else "round")
     verdict = "PASS" if code == 0 and not protected else "FAIL"
     name = "merge-checks" if merge else "checks"
     (round_dir / f"{name}.log").write_text(log)
-    tail = "\n".join(log.rstrip().splitlines()[-TAIL:])
+    lines = TAIL if verdict == "FAIL" else PASS_TAIL
+    tail = "\n".join(log.rstrip().splitlines()[-lines:])
     summary = [
         f"checks.sh {'passed' if code == 0 else f'failed with exit {code}'} in {seconds}s",
         f"Protected paths: {'changed: ' + ', '.join(protected) if protected else 'none changed'}",
@@ -132,6 +244,9 @@ def gate(job_id, merge):
     if stripped:
         summary.append(f"Removed Co-Authored-By / Generated-with lines from {stripped} commit"
                        + ("" if stripped == 1 else "s") + " (nobody co-authors a factory job)")
+    if other:
+        summary.append(f"Waited {queued}s for another gate ({other}) before checks.sh ran; "
+                       f"not counted in its {seconds}s")
     if waited is not None and waited >= WAIT_NOTE_MINUTES:
         summary.append(f"The gate ran {waited} min after the job entered `gate`: that time went to "
                        f"waiting for the orchestrator, not to checks.sh ({seconds}s)")
@@ -139,10 +254,12 @@ def gate(job_id, merge):
         f"GATE: {verdict}\nCOMMIT: {commit}\n\n"
         "## Summary\n" + "\n".join(f"- {s}" for s in summary) + "\n\n"
         "## Protected paths\n"
-        + ("\n".join(f"- {p}" for p in protected) if protected else "None changed.")
-        + f"\n\n## checks.sh\nExit {code} in {seconds}s. Last {TAIL} lines of {name}.log:\n\n```\n{tail}\n```\n"
+        + ("\n".join(f"- {p}" for p in protected) if protected else "None changed.") + "\n\n"
+        + (failures_section(log) if code != 0 else "")
+        + f"## checks.sh\nExit {code} in {seconds}s. Last {lines} lines of {name}.log:\n\n```\n{tail}\n```\n"
     )
     print(f"GATE: {verdict} ({job_id} round {job['round']}, checks.sh exit {code} in {seconds}s"
+          + (f", after waiting {queued}s for {other}'s gate" if other else "")
           + (f", protected paths changed: {', '.join(protected)}" if protected else "") + ")")
     sys.exit(0 if verdict == "PASS" else 1)
 
