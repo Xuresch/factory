@@ -140,6 +140,8 @@ elif cmd == ["issue", "list"]:
     print("[]")
 elif cmd in (["issue", "comment"], ["issue", "edit"], ["pr", "comment"], ["pr", "close"]):
     pass
+elif cmd == ["issue", "close"]:
+    i = load(f"issue-{args[2]}.json"); i["state"] = "CLOSED"; save(f"issue-{args[2]}.json", i)
 elif cmd == ["pr", "create"]:
     save("pr.json", {"number": 7, "url": "https://github.com/o/r/pull/7", "headRefName": opt("--head"),
                      "state": "OPEN", "isDraft": "--draft" in args, "statusCheckRollup": []})
@@ -981,6 +983,39 @@ t_resume_records_acceptance() {
   local id2; id2=$(to_build 02 high "security")
   J resume "$id2" </dev/null >/dev/null &&
   check "default line without a note" "$(cat "factory/jobs/$id2/accepted.md")" "accepted spec.md as written"
+}
+
+t_gh_clean_merge_closes_issue() {
+  new_gh_repo ghclose; gh_issue 1 One
+  local id; id=$(gh_to_merging 1) || return 1
+  J merge "$id" >/dev/null 2>&1
+  check "issue closed" "$(python3 -c "import json; print(json.load(open('$GH/issue-1.json'))['state'])")" "CLOSED" &&
+  check "summary posted" "$(cat "$GH_LOG")" "### Factory: merged" &&
+  check "says clean" "$(cat "$GH_LOG")" "Clean run"
+}
+
+t_gh_rough_merge_keeps_issue_open() {
+  new_gh_repo ghopen; gh_issue 1 One
+  local id; id=$(gh_to_approve 1) || return 1
+  J advance "$id" approve >/dev/null
+  printf 'ESCALATE\n\n## Summary\n- needs a look\n\n## Why\nx\n' > "factory/jobs/$id/decision.md"
+  J advance "$id" needs-human >/dev/null; echo "ok, merge it" | J approve "$id" >/dev/null 2>&1
+  check "merged" "$(field "$id" "d['stage']")" "merged" &&
+  check "issue stays open" "$(python3 -c "import json; print(json.load(open('$GH/issue-1.json'))['state'])")" "OPEN" &&
+  check "says why" "$(cat "$GH_LOG")" "it needed a human decision"
+}
+
+t_gate_strips_coauthor_trailers() {
+  new_repo trailers; ticket 01 One; commit_all
+  local id; id=$(to_build 01 low none)
+  (cd ".worktrees/$id" && echo a > a.txt && git add a.txt &&
+   git commit -qm $'build a\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nCo-authored-by: Sandcastle Bot <s@localhost>\n\n\U1F916 Generated with [Claude Code](https://claude.com/claude-code)')
+  ready "$id"; J advance "$id" gate >/dev/null; factory/bin/gate "$id" >/dev/null
+  check "message is clean" "[$(git -C ".worktrees/$id" log -1 --format=%B | grep -ci 'co-authored\|generated with')]" "[0]" &&
+  check "subject kept" "$(git -C ".worktrees/$id" log -1 --format=%s)" "build a" &&
+  check "gate notes it" "$(cat "factory/jobs/$id/round-1/checks.md")" "Removed Co-Authored-By" &&
+  check "checks.md names the new head" "$(sed -n 2p "factory/jobs/$id/round-1/checks.md")" "$(git -C ".worktrees/$id" rev-parse HEAD)" &&
+  check "no backup ref" "[$(git for-each-ref refs/original | wc -l)]" "[0]"
 }
 
 # ---- runner ----------------------------------------------------------------

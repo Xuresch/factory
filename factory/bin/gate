@@ -53,6 +53,35 @@ def protected_changes(worktree, base_ref):
     return hits
 
 
+TRAILER_RE = r"^(co-authored-by:|.*generated with \[?claude code)"
+
+
+def strip_trailers(worktree, base_ref, branch, push):
+    """Remove Co-Authored-By and "Generated with" lines from the branch's own
+    commits (nobody co-authors a factory job). Rewrites only when one exists;
+    the trees stay the same. Returns how many commits had one."""
+    import re
+    log = git(worktree, "log", "--format=%H%x00%B%x01", f"{base_ref}..HEAD")
+    dirty = [c for c in log.split("\x01") if c.strip()
+             and re.search(TRAILER_RE, c.split("\x00", 1)[-1], re.I | re.M)]
+    if not dirty or subprocess.run(["git", "status", "--porcelain"], cwd=worktree,
+                                   capture_output=True, text=True).stdout.strip():
+        return 0
+    script = ("sed -E '/^[Cc][Oo]-[Aa][Uu][Tt][Hh][Oo][Rr][Ee][Dd]-[Bb][Yy]:/d; "
+              "/[Gg]enerated with \\[?Claude Code/d' | git stripspace")
+    env = dict(os.environ, FILTER_BRANCH_SQUELCH_WARNING="1")
+    res = subprocess.run(["git", "filter-branch", "-f", "--msg-filter", script, "--", f"{base_ref}..{branch}"],
+                         cwd=worktree, capture_output=True, text=True, env=env)
+    if res.returncode != 0:
+        print(f"gate: couldn't strip commit trailers: {res.stderr.strip()[:500]}", file=sys.stderr)
+        return 0
+    subprocess.run(["git", "update-ref", "-d", f"refs/original/refs/heads/{branch}"], cwd=worktree,
+                   capture_output=True)
+    if push:
+        subprocess.run(["git", "push", "--force-with-lease", "origin", branch], cwd=worktree, capture_output=True)
+    return len(dirty)
+
+
 def run_checks(worktree, base_ref=None, mode="full"):
     """Run checks.sh. It gets FACTORY_GATE (round, merge or full) and
     FACTORY_BASE_REF, so a repo may skip slow checks a round's diff can't affect.
@@ -84,9 +113,10 @@ def gate(job_id, merge):
     if job["round"] < 1:
         die(f"{job_id} hasn't started a build round")
     round_dir = FACTORY / "jobs" / job_id / f"round-{job['round']}"
-    commit = git(worktree, "rev-parse", "HEAD").strip()
     # Local trackers have no remote: the job records which base ref it forked from.
     base_ref = job.get("base_ref", f"origin/{CONFIG['base_branch']}")
+    stripped = strip_trailers(worktree, base_ref, job["branch"], bool(job.get("pr")))
+    commit = git(worktree, "rev-parse", "HEAD").strip()
     protected = protected_changes(worktree, base_ref)
     waited = waited_minutes(job) if not merge else None
     code, log, seconds = run_checks(worktree, base_ref, "merge" if merge else "round")
@@ -99,6 +129,9 @@ def gate(job_id, merge):
         f"Protected paths: {'changed: ' + ', '.join(protected) if protected else 'none changed'}",
         f"Commit {commit[:7]}" + (", synced with the latest main before merging" if merge else ""),
     ]
+    if stripped:
+        summary.append(f"Removed Co-Authored-By / Generated-with lines from {stripped} commit"
+                       + ("" if stripped == 1 else "s") + " (nobody co-authors a factory job)")
     if waited is not None and waited >= WAIT_NOTE_MINUTES:
         summary.append(f"The gate ran {waited} min after the job entered `gate`: that time went to "
                        f"waiting for the orchestrator, not to checks.sh ({seconds}s)")

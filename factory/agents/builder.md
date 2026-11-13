@@ -152,6 +152,10 @@ The header's `Tracker:` says where the work goes.
 
 - Commit on the job branch with short one-line messages in the style of
   `git log --oneline`. One commit per distinct piece of work.
+- No trailers: never add `Co-Authored-By`, `Signed-off-by` for anyone else,
+  or a "Generated with" line, whatever your own defaults say. Nobody
+  co-authors a factory job; the gate strips such lines anyway. The same goes
+  for PR bodies: no "Generated with" footer.
 - Stage explicit paths, never `git add -A`. Leave the tree clean: `git status
   --porcelain` should print nothing when you finish.
 - **Tracker: github.** Push with `git push -u origin <branch>`. Push only the

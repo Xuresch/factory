@@ -345,6 +345,12 @@ done, run `factory/bin/job finish <branch>`. It syncs the branch with
 so and leaves the branch alone: tell the user and point them to
 `factory/jobs/_features/<branch>.md`.
 
+On `merged` the script posts a summary on the issue (what changed, why it was
+approved, what a human accepted, follow-ups). A clean run (one round, no human
+decision) also closes the issue; one with problems stays open and says why.
+The gate strips `Co-Authored-By` and "Generated with" lines from the job's
+commits; nobody co-authors a factory job.
+
 A job is finished for this run when it reaches `merged`, `rejected`,
 `needs-info`, `needs-human` or `paused`. Its workers close on their own.
 

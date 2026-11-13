@@ -1008,14 +1008,18 @@ def advance(job, stage):
 
     if stage == "merged":
         require(is_merged(job), "the PR isn't merged" if GITHUB else f"{jbase(job)} doesn't contain {job['branch']}")
+        rough = problems(job)
+        body = merge_summary(job, rough)
         if not GITHUB:
             set_status(job["issue"], "done")
-            comment("issue", job["issue"], f"### Factory: merged\n\n{job['branch']} is merged into {jbase(job)}.")
+            comment("issue", job["issue"], body)
             commit_ticket(job, f"Close {job['issue']}: {job['title']} (factory job {job['id']})")
-        elif old == "needs-human":
-            label("issue", job["issue"], remove=LABELS["needs_human"])
-        elif old == "needs-info":
-            label("issue", job["issue"], remove=LABELS["needs_info"])
+        else:
+            waiting = {"needs-human": LABELS["needs_human"], "needs-info": LABELS["needs_info"]}.get(old)
+            label("issue", job["issue"], remove=",".join(x for x in (LABELS["queue"], waiting) if x))
+            comment("issue", job["issue"], body)
+            if not rough:  # a clean job is done; one with friction stays open for a look at the retro
+                close_issue(job["issue"])
 
     elif stage == "rejected" and (old in WAITING | REJECTABLE or (old == "intake" and (d / "rejection.md").exists())):
         require((d / "rejection.md").exists(), "use `job reject` to reject a job")
@@ -2562,6 +2566,49 @@ def cmd_queue(args=()):
         pass  # a notification never fails the queue
 
 
+def merge_summary(job, rough):
+    """The issue comment after a merge: what was built, how it went, what's next."""
+    d = job_dir(job["id"])
+    where = f"PR #{job['pr']} is merged into {jbase(job)}" if job.get("pr") else f"{job['branch']} is merged into {jbase(job)}"
+    rounds = f"{job['round']} build round" + ("" if job["round"] == 1 else "s")
+    lines = [f"### Factory: merged", "", f"{where} after {rounds} (${job.get('cost_usd', 0):.2f} API-equivalent)."]
+    built = section(d / "build.md", "Summary") if (d / "build.md").exists() else None
+    if built:
+        lines += ["", "**What changed**", built]
+    decided = section(d / "decision.md", "Summary") if (d / "decision.md").exists() else None
+    if decided:
+        lines += ["", "**Why it was approved**", decided]
+    if (d / "accepted.md").exists():
+        lines += ["", "**Accepted by a human**"] + [l for l in (d / "accepted.md").read_text().splitlines() if l.startswith("- ")]
+    if job.get("follow_ups"):
+        lines += ["", "**Follow-ups**"] + [f"- {f['title']}" + (f" ({f['issue']})" if f.get("issue") else "")
+                                           for f in job["follow_ups"]]
+    if rough:
+        lines += ["", "**Not a clean run**, so this issue stays open for a look: " + "; ".join(rough) + "."
+                  + (" A retro runs and writes factory/jobs/" + job["id"] + "/retro.md." if retro_reason(job) else "")]
+    else:
+        lines += ["", "Clean run: no extra rounds, no human needed. Closing this issue."]
+    return "\n".join(lines)
+
+
+def problems(job):
+    """friction() without planned holds: a pause for review (high risk, new
+    dependencies) is the process working; a decision a human had to make isn't."""
+    out = [f for f in friction(job) if f != "it waited for a human"]
+    if any(h["stage"] == "needs-human" for h in job.get("history") or []):
+        out.append("it needed a human decision")
+    return out
+
+
+def close_issue(number):
+    """Close a GitHub issue the merge didn't close (a PR into a non-default branch doesn't)."""
+    try:
+        if gh_json("issue", "view", str(number), "--json", "state")["state"] != "CLOSED":
+            gh("issue", "close", str(number), "--reason", "completed")
+    except Refused as e:
+        print(f"job: couldn't close issue #{number}: {e}", file=sys.stderr)
+
+
 def friction(job):
     """What made this job harder than one clean pass, or [] for a clean job."""
     d = job_dir(job["id"])
@@ -2646,7 +2693,8 @@ def cmd_merge(job):
                         f"See round-{job['round']}/merge-checks.md and merge-checks.log.\n\n{gate.stdout.strip()}")
         try:
             if GITHUB:
-                git(job, "push", "origin", job["branch"])
+                # --force-with-lease: the gate may have rewritten commit messages (trailers)
+                git(job, "push", "--force-with-lease", "origin", job["branch"])
                 if gh_json("pr", "view", str(job["pr"]), "--json", "isDraft")["isDraft"]:
                     gh("pr", "ready", str(job["pr"]))
                 gh("pr", "merge", str(job["pr"]), f"--{CONFIG['merge_method']}")

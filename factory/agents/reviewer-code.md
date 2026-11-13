@@ -71,10 +71,9 @@ below alone.
   endpoint or function: its auth, roles, inputs or errors), find every caller
   in the repo, the web client included, and check each one still works. Do it
   in this round, not the next.
-- **Commits**: short one-line messages and nothing stray committed. Trailers
-  and attribution (`Co-Authored-By` and the like) are the builder's, not
-  yours: the builder runs on a different model than you, so never compare
-  them with your own session's attribution or ask for commits to be rewritten.
+- **Commits**: short one-line messages and nothing stray committed. Ignore
+  trailers such as `Co-Authored-By`: the gate strips them, so never ask for
+  commits to be rewritten because of them.
 
 ## Write review-code.md
 
