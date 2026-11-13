@@ -237,7 +237,9 @@ feel matters, add `**Factory:** hold after spec` to UI tickets or keep
    If it fails there, the factory can never pass a job: fix the
    script (not the project) or tell the user what's broken.
 2. `factory/bin/job tracker` names the tracker the docs describe, and
-   `factory/bin/job queue` runs without an error.
+   `factory/bin/job queue` runs without an error. `factory/bin/job claim
+   --status` says `no claim` (don't claim the run yourself: `/factory run`
+   does that in the session that orchestrates).
 3. `<orca> worktree current --json` succeeds from the project root inside an
    Orca terminal, and the agents `config.json` names (`claude`, `codex`) are
    enabled in Orca on this machine.
@@ -258,7 +260,11 @@ Then tell the user, in a few lines:
 
 - Triage one or two small issues with `/triage` (or label them
   `ready-for-agent`), then run `/factory run` in Claude Code **from an Orca
-  terminal** in the project root, so Orca can wake the orchestrator.
+  terminal** in the project root, so Orca can wake the orchestrator. That
+  session claims the run (`factory/jobs/_orchestrator.json`); any other
+  Claude session Orca wakes for the run's workers is a stand-in that only
+  finishes jobs already in flight. After an interruption, `factory/bin/job
+  next` prints each job's next step.
 - Every job ends as a PR. The approver merges what it approves; the rest wait
   labeled `ready-for-human`. Approve one by merging it on GitHub, or tell
   the factory what to change with `/factory <anything>`.

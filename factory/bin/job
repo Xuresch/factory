@@ -14,6 +14,12 @@ Usage:
                                  `job create` stay inside it
   job queue --clear              forget the run's selection and show every issue (/factory run)
   job queue --all                show every issue, keep the run's selection (status questions)
+  job claim [--run <id>] [--force]  this session becomes the run's one orchestrator
+                                 (factory/jobs/_orchestrator.json); --force takes a live claim over
+  job claim --status             who holds the claim, and whether that session still lives
+  job claim --release [--force]  drop the claim when the run ends
+  job next [<job>]               the exact next step for a job, from its state and files; without
+                                 <job>, one line per unfinished job. Run it after every wake-up
   job tracker                    which issue tracker and labels this repo uses
   job create <issue>             new job for an open `ready-for-agent` issue; prints the job id
   job advance <job> <stage>      move a job to <stage>, or refuse
@@ -44,6 +50,10 @@ Usage:
 local ticket (<feature>/<NN>, or its path .scratch/<feature>/issues/NN-slug.md).
 <role> is intake, spec, builder, approver or reviewer-<lens>.
 
+While another live Claude Code session holds the claim, this session is a
+stand-in: `job create` and a new `job queue` selection refuse; everything that
+moves an existing job on still works.
+
 Labels follow the mattpocock/skills triage roles (config.json `labels`): a job
 runs while its issue is `ready-for-agent`, waits as `needs-info` or
 `ready-for-human`, and an issue intake turns away goes back to `needs-triage`.
@@ -54,9 +64,12 @@ import fnmatch
 import json
 import os
 import re
+import shlex
 import shutil
+import socket
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1206,7 +1219,7 @@ def advance(job, stage):
     if stage in WAITING:
         notify(f"{job['id']} ({job['issue']}) waits for you: {stage}"
                + (f" after {job['paused']['after']}" if stage == "paused" else ""))
-    job.setdefault("history", []).append({"stage": stage, "round": job["round"], "at": now()})
+    job.setdefault("history", []).append({"stage": stage, "round": job["round"], "at": now(), "t": time.time()})
     return job
 
 
@@ -1373,7 +1386,7 @@ def cmd_slice_start(job, k):
     else:
         run(["git", "worktree", "add", "-b", branch, where, job["branch"]])
         s["fork"] = run(["git", "rev-parse", job["branch"]]).stdout.strip()
-    s["state"] = "running"
+    s["state"], s["started"] = "running", time.time()
     save(job)
     print(f"{job['id']}: slice {k} {'resumes in' if resumed else 'worktree'} {where} on {branch}, "
           f"port {slice_port(job, k)}; start a fresh builder-s{k} worker (`factory/bin/job start {job['id']} builder-s{k}`)")
@@ -1680,7 +1693,7 @@ def cmd_resume(job):
     label("issue", job["issue"], add=LABELS["queue"], remove=LABELS["needs_human"])
     job["stage"], job["ended"] = p["resume"], None
     job.pop("paused")
-    job.setdefault("history", []).append({"stage": job["stage"], "round": job["round"], "at": now()})
+    job.setdefault("history", []).append({"stage": job["stage"], "round": job["round"], "at": now(), "t": time.time()})
     save(job)
     nxt = "spec" if job["stage"] == "spec" else "builder"
     print(f"{job['id']}: resumed at {job['stage']}" + (f" with your edited {f.name}" if edited else "")
@@ -1730,7 +1743,7 @@ def cmd_rewind(job, target, text):
     job.pop("paused", None)
     label("issue", job["issue"], add=LABELS["queue"], remove=LABELS["needs_human"])
     job["stage"], job["ended"] = target, None
-    job.setdefault("history", []).append({"stage": target, "round": job["round"], "at": now()})
+    job.setdefault("history", []).append({"stage": target, "round": job["round"], "at": now(), "t": time.time()})
     save(job)
     role = {"intake": "intake", "spec": "spec", "build": "builder"}[target]
     how = (f"`job send {job['id']} builder` or `job start` it" if role == "builder" else f"`job start {job['id']} {role}`")
@@ -1972,6 +1985,7 @@ def ensure_branch(branch):
 
 
 def cmd_create(number):
+    require_orchestrator()
     number = issue_key(number)
     only = run_selection()
     if only is not None and number not in only:
@@ -2010,7 +2024,7 @@ def cmd_create(number):
         "stage": "intake", "round": 0, "round_limit": CONFIG["max_rounds"],
         "intake": None, "agents": None, "gate": None, "reviews": {},
         "dispatch": {}, "cost_usd": 0.0, "started": now(), "ended": None,
-        "history": [{"stage": "intake", "round": 0, "at": now()}],
+        "history": [{"stage": "intake", "round": 0, "at": now(), "t": time.time()}],
         "holds": holds,
     }
     write_issue_md(job)
@@ -2069,6 +2083,180 @@ def run_selection():
         return None
 
 
+# ---- One orchestrator: the claim --------------------------------------------
+#
+# Orca wakes the session bound to a run (`run-create` binds the session that
+# ran it; `run-use` rebinds). When that session is gone or busy, Orca can hand
+# a worker's message to a fresh background session instead, and several of
+# those once acted as orchestrators at once. `/factory run` claims the run in
+# factory/jobs/_orchestrator.json. While another live session holds it, a
+# session is a stand-in: `job create` and a new queue selection refuse, and
+# everything that moves an existing job on still works.
+#
+# Live means: the holder's Claude Code process (CLAUDE_PID) still runs on this
+# machine; without one, its Orca terminal is still connected; without either,
+# it ran a `job` command within `orchestrator_stale_minutes`. A stale claim is
+# taken over by plain `job claim`; a live one only with --force.
+
+CLAIM = JOBS / "_orchestrator.json"
+
+
+def session_id():
+    """This Claude Code session, or None for a person in a shell or a script:
+    those are never stand-ins."""
+    if os.environ.get("CLAUDE_CODE_SESSION_ID"):
+        return os.environ["CLAUDE_CODE_SESSION_ID"]
+    return os.environ.get("ORCA_TERMINAL_HANDLE") if os.environ.get("CLAUDECODE") else None
+
+
+def read_claim():
+    try:
+        return json.loads(CLAIM.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def write_claim(claim):
+    JOBS.mkdir(parents=True, exist_ok=True)
+    tmp = CLAIM.with_name(f".{CLAIM.name}.{os.getpid()}")
+    tmp.write_text(json.dumps(claim, indent=2) + "\n")
+    tmp.replace(CLAIM)
+
+
+def proc_start(pid):
+    """The process's start time on Linux, so a reused pid isn't taken for the holder."""
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+    except (OSError, IndexError):
+        return None
+
+
+def pid_alive(pid, start):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    return not start or proc_start(pid) in (None, start)
+
+
+def terminal_alive(handle):
+    """True or False when Orca knows the terminal, None when it can't say."""
+    try:
+        res = subprocess.run([orca_cli(), "terminal", "show", "--terminal", handle, "--json"],
+                             cwd=REPO, capture_output=True, text=True, timeout=30)
+        out = json.loads(res.stdout)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if out.get("ok"):
+        return bool(((out.get("result") or {}).get("terminal") or {}).get("connected"))
+    return False if (out.get("error") or {}).get("code") == "terminal_handle_stale" else None
+
+
+def claim_liveness(claim):
+    """(alive, why) for the session holding the claim."""
+    if claim.get("pid") and claim.get("host") == socket.gethostname():
+        alive = pid_alive(claim["pid"], claim.get("pid_start"))
+        return alive, f"its Claude Code process {claim['pid']} {'runs' if alive else 'has exited'}"
+    if claim.get("terminal"):
+        alive = terminal_alive(claim["terminal"])
+        if alive is not None:
+            return alive, f"its Orca terminal {claim['terminal']} is {'connected' if alive else 'gone'}"
+    limit = CONFIG.get("orchestrator_stale_minutes", 120)
+    age = int((time.time() - claim.get("seen", 0)) // 60)
+    return age < limit, f"its last job command was {age} min ago (stale after {limit})"
+
+
+def describe_claim(c):
+    return (f"session {c.get('session')}" + (f", Orca run {c['run']}" if c.get("run") else "")
+            + (f", terminal {c['terminal']}" if c.get("terminal") else "") + f", since {c.get('started')}")
+
+
+def stand_in():
+    """Why this session may not start new work, or None when it may."""
+    me, c = session_id(), read_claim()
+    if not me or not c or c.get("session") == me:
+        return None
+    alive, why = claim_liveness(c)
+    if alive:
+        return (f"this session is a stand-in: the run's orchestrator is {describe_claim(c)} ({why}). "
+                "A stand-in only finishes the jobs already in flight (`factory/bin/job next` says how); it "
+                "starts no new issue and changes no selection. Only when the user tells this session to take "
+                "over: `factory/bin/job claim --force`.")
+    return (f"the run's orchestrator ({describe_claim(c)}) is gone: {why}. This session isn't it: finish the "
+            "jobs in flight (`factory/bin/job next`). New work starts only after `/factory run` in a session "
+            "claims the run (`factory/bin/job claim` takes a stale claim).")
+
+
+def require_orchestrator():
+    why = stand_in()
+    if why:
+        die(why)
+
+
+def refresh_claim():
+    """Every `job` command by the holder is its heartbeat."""
+    me, c = session_id(), read_claim()
+    if me and c and c.get("session") == me:
+        c["seen"] = time.time()
+        write_claim(c)
+
+
+def cmd_claim(args):
+    """Claim the run for this session, show who holds it, or release it."""
+    run_id = None
+    if "--run" in args:
+        i = args.index("--run")
+        if i + 1 >= len(args):
+            die("--run needs the Orca run id")
+        run_id = args.pop(i + 1)
+        args.remove("--run")
+    flags = set(args)
+    if flags - {"--force", "--release", "--status"}:
+        die(f"bad arguments: {' '.join(sorted(flags))}; see `job --help`")
+    me, c = session_id(), read_claim()
+    mine = bool(me and c and c.get("session") == me)
+    if "--status" in flags:
+        if not c:
+            print("no claim: no session orchestrates this repo")
+            return
+        alive, why = claim_liveness(c)
+        print(f"held by {'this session' if mine else 'another session'}: {describe_claim(c)}; "
+              f"{'live' if alive else 'stale'}: {why}")
+        return
+    if "--release" in flags:
+        if not c:
+            print("no claim to release")
+            return
+        if not mine and "--force" not in flags:
+            die(f"the claim is {describe_claim(c)}, not this session's; `job claim --release --force` drops it")
+        CLAIM.unlink(missing_ok=True)
+        print(f"released: {describe_claim(c)}")
+        return
+    if not me:
+        die("job claim runs in the orchestrator's Claude Code session (CLAUDE_CODE_SESSION_ID isn't set)")
+    took = ""
+    if c and not mine:
+        alive, why = claim_liveness(c)
+        if alive and "--force" not in flags:
+            die(f"another live session orchestrates this repo: {describe_claim(c)} ({why}). This session is a "
+                "stand-in: tell the user to continue in that session, or `job claim --force` if they want "
+                "this one to take over")
+        took = f"; took over from {describe_claim(c)} ({'forced, ' if alive else ''}{why})"
+    pid = os.environ.get("CLAUDE_PID", "")
+    pid = int(pid) if pid.isdigit() else None
+    old = c if mine else {}
+    claim = {"session": me, "run": run_id or old.get("run"), "terminal": os.environ.get("ORCA_TERMINAL_HANDLE"),
+             "pid": pid, "pid_start": proc_start(pid) if pid else None, "host": socket.gethostname(),
+             "started": old.get("started") or now(), "seen": time.time()}
+    write_claim(claim)
+    print(f"claimed: {describe_claim(claim)}{took}")
+    if c and not mine and c.get("run") and not run_id:
+        print(f"the last orchestrator's workers report to Orca run {c['run']}: bind this session to it with "
+              f"`<orca> orchestration run-use --id {c['run']}`, then `job claim --run {c['run']}`")
+
+
 def cmd_queue(args=()):
     """Rows in the order to start them. `resume` and `new` rows fit in the
     concurrency slots; the rest show as `hold` until a running job finishes.
@@ -2077,6 +2265,10 @@ def cmd_queue(args=()):
     args = [a for a in args if a not in flags]
     if args and flags:
         die("give a selection or --all/--clear, not both")
+    if args or "--clear" in flags:
+        require_orchestrator()  # a new selection is new work
+    elif why := stand_in():
+        print(f"note\t-\t-\t-\t{why}")
     if "--clear" in flags:
         RUN_SELECTION.unlink(missing_ok=True)
     if args:
@@ -2361,11 +2553,13 @@ def cmd_continue(job):
     if n >= swap_after and not job.get("builder_pinned") and other != current:
         set_builder(job, other, f"{describe(current)} stopped early {n} times in round {job['round']}")
         job["builder_log"][-1]["round"] = job["round"]
+        job["continued"] = {"round": job["round"], "at": time.time(), "msg": msg}  # job next adds the take-over
         save(job)
         print(f"{job['id']}: continue {n}/{limit} in round {job['round']}: builder is now {describe(other)} "
               f"after {n} early stops; `job start {job['id']} builder` with: You take over from another "
               f"builder: read build.md and git log first. {msg}")
         return
+    job["continued"] = {"round": job["round"], "at": time.time(), "msg": msg}
     save(job)
     print(f"{job['id']}: continue {n}/{limit} in round {job['round']}: "
           f"`job send {job['id']} builder` with: {msg}")
@@ -2561,12 +2755,20 @@ def cmd_start(job, role, extra):
         die(f"worker-start for {role} failed (don't rerun it; see the orchestration skill's "
             f"recovery reference):\n{(res.stdout or res.stderr).strip()[:2000]}")
     job.setdefault("dispatch", {})[role] = dispatch
+    note_worker(job, role, dispatch, "started")
     if keep:
         job.setdefault("kept_open", [])
         if dispatch not in job["kept_open"]:
             job["kept_open"].append(dispatch)
     save(job)
     print(f"{job['id']}: started {role} on {describe(entry)} in {where}, dispatch {dispatch}")
+
+
+def note_worker(job, role, dispatch, how):
+    """When <role>'s worker was last started or messaged: `job next` waits on it
+    until the file it writes is newer than that."""
+    job.setdefault("workers", {})[role] = {"dispatch": dispatch, "round": job["round"],
+                                           "at": time.time(), "how": how}
 
 
 def cmd_send(job, role, text):
@@ -2584,6 +2786,8 @@ def cmd_send(job, role, text):
     res = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True)
     if res.returncode != 0:
         die(f"send to {role} failed:\n{(res.stdout or res.stderr).strip()[:2000]}")
+    note_worker(job, role, dispatch, "messaged")
+    save(job)
     print(f"{job['id']}: sent to {role} ({dispatch})")
 
 
@@ -2595,6 +2799,293 @@ def cmd_dispatch(job, role, dispatch_id):
     job.setdefault("dispatch", {})[role] = dispatch_id
     save(job)
     print(f"{job['id']}: {role} dispatch {dispatch_id}")
+
+
+# ---- Next step: what moves a job on now --------------------------------------
+#
+# After a wake-up, an interruption, or in a stand-in session, the orchestrator
+# doesn't rebuild the next step from memory or from the skill's prose: `job
+# next` reads the job's stage, its files and when its workers were started, and
+# prints the step, as a command where there is one. Each line is
+# `<job>: <verb>: <what>`, verb one of run, advance, start, send, wait, done.
+# A worker's file counts once it is newer than the step began (the stage was
+# entered, or the worker was started or messaged) and Orca no longer runs it.
+
+JOB = "factory/bin/job"
+
+
+def entry_time(entry):
+    """A history entry's time: `t` to the sub-second, or `at` for older jobs."""
+    return entry.get("t") or datetime.fromisoformat(entry["at"].replace("Z", "+00:00")).timestamp()
+
+
+def entered(job):
+    """When the job entered its current stage."""
+    return entry_time(job["history"][-1]) if job.get("history") else 0
+
+
+def clock(t):
+    return datetime.fromtimestamp(t).strftime("%H:%M")
+
+
+def dispatch_state(dispatch):
+    """`running` or `settled` as Orca's worker-show says, None when it can't say."""
+    try:
+        res = subprocess.run([orca_cli(), "orchestration", "worker-show", "--dispatch", dispatch, "--json"],
+                             cwd=REPO, capture_output=True, text=True, timeout=30)
+        out = json.loads(res.stdout)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    r = out.get("result") or {}
+    if not out.get("ok"):
+        return None
+    return "settled" if r.get("stage") == "settled" or r.get("liveness") == "exited" else "running"
+
+
+def step_report(job, role, path, since):
+    """Where <role>'s step stands: ("report", w) when `path` was written in this
+    step and its worker is done, ("running", w), ("silent", w) when the worker
+    settled without writing it, or ("idle", None) when no worker was started."""
+    w = (job.get("workers") or {}).get(role)
+    w = w if w and w["at"] >= since else None
+    start = max(since, w["at"]) if w else since
+    if path.exists() and path.stat().st_mtime >= start:
+        if not w or dispatch_state(w["dispatch"]) != "running":
+            return "report", w
+        return "running", w
+    if not w:
+        return "idle", None
+    if w["how"] == "started" and dispatch_state(w["dispatch"]) == "settled":
+        return "silent", w
+    return "running", w
+
+
+def waiting(role, w):
+    return f"{role} running ({w['how']} {clock(w['at'])}, dispatch {w['dispatch']})"
+
+
+def nudge(job, role, name):
+    return ("send", f"{JOB} send {job['id']} {role} "
+            + shlex.quote(f"You stopped without writing {name}. Write it as your brief says and report again."))
+
+
+def worker_step(job, role, path, since, text=""):
+    """The step for a single worker that writes `path`: None once it reported."""
+    state, w = step_report(job, role, path, since)
+    if state == "running":
+        return ("wait", waiting(role, w))
+    if state == "silent":
+        return nudge(job, role, path.name)
+    if state == "idle":
+        return ("start", f"{JOB} start {job['id']} {role}" + (f" {shlex.quote(text)}" if text else ""))
+    return None
+
+
+def build_message(job):
+    """What the builder is told this round, from how the round began."""
+    n, d, rd = job["round"], job_dir(job["id"]), round_dir(job)
+    hist = job.get("history") or []
+    before = hist[-2] if len(hist) > 1 else {}
+    feedback = sorted(d.glob("feedback-*.md"), key=lambda p: p.stat().st_mtime)
+    if (rd / "merge-back.md").exists():
+        msg = f"Read round-{n}/merge-back.md and base-sync.md, fix it, and update build.md."
+    elif feedback and before and feedback[-1].stat().st_mtime >= entry_time(before):
+        msg = f"The user gave feedback: read {feedback[-1].name} and address it, push, and update build.md for round {n}."
+    elif before.get("stage") == "gate":
+        msg = f"The gate failed: read round-{n - 1}/checks.md and checks.log, fix it, push, and update build.md."
+    elif before.get("stage") == "review":
+        msg = (f"Round {n - 1} reviews are in round-{n - 1}/. Address every VERDICT: CHANGES, push, "
+               f"and update build.md for round {n}.")
+    else:
+        msg = ""
+    if first_line(rd / "base-sync.md") == "SYNC: CONFLICT":
+        msg = f"round-{n}/base-sync.md: the base conflicts with the branch, resolve that first. {msg}".strip()
+    return msg
+
+
+def builder_step(job, msg):
+    """Message the builder recorded for this job, or start one that takes over."""
+    if (job.get("dispatch") or {}).get("builder"):
+        return ("send", f"{JOB} send {job['id']} builder {shlex.quote(msg or 'Build round ' + str(job['round']) + '.')}")
+    if job["round"] > 1 or (job.get("workers") or {}).get("builder"):
+        msg = f"You take over from another builder: read build.md and git log first. {msg}".strip()
+    return ("start", f"{JOB} start {job['id']} builder" + (f" {shlex.quote(msg)}" if msg else ""))
+
+
+def next_intake(job, since):
+    i, f = job["id"], job_dir(job["id"]) / "intake.md"
+    step = worker_step(job, "intake", f, since)
+    if step:
+        return [step]
+    decision = header(f).get("DECISION")
+    if decision == "ACCEPT":
+        return [("run", f"factory/bin/route {i}")] if not job["agents"] else [("advance", f"{JOB} advance {i} spec")]
+    if decision in {"NEEDS-INFO", "REJECT"}:
+        return [("advance", f"{JOB} advance {i} {'needs-info' if decision == 'NEEDS-INFO' else 'rejected'}")]
+    return [("send", f"{JOB} send {i} intake "
+             + shlex.quote("intake.md needs a first line DECISION: ACCEPT, NEEDS-INFO or REJECT. Fix it and report again."))]
+
+
+def next_spec(job, since):
+    step = worker_step(job, "spec", job_dir(job["id"]) / "spec.md", since)
+    return [step or ("advance", f"{JOB} advance {job['id']} build")]
+
+
+def next_slices(job, since):
+    i, d, out = job["id"], job_dir(job["id"]), []
+    ready = [s["n"] for s in ready_slices(job)]
+    for s in job["slices"]:
+        k, role = s["n"], f"builder-s{s['n']}"
+        if s["state"] == "running":
+            step = worker_step(job, role, d / f"slice-{k}.md", max(since, s.get("started", 0)))
+            out.append(step or ("run", f"{JOB} slice-done {i} {k}"))
+        elif k in ready:
+            out.append(("run", f"{JOB} slice-start {i} {k}, then {JOB} start {i} {role}"))
+    if not out:
+        stuck = [str(s["n"]) for s in job["slices"] if s["state"] != "done"]
+        out.append(("wait", f"slices {', '.join(stuck)} wait on others; `{JOB} slices {i}`"))
+    return out
+
+
+def next_build(job, since):
+    i, d = job["id"], job_dir(job["id"])
+    if job.get("slices") and any(s["state"] != "done" for s in job["slices"]):
+        return next_slices(job, since)
+    c = job.get("continued") or {}
+    w = (job.get("workers") or {}).get("builder") or {}
+    if (c.get("round") == job["round"] and c["at"] >= since and w.get("at", 0) < c["at"]
+            and (d / "build.md").stat().st_mtime < c["at"]):
+        return [builder_step(job, c["msg"])]  # `job continue` ran, its message never went out
+    state, w = step_report(job, "builder", d / "build.md", since)
+    if state == "running":
+        return [("wait", waiting("builder", w))]
+    if state == "silent":
+        return [nudge(job, "builder", "build.md")]
+    if state == "idle":
+        return [builder_step(job, build_message(job))]
+    status = first_line(d / "build.md")
+    if status == "STATUS: READY":
+        return [("advance", f"{JOB} advance {i} gate")]
+    if status == "STATUS: PARTIAL":
+        return [("run", f"{JOB} continue {i}")]
+    if status == "STATUS: BLOCKED":
+        return [("advance", f"{JOB} advance {i} needs-human")]
+    return [("send", f"{JOB} send {i} builder "
+             + shlex.quote(f"build.md starts with {status}; its first line must be STATUS: READY, PARTIAL or BLOCKED."))]
+
+
+def after_round(job):
+    """Where a failed gate or review goes: another round, or a human after the last."""
+    return "needs-human" if job["round"] >= job["round_limit"] else "build"
+
+
+def next_gate(job, since):
+    i, f = job["id"], round_dir(job) / "checks.md"
+    head = git(job, "rev-parse", "HEAD").stdout.strip()
+    if not f.exists() or header(f).get("COMMIT") != head:
+        return [("run", f"factory/bin/gate {i}")]
+    if header(f).get("GATE") == "PASS":
+        return [("advance", f"{JOB} advance {i} review")]
+    return [("advance", f"{JOB} advance {i} {after_round(job)}")]
+
+
+def next_review(job, since):
+    i, rd, out = job["id"], round_dir(job), []
+    skipped = job.get("skipped_reviews") or {}
+    start, waits = [], []
+    for lens in reviewers(job):
+        if lens in skipped:
+            continue
+        state, w = step_report(job, f"reviewer-{lens}", rd / f"review-{lens}.md", since)
+        if state == "idle":
+            start.append(f"reviewer-{lens}")
+        elif state == "running":
+            waits.append(waiting(f"reviewer-{lens}", w))
+        elif state == "silent":
+            out.append(nudge(job, f"reviewer-{lens}", f"round-{job['round']}/review-{lens}.md"))
+    if start:
+        out.insert(0, ("start", f"{' '.join(start)} (`{JOB} start {i} <role>` for each, in one message)"))
+    if waits:
+        out.append(("wait", ", ".join(waits)))
+    if out:
+        return out
+    verdicts = {}
+    for lens in reviewers(job):
+        f = rd / f"review-{lens}.md"
+        m = re.fullmatch(r"VERDICT:\s*(PASS|CHANGES)", first_line(f) or "")
+        problem = review_problem(lens, f, m)
+        if problem:
+            out.append(("send", f"{JOB} send {i} reviewer-{lens} "
+                        + shlex.quote(f"review-{lens}.md does not count: {problem}. Fix it and report again.")))
+        else:
+            verdicts[lens] = m.group(1)
+    if out:
+        return out
+    if all(v == "PASS" for v in verdicts.values()):
+        return [("advance", f"{JOB} advance {i} approve")]
+    return [("advance", f"{JOB} advance {i} {after_round(job)}")]
+
+
+def next_approve(job, since):
+    i, f = job["id"], job_dir(job["id"]) / "decision.md"
+    step = worker_step(job, "approver", f, since)
+    if step:
+        return [step]
+    line = first_line(f)
+    if line == "APPROVE":
+        return [("run", f"{JOB} merge {i}")]
+    if line == "ESCALATE":
+        return [("advance", f"{JOB} advance {i} needs-human")]
+    return [("send", f"{JOB} send {i} approver "
+             + shlex.quote("decision.md must start with APPROVE or ESCALATE. Fix it and report again."))]
+
+
+def next_waiting(job, since):
+    i, d, stage = job["id"], job_dir(job["id"]), job["stage"]
+    if stage == "paused":
+        after = (job.get("paused") or {}).get("after")
+        what = {"intake": "intake.md", "budget": "the cost"}.get(after, "spec.md")
+        return [("wait", f"human: paused after {after}; they review {what}, then resume (`{JOB} resume {i}`), "
+                         "give feedback or reject")]
+    if stage == "needs-info":
+        if replied_since_question(fetch_issue(job["issue"])):
+            return [("advance", f"{JOB} advance {i} intake")]
+        return [("wait", f"author: intake asked on {job['issue']}; no answer yet")]
+    return [("wait", f"human: needs-human ({first_line(d / 'decision.md') or 'no decision.md'}); they approve "
+                     f"(`{JOB} approve {i}`), give feedback or reject")]
+
+
+NEXT = {"intake": next_intake, "spec": next_spec, "build": next_build, "gate": next_gate,
+        "review": next_review, "approve": next_approve,
+        "merging": lambda job, since: [("run", f"{JOB} merge {job['id']}")],
+        "paused": next_waiting, "needs-info": next_waiting, "needs-human": next_waiting}
+
+
+def next_steps(job):
+    """[(verb, what)]: what moves the job on now."""
+    if job["stage"] in TERMINAL:
+        return [("done", job["stage"])]
+    try:
+        return NEXT[job["stage"]](job, entered(job))
+    except Refused as e:
+        return [("check", str(e))]
+
+
+def cmd_next(args):
+    """One line per step for <job>; without one, a line per unfinished job."""
+    why = stand_in()
+    if why:
+        print(f"note: {why}")
+    if args:
+        job = resolve(args[0])
+        for verb, what in next_steps(job):
+            print(f"{job['id']}: {verb}: {what}")
+        return
+    jobs = [j for j in all_jobs() if j["stage"] not in TERMINAL]
+    for j in jobs:
+        print(f"{j['id']}: " + "; ".join(f"{verb}: {what}" for verb, what in next_steps(j)))
+    if not jobs:
+        print(f"no job in flight; `{JOB} queue` lists new work")
 
 
 def elapsed(job):
@@ -2625,8 +3116,14 @@ def main(argv):
         return
     cmd, args = argv[0], argv[1:]
     try:
+        if cmd != "claim":
+            refresh_claim()
         if cmd == "queue":
             cmd_queue(args)
+        elif cmd == "claim":
+            cmd_claim(list(args))
+        elif cmd == "next" and len(args) <= 1:
+            cmd_next(args)
         elif cmd == "tracker" and not args:
             cmd_tracker()
         elif cmd == "reply" and len(args) == 1:

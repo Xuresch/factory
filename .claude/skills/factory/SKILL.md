@@ -84,6 +84,8 @@ through the scripts. `factory/jobs/` is gitignored runtime state.
 <repo>/factory/jobs/<job-id>/round-<N>/review-<r>.md    one per routed reviewer
 <repo>/factory/jobs/<job-id>/decision.md                APPROVE or ESCALATE
 <repo>/factory/jobs/<job-id>/feedback-<k>.md            the user's feedback on an escalated job
+<repo>/factory/jobs/_orchestrator.json         which session orchestrates the run (`job claim`)
+<repo>/factory/jobs/_run.json                  the run's selection (`job queue <sel>`)
 <repo>/.worktrees/<job-id>/                    the job's worktree, on factory/<job-id>
 ```
 
@@ -104,8 +106,18 @@ Every agent is an Orca worker. Before the first command of a run:
 3. Run `ORCA worktree current --json`. If it fails, you aren't in an
    Orca-managed workspace and Orca can't wake you: stop and tell the user to
    start `/factory run` from an Orca terminal in the main checkout.
-4. Run `ORCA orchestration run-create --objective "factory run <sel>"` with the
-   selection the user typed (just `"factory run"` without one).
+4. Claim the run: `factory/bin/job claim`. It writes
+   `factory/jobs/_orchestrator.json` with this session, its Claude Code
+   process and its Orca terminal. If it refuses, another live session
+   orchestrates this repo: tell the user, and stop. Only when they tell you to
+   take over, run `factory/bin/job claim --force`.
+5. Bind an Orca run. If `job claim` printed that the last orchestrator's
+   workers report to a run, take that run over so their `worker_done` mail
+   wakes you, not a new session: `ORCA orchestration run-use --id <run>`.
+   Otherwise (or if `run-use` fails) create one:
+   `ORCA orchestration run-create --objective "factory run <sel>"` with the
+   selection the user typed (just `"factory run"` without one). Then record it:
+   `factory/bin/job claim --run <run_id>`.
 
 **Start a worker** with one command, always:
 
@@ -140,8 +152,9 @@ scripts, never type into a worker's terminal.
 
 **When Orca wakes you:**
 
-- `worker_done`: its summary is the worker's one line. Advance the job from the
-  file the brief names, not from the summary; the file is the record.
+- `worker_done`: its summary is the worker's one line. Run
+  `factory/bin/job next <id>` and do what it prints; it reads the file the
+  brief names, not the summary: the file is the record.
 - `question`: answer with `ORCA orchestration reply` when the answer follows
   from the job's files or the user's instructions. When it needs a product
   decision, reply that the worker should write it up as BLOCKED (builder) or
@@ -152,21 +165,55 @@ scripts, never type into a worker's terminal.
   naming the missing file. If it stops again, leave the job in its stage and
   tell the user.
 
-**Woken in a new session.** Orca may hand a message to a fresh background
-session (its first prompt is `You have N orchestration messages`) instead of
-the orchestrator that started the run. If you didn't run `/factory run` in
-this session yourself, you are a stand-in: finish only the jobs the messages
-are about (advance them, start their next worker, run `job merge`). Don't run
-`job create`, don't start `new` lines, and don't drain the queue; the run's
-orchestrator, or the user, does that. Never stop workers you didn't start.
+**Woken in a new session.** Orca delivers a run's mail to the session bound
+to it (`run-create` binds the session that ran it, `run-use` rebinds). When
+that session is gone or doesn't take the mail, Orca may hand it to a fresh
+background session instead: its first prompt is `You have N orchestration
+messages. Run orca orchestration check --run <id>`. If you didn't run
+`/factory run` in this session yourself, run `factory/bin/job claim --status`.
+Unless it says the claim is held by this session, you are a stand-in: run the
+`check` it names, then `factory/bin/job next <id>` for each job the messages
+are about, and do what it prints. The scripts enforce the rest: `job create`
+and a new `job queue` selection refuse in a stand-in. Don't claim the run
+yourself, and never stop workers you didn't start.
+
+## The next step: `job next`
+
+After every wake-up, after an interruption, and whenever you aren't sure where
+a job stands, ask the script instead of working it out from this skill:
+
+```bash
+factory/bin/job next <id>     # one line per step for that job
+factory/bin/job next          # one line per unfinished job
+```
+
+Each line is `<job>: <verb>: <what>`:
+
+- `run: <command>`: run it (`factory/bin/gate`, `factory/bin/route`,
+  `job merge`, `job continue`, `job slice-done`, `job slice-start`).
+- `advance: <command>`: run that `job advance`.
+- `start: <command>`, or `start: reviewer-code reviewer-ux (...)`: start those
+  workers with `job start`, all in one message.
+- `send: <command>`: message the recorded worker (a later round, a continue, a
+  nudge for a file it didn't write, a refusal it must fix).
+- `wait: <who> ...`: a worker is still on it, or a human or the issue's author
+  has to act. Nothing to do; end your turn.
+- `done: merged` or `done: rejected`.
+
+Run it again after each step for that job, until it says `wait`. A worker's
+file counts only once it is newer than the step it answers and Orca no longer
+runs the worker, so a file from an earlier round never moves a job on. The
+stage notes below say why each step is what it is; `job next` says which one
+is due.
 
 Every brief `job start` writes contains `Job folder: <path>/`: the job's
 cost is found by that string.
 
 ## Advancing a job
 
-Each step below runs when the previous agent or script finishes. Report one
-short line per transition, e.g. `004-dark-mode #12: gate PASS → reviewing (code, ux, ui)`.
+Each step below runs when the previous agent or script finishes; `job next`
+prints which one is due, so these notes are the why, not a checklist to
+replay. Report one short line per transition, e.g. `004-dark-mode #12: gate PASS → reviewing (code, ux, ui)`.
 
 **intake.** `factory/bin/job start <id> intake`. When it returns, read its
 decision:
@@ -324,17 +371,14 @@ then moves the job to `merged`; stop any workers still running for it, as the
 4. When nothing is queued or running, print `factory/bin/job summary <ids>`
    for the jobs this run touched, then list what waits on a human: PRs to
    review (merge one to approve it, or give feedback with `/factory`) and
-   questions waiting on authors.
+   questions waiting on authors. Then `factory/bin/job claim --release`.
 
 **Resuming.** State lives in files, so a new session picks up where a dead one
-stopped. For a `resume` job, run its stage's step again: `intake` and `spec`
-start their worker again; `build` messages the builder's recorded dispatch, or
-starts a new builder told it is resuming (it reads `build.md` and `git log` to
-see how far the last one got); `gate` runs the gate; `review` starts only the
-reviewers whose `review-<r>.md` is missing in the current round; `approve`
-starts the approver again; `merging` runs
-`factory/bin/job merge <id>`. A `needs-info` job the author has answered shows
-as `resume`: run `factory/bin/job advance <id> intake` and go to **intake**.
+stopped. For every `resume` line, run `factory/bin/job next <id>` and do what
+it prints: it starts a worker only when none was started for the current step,
+and waits on one that was. A resumed builder is told to take over and read
+`build.md` and `git log` first. A `needs-info` job the author has answered
+shows as `resume` too; `job next` says to advance it to intake.
 
 ## /factory run <sel>
 

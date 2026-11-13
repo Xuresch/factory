@@ -27,10 +27,15 @@ new_repo() {  # new_repo <name>: cd into a fresh repo with the factory installed
 log="$(dirname "$0")/calls.log"; n=$(( $(wc -l < "$log" 2>/dev/null || echo 0) + 1 ))
 [[ " $* " == *" --spec-file - "* ]] && cat >> "$(dirname "$0")/specs.log"
 echo "$*" >> "$log"
+if [[ "$1 $2" == "orchestration worker-show" ]]; then  # FAKE_WORKER=running|settled (default)
+  echo "{\"ok\":true,\"result\":{\"stage\":\"${FAKE_WORKER:-settled}\"}}"; exit 0
+fi
 echo "{\"ok\":true,\"result\":{\"dispatchId\":\"ctx_fake$n\",\"state\":\"ready\"}}"
 EOF
   chmod +x "$dir/bin/orca"
   export ORCA_CLI_COMMAND="$dir/bin/orca" CALLS="$dir/bin/calls.log" SPECS="$dir/bin/specs.log"
+  # No orchestrator session unless a test plays one (as A, B ... with a live CLAUDE_PID).
+  unset CLAUDE_CODE_SESSION_ID CLAUDECODE CLAUDE_PID ORCA_TERMINAL_HANDLE FAKE_WORKER
   cd "$dir/repo" || exit 1
   git init -q -b master && git config user.email t@t && git config user.name t
   mkdir -p factory && cp -r "$FACTORY_SRC/bin" "$FACTORY_SRC/agents" "$FACTORY_SRC/config.json" factory/
@@ -494,6 +499,137 @@ t_codex_model_and_effort() {
   check "preset" "$(J route-set "$id" builder=sol-high)" "codex/gpt-6.1-sol:high" &&
   check "explicit effort" "$(J route-set "$id" builder=codex/gpt-6.1-terra:medium)" "codex/gpt-6.1-terra:medium" &&
   check "bad entry" "$(J route-set "$id" builder=gpt 2>&1)" "terra-low"
+}
+
+as() {  # as <session> <command...>: run as Claude Code session <session>, alive as this test
+  local s="$1"; shift
+  CLAUDE_CODE_SESSION_ID="$s" CLAUDE_PID=$$ "$@"
+}
+
+t_claim_and_stand_in() {
+  new_repo claim; ticket 01 One; ticket 02 Two; ticket 03 Three; commit_all
+  check "only a session claims" "$(J claim 2>&1)" "CLAUDE_CODE_SESSION_ID isn't set" &&
+  check "A claims" "$(as A J claim --run run_1)" "claimed: session A, Orca run run_1" || return 1
+  local id; id=$(as A J create f/01) || return 1
+  check "B can't create" "$(as B J create f/02 2>&1)" "this session is a stand-in" &&
+  check "B can't select" "$(as B J queue f/02 2>&1)" "this session is a stand-in" &&
+  check "B can't clear" "$(as B J queue --clear 2>&1)" "this session is a stand-in" &&
+  check "B's queue says so" "$(as B J queue | head -1)" "note"$'\t'"-"$'\t'"-"$'\t'"-"$'\t'"this session is a stand-in" &&
+  check "B can't claim" "$(as B J claim 2>&1)" "another live session orchestrates" &&
+  check "B sees the holder" "$(as B J claim --status)" "held by another session: session A, Orca run run_1" &&
+  check "B can't release" "$(as B J claim --release 2>&1)" "not this session's" || return 1
+  intake "$id" low none; factory/bin/route "$id" >/dev/null
+  check "B moves the job on" "$(as B J advance "$id" spec)" "$id: spec (round 0)" &&
+  check "a person is no stand-in" "$(J queue f/01-02 | awk '$1=="new"{print $2}')" "f/02" || return 1
+  # A's process exits: the claim goes stale; B still can't start work until it claims.
+  sleep 0 & wait $!; local dead=$!
+  CLAUDE_CODE_SESSION_ID=A CLAUDE_PID=$dead J claim >/dev/null
+  check "stale claim" "$(as B J create f/02 2>&1)" "is gone: its Claude Code process $dead has exited" &&
+  check "B takes a stale claim" "$(as B J claim)" "took over from session A" &&
+  check "B creates now" "$(as B J create f/02)" "-two" &&
+  check "A is the stand-in now" "$(as A J create f/03 2>&1)" "this session is a stand-in" &&
+  check "A forces" "$(as A J claim --force)" "forced" &&
+  check "A releases" "$(as A J claim --release)" "released: session A" &&
+  check "no claim" "$(J claim --status)" "no claim" &&
+  check "anyone creates without a claim" "$(as B J queue --clear >/dev/null; as B J create f/03)" "-three"
+}
+
+t_claim_takeover_names_the_run() {
+  new_repo claimrun; commit_all
+  sleep 0 & wait $!; local dead=$!
+  CLAUDE_CODE_SESSION_ID=A CLAUDE_PID=$dead J claim --run run_7 >/dev/null
+  check "run-use hint" "$(as B J claim)" "orchestration run-use --id run_7" &&
+  check "heartbeat refreshed" "$(as B J queue >/dev/null; python3 -c "import json,time; print(time.time() - json.load(open('factory/jobs/_orchestrator.json'))['seen'] < 5)")" "True"
+}
+
+t_next_through_the_stages() {
+  new_repo next; ticket 01 One; commit_all
+  local id; id=$(J create f/01); local J_="factory/bin/job"
+  check "intake: start" "$(J next "$id")" "$id: start: $J_ start $id intake" || return 1
+  J start "$id" intake >/dev/null
+  check "intake: wait" "$(FAKE_WORKER=running J next "$id")" "$id: wait: intake running (started" &&
+  check "settled without a file: nudge" "$(J next "$id")" "$id: send: $J_ send $id intake 'You stopped without writing intake.md" || return 1
+  intake "$id" low none
+  check "intake: route" "$(J next "$id")" "run: factory/bin/route $id" || return 1
+  factory/bin/route "$id" >/dev/null
+  check "intake: advance" "$(J next "$id")" "advance: $J_ advance $id spec" || return 1
+  J advance "$id" spec >/dev/null
+  check "spec: start" "$(J next "$id")" "start: $J_ start $id spec" || return 1
+  echo "# Spec" > "factory/jobs/$id/spec.md"
+  check "spec: advance, from the list" "$(J next)" "$id: advance: $J_ advance $id build" || return 1
+  J advance "$id" build >/dev/null
+  check "build: start" "$(J next "$id")" "start: $J_ start $id builder" || return 1
+  J start "$id" builder >/dev/null
+  check "build: wait" "$(FAKE_WORKER=running J next "$id")" "wait: builder running" || return 1
+  build_commit "$id" y.txt y; ready "$id"
+  check "build: to the gate" "$(J next "$id")" "advance: $J_ advance $id gate" || return 1
+  J advance "$id" gate >/dev/null
+  check "gate: run it" "$(J next "$id")" "run: factory/bin/gate $id" || return 1
+  factory/bin/gate "$id" >/dev/null
+  check "gate: passed" "$(J next "$id")" "advance: $J_ advance $id review" || return 1
+  J advance "$id" review >/dev/null
+  check "review: start" "$(J next "$id")" "start: reviewer-code (" || return 1
+  J start "$id" reviewer-code >/dev/null
+  check "review: wait" "$(FAKE_WORKER=running J next "$id")" "wait: reviewer-code running" || return 1
+  review "$id" 1 code CHANGES
+  check "review: CHANGES" "$(J next "$id")" "advance: $J_ advance $id build" || return 1
+  J advance "$id" build >/dev/null
+  check "round 2: send the reviews" "$(J next "$id")" "send: $J_ send $id builder 'Round 1 reviews are in round-1/." || return 1
+  J send "$id" builder "fix it" >/dev/null
+  check "round 2: old build.md doesn't count" "$(FAKE_WORKER=running J next "$id")" "wait: builder running (messaged" || return 1
+  build_commit "$id" z.txt z; ready "$id"
+  J advance "$id" gate >/dev/null; factory/bin/gate "$id" >/dev/null; J advance "$id" review >/dev/null
+  review "$id" 2 code PASS
+  check "review: all PASS" "$(J next "$id")" "advance: $J_ advance $id approve" || return 1
+  J advance "$id" approve >/dev/null
+  check "approve: start" "$(J next "$id")" "start: $J_ start $id approver" || return 1
+  printf 'ESCALATE\n\n## Why\nhuman\n' > "factory/jobs/$id/decision.md"
+  check "approve: escalate" "$(J next "$id")" "advance: $J_ advance $id needs-human" || return 1
+  J advance "$id" needs-human >/dev/null
+  check "needs-human: wait" "$(J next "$id")" "wait: human: needs-human (ESCALATE)" || return 1
+  J approve "$id" >/dev/null
+  check "merged: done" "$(J next "$id")" "$id: done: merged" &&
+  check "nothing in flight" "$(J next)" "no job in flight"
+}
+
+t_next_gate_fail_partial_paused() {
+  new_repo nextmore; ticket 01 One; ticket 02 Held '**Factory:** hold after intake'; commit_all
+  local id; id=$(to_build 01 low none)
+  printf 'STATUS: PARTIAL\n\n## Remaining\n- rest\n' > "factory/jobs/$id/build.md"
+  check "partial: continue" "$(J next "$id")" "run: factory/bin/job continue $id" || return 1
+  J continue "$id" >/dev/null
+  check "continue not sent yet" "$(J next "$id")" "start: factory/bin/job start $id builder 'Continue: read build.md" || return 1
+  build_commit "$id" y.txt y; ready "$id"
+  check "READY after the continue" "$(J next "$id")" "advance: factory/bin/job advance $id gate" || return 1
+  build_commit "$id" FAIL x
+  J advance "$id" gate >/dev/null; factory/bin/gate "$id" >/dev/null
+  check "gate failed: build" "$(J next "$id")" "advance: factory/bin/job advance $id build" || return 1
+  J advance "$id" build >/dev/null
+  check "round 2: gate message" "$(J next "$id")" "The gate failed: read round-1/checks.md" || return 1
+  (cd ".worktrees/$id" && git rm -q FAIL && git commit -qm unfail); ready "$id"
+  J advance "$id" gate >/dev/null; factory/bin/gate "$id" >/dev/null
+  build_commit "$id" y.txt again
+  check "new commit: gate is stale" "$(J next "$id")" "run: factory/bin/gate $id" || return 1
+  local id2; id2=$(J create f/02); intake "$id2" low none; factory/bin/route "$id2" >/dev/null; J advance "$id2" spec >/dev/null
+  check "paused: wait" "$(J next "$id2")" "wait: human: paused after intake" &&
+  check "list has a line per job" "$(J next | wc -l)" "2"
+}
+
+t_next_slices() {
+  new_repo nextslices; mkdir -p a b; touch a/.k b/.k; ticket 01 Big; commit_all
+  local id; id=$(J create f/01)
+  intake "$id" low none; sed -i 's/SPLIT: no/SPLIT: yes/; s/SIZE: small/SIZE: large/' "factory/jobs/$id/intake.md"
+  factory/bin/route "$id" >/dev/null; J advance "$id" spec >/dev/null
+  printf '# Big\n\n## Slices\n### Slice 1: A\n**Owns:** a/\n**Needs:** none\n\n### Slice 2: B\n**Owns:** b/\n**Needs:** 1\n' > "factory/jobs/$id/spec.md"
+  J advance "$id" build >/dev/null
+  check "slice 1 ready" "$(J next "$id")" "run: factory/bin/job slice-start $id 1, then factory/bin/job start $id builder-s1" || return 1
+  J slice-start "$id" 1 >/dev/null
+  check "slice builder not started" "$(J next "$id")" "start: factory/bin/job start $id builder-s1" || return 1
+  J start "$id" builder-s1 >/dev/null
+  check "slice running" "$(FAKE_WORKER=running J next "$id")" "wait: builder-s1 running" || return 1
+  (cd ".worktrees/$id-s1" && echo 1 > a/1 && git add -A && git commit -qm s1)
+  printf 'STATUS: READY\n\n## Self-review\nok\n' > "factory/jobs/$id/slice-1.md"
+  check "slice reported" "$(J next "$id")" "run: factory/bin/job slice-done $id 1"
 }
 
 # ---- runner ----------------------------------------------------------------
