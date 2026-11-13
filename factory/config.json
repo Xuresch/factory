@@ -195,6 +195,7 @@
   "notify": [
     "desktop"
   ],
+  "orchestrator_stale_minutes": 120,
   "retro_after_merge": "friction",
   "feature_review": true,
   "keep_open_roles": [
