@@ -45,7 +45,7 @@ EOF
   python3 - <<'EOF'
 import json
 p = "factory/config.json"; c = json.load(open(p))
-c.update(base_branch="master", concurrency=3, notify="", tracker="local", merge_method="merge",
+c.update(base_branch="master", concurrency=3, notify="", tracker="local", merge_method="merge", worktree_root=None,
          worktree_cache_dirs=["target/factory-jobs/{name}", "target/factory-jobs/{name}-native"])
 json.dump(c, open(p, "w"), indent=2)
 EOF
