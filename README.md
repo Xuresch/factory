@@ -79,6 +79,12 @@ Each job gets its own git worktree and branch. All state lives in
 /factory <anything>   talk to the factory: ask about jobs, give feedback, file a feature
 ```
 
+When a job starts waiting on you (paused, needs a human, needs info), the
+factory says so on your desktop, or as a push on your phone with
+[ntfy](https://ntfy.sh): which job, why, and what to do. `notify` in
+`factory/config.json` picks the channels; [`INSTALL.md`](INSTALL.md#notifications)
+sets up ntfy.
+
 You approve by merging the PR on GitHub, or with `/factory approve <job>`,
 which syncs, gates and merges like an APPROVE (the only way on a local tracker). To change an escalated PR, tell the
 factory what you want with `/factory`. To drop a job that waits on you or on

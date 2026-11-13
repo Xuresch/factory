@@ -727,6 +727,114 @@ t_gh_ci_at_approve() {
   done
 }
 
+notify_to() {  # notify_to <json list of channels>: set config.json `notify`
+  python3 - "$1" <<'EOF'
+import json, sys; p = "factory/config.json"; c = json.load(open(p)); c["notify"] = json.loads(sys.argv[1])
+json.dump(c, open(p, "w"), indent=2)
+EOF
+}
+
+messages() { grep -c '^Factory: ' "$1" 2>/dev/null || echo 0; }  # messages <file>: how many arrived
+
+t_notify_pause_and_needs_human() {
+  new_repo notify; ticket 01 Risky; ticket 02 Blocked; commit_all
+  local inbox="$TMP_ROOT/notify/inbox"
+  notify_to "[{\"command\": \"cat >> '$inbox'\"}]"
+  local id; id=$(J create f/01); intake "$id" high none
+  factory/bin/route "$id" >/dev/null; J advance "$id" spec >/dev/null; echo "# Spec" > "factory/jobs/$id/spec.md"
+  check "nothing before the pause" "[$(messages "$inbox")]" "[0]" &&
+  check "paused" "$(J advance "$id" build)" "paused" &&
+  check "one message" "[$(messages "$inbox")]" "[1]" &&
+  check "says who waits" "$(cat "$inbox")" "Factory: $id (f/01) waits for you" &&
+  check "says why" "$(cat "$inbox")" "paused after spec: high risk, held for your review" &&
+  check "says what to do" "$(cat "$inbox")" "Do: read factory/jobs/$id/spec.md (edit it if you want), then /factory resume $id" || return 1
+  local id2; id2=$(to_build 02 low none)
+  printf 'STATUS: BLOCKED\n\n## Blocked\nWhich storage format: JSON or YAML?\n' > "factory/jobs/$id2/build.md"
+  J advance "$id2" needs-human >/dev/null
+  check "one more message" "[$(messages "$inbox")]" "[2]" &&
+  check "needs-human why" "$(tail -3 "$inbox")" "needs-human: The builder is blocked: Which storage format: JSON or YAML?" &&
+  check "needs-human action" "$(tail -3 "$inbox")" "Do: read factory/jobs/$id2/decision.md, then give feedback with /factory, or reject it" &&
+  check "sync doesn't repeat it" "$(J sync "$id2" >/dev/null; messages "$inbox")" "2" || return 1
+  echo 'Not needed after all.' | J reject "$id2" >/dev/null
+  check "reject is announced" "$(tail -2 "$inbox")" "Factory: $id2 (f/02) rejected" &&
+  check "with the reason" "$(tail -1 "$inbox")" "Blocked: Not needed after all."
+}
+
+t_notify_escalation_and_run_finished() {
+  new_repo notifyrun; ticket 01 One; ticket 02 Vague; commit_all
+  local inbox="$TMP_ROOT/notifyrun/inbox"
+  notify_to "[{\"command\": \"cat >> '$inbox'\"}, {\"command\": \"cat >> '$inbox.high'\", \"min\": \"high\"}]"
+  J queue >/dev/null
+  local id; id=$(to_build 01 low none); build_commit "$id" y.txt y; to_review "$id"
+  review "$id" 1 code PASS; J advance "$id" approve >/dev/null
+  printf 'ESCALATE\n\n## Why\n- It changes the public API.\n' > "factory/jobs/$id/decision.md"
+  J advance "$id" needs-human >/dev/null
+  check "escalation why" "$(cat "$inbox")" "needs-human: It changes the public API." &&
+  check "escalation action" "$(cat "$inbox")" "Do: read factory/jobs/$id/decision.md, then /factory approve $id, or give feedback with /factory" || return 1
+  local id2; id2=$(J create f/02)
+  printf 'DECISION: NEEDS-INFO\nRISK: low\nSURFACES: none\nRESCOPED: no\nSIZE: small\nSPLIT: no\n\n## Summary\n- unclear\n\n## Questions\n1. Which page should it go on?\n\n## Follow-ups\nNone.\n' \
+    > "factory/jobs/$id2/intake.md"
+  J advance "$id2" needs-info >/dev/null
+  check "needs-info" "$(tail -2 "$inbox")" "needs-info: intake asks: Which page should it go on?" &&
+  check "needs-info action" "$(tail -1 "$inbox")" "Do: answer the question in .scratch/f/issues/02-t.md under ## Comments" &&
+  check "no run end while a job runs" "[$(grep -c 'run finished' "$inbox")]" "[0]" || return 1
+  J queue >/dev/null
+  check "run finished once" "[$(grep -c 'run finished' "$inbox")]" "[1]" &&
+  check "lists who waits" "$(tail -2 "$inbox")" "2 job(s) wait for you: $id (needs-human), $id2 (needs-info)" &&
+  check "not twice" "$(J queue >/dev/null; grep -c 'run finished' "$inbox")" "1" &&
+  check "approve merges and says so" "$(J approve "$id" >/dev/null; tail -2 "$inbox")" "Factory: $id (f/01) merged" &&
+  check "a high-only channel got the waits, not the rest" "[$(grep '^Factory: ' "$inbox.high" | cut -d' ' -f4- | xargs)]" \
+    "[waits for you waits for you]"
+}
+
+t_notify_failing_channel_never_breaks_advance() {
+  new_repo notifyfail; ticket 01 Risky; commit_all
+  local inbox="$TMP_ROOT/notifyfail/inbox"
+  printf '#!/usr/bin/env bash\necho "$1" >> %q\n' "$inbox" > "$TMP_ROOT/notifyfail/legacy"; chmod +x "$TMP_ROOT/notifyfail/legacy"
+  notify_to "[{\"command\": \"exit 3\"}, {\"command\": \"echo boom >&2; kill -9 \$\$\"},
+              {\"ntfy\": \"http://127.0.0.1:9/factory\"}, {\"ntfy\": \"not a url\"},
+              {\"ntfy_env\": \"FACTORY_TEST_UNSET_URL\"}, {\"bogus\": 1}, \"desktop-but-missing\",
+              {\"command\": \"cat >> '$inbox'\"}, \"$TMP_ROOT/notifyfail/legacy\"]"
+  local id; id=$(J create f/01); intake "$id" high none
+  factory/bin/route "$id" >/dev/null; J advance "$id" spec >/dev/null; echo "# Spec" > "factory/jobs/$id/spec.md"
+  local out; out=$(J advance "$id" build 2>&1)
+  check "advance still works" "$out" "$id: paused" &&
+  check "stage saved" "$(field "$id" "d['stage']")" "paused" &&
+  check "good channel still got it" "[$(messages "$inbox")]" "[2]" &&
+  check "old string form gets it as an argument" "$(tail -2 "$inbox")" "Factory: $id (f/01) waits for you: paused after spec"
+}
+
+t_notify_ntfy_headers() {
+  new_repo notifyntfy; ticket 01 Risky; commit_all
+  local dir="$TMP_ROOT/notifyntfy" port
+  python3 - "$dir" <<'EOF' &
+import http.server, json, sys
+d = sys.argv[1]
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers["Content-Length"])).decode()
+        json.dump({"path": self.path, "headers": dict(self.headers), "body": body}, open(d + "/got.json", "w"))
+        self.send_response(200); self.end_headers()
+    def log_message(self, *a): pass
+s = http.server.HTTPServer(("127.0.0.1", 0), H)
+open(d + "/port", "w").write(str(s.server_port))
+s.timeout = 20; s.handle_request()
+EOF
+  for _ in $(seq 50); do [[ -s "$dir/port" ]] && break; sleep 0.1; done
+  port=$(cat "$dir/port")
+  export FACTORY_TEST_NTFY="http://127.0.0.1:$port/factory-test"
+  notify_to '[{"ntfy_env": "FACTORY_TEST_NTFY"}]'
+  local id; id=$(J create f/01); intake "$id" high none
+  factory/bin/route "$id" >/dev/null; J advance "$id" spec >/dev/null; echo "# Spec" > "factory/jobs/$id/spec.md"
+  J advance "$id" build >/dev/null; wait
+  unset FACTORY_TEST_NTFY
+  local got; got=$(python3 -c "import json; g = json.load(open('$dir/got.json')); h = g['headers']; print(g['path'], h['Title'], h['Priority'], h['Tags'], '|', g['body'])")
+  check "topic from the env var" "$got" "/factory-test" &&
+  check "title" "$got" "Factory: $id (f/01) waits for you" &&
+  check "priority and tags" "$got" "high hourglass" &&
+  check "body has the action" "$got" "Do: read factory/jobs/$id/spec.md"
+}
+
 # ---- runner ----------------------------------------------------------------
 
 all_tests=$(declare -F | awk '{print $3}' | grep '^t_')
