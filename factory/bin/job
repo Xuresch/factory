@@ -71,16 +71,18 @@ MARKER = "<!-- factory -->"
 TRANSITIONS = {
     "intake": {"needs-info", "rejected", "spec"},
     "needs-info": {"intake", "rejected"},
-    "spec": {"build"},
-    "build": {"gate", "needs-human"},
-    "gate": {"review", "build", "needs-human"},
-    "review": {"approve", "build", "needs-human"},
-    "approve": {"merging", "needs-human"},
+    "spec": {"build", "rejected"},
+    "build": {"gate", "needs-human", "rejected"},
+    "gate": {"review", "build", "needs-human", "rejected"},
+    "review": {"approve", "build", "needs-human", "rejected"},
+    "approve": {"merging", "needs-human", "rejected"},
     "merging": {"needs-human", "build"},
     "needs-human": {"build", "rejected", "merging"},
     "paused": {"rejected"},  # resume and rewind move it on
 }
 TERMINAL = {"merged", "rejected"}
+# A human may reject a running job too, once its workers are stopped.
+REJECTABLE = {"spec", "build", "gate", "review", "approve"}
 # Any unfinished job can move to merged once its PR is merged on GitHub,
 # whether the factory merged it or a person did mid-round.
 WAITING = {"needs-info", "needs-human", "paused"}
@@ -763,6 +765,50 @@ def git(job, *args, check=True):
     return run(["git", *args], cwd=job["worktree"], check=check)
 
 
+def fetch_base(branch, cwd=REPO):
+    """Fetch origin/<branch>; a base branch missing on GitHub (deleted after a
+    release, say) gets a message that says so instead of git's bare error."""
+    res = run(["git", "fetch", "origin", branch], cwd=cwd, check=False)
+    if res.returncode == 0:
+        return res
+    if "couldn't find remote ref" in res.stderr:
+        hint = (" AGENTS.md mentions it: follow its steps to recreate the branch."
+                if (REPO / "AGENTS.md").exists() and branch in (REPO / "AGENTS.md").read_text() else "")
+        raise Refused(f"origin/{branch} doesn't exist on GitHub any more (deleted after a release or "
+                      f"a merge?). Recreate it, for example `git push origin origin/main:refs/heads/{branch}` "
+                      f"from the branch it should start from, then run this again.{hint}")
+    raise Refused(f"`git fetch origin {branch}` failed: {(res.stderr or res.stdout).strip()}")
+
+
+def ci_status(job):
+    """The PR's CI checks (GitHub Checks and statuses) as markdown, or None
+    without a PR. First line `CI: PASS | FAIL | PENDING | NONE`."""
+    if not (GITHUB and job.get("pr")):
+        return None
+    try:
+        pr = gh_json("pr", "view", str(job["pr"]), "--json", "statusCheckRollup,headRefOid")
+    except Refused as e:
+        return f"CI: UNKNOWN\n\n`gh pr view` failed: {e}\n"
+    rows, failing, pending = [], [], []
+    for c in pr.get("statusCheckRollup") or []:
+        name = c.get("name") or c.get("context") or "?"
+        state = (c.get("conclusion") or c.get("state") or c.get("status") or "").upper()
+        if c.get("status") and c["status"].upper() != "COMPLETED":
+            state = "PENDING"
+        if state in {"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"}:
+            failing.append(name)
+        elif state in {"PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED", "WAITING", ""}:
+            pending.append(name)
+        rows.append(f"- {name}: {state.lower() or 'pending'}")
+    verdict = "FAIL" if failing else "PENDING" if pending else "PASS" if rows else "NONE"
+    head = pr.get("headRefOid", "")
+    stale = (f"\nThe PR head {head[:7]} isn't the reviewed commit {job.get('review_head', '')[:7]}: "
+             "push the branch, these results are for an older commit.\n"
+             if job.get("review_head") and head and head != job["review_head"] else "")
+    return (f"CI: {verdict}\n\n## Checks on PR #{job['pr']}\n" + ("\n".join(rows) or "No checks reported.")
+            + "\n" + stale)
+
+
 def pr_state(job):
     return gh_json("pr", "view", str(job["pr"]), "--json", "state")["state"]
 
@@ -954,8 +1000,8 @@ def advance(job, stage):
         elif old == "needs-info":
             label("issue", job["issue"], remove=LABELS["needs_info"])
 
-    elif stage == "rejected" and old in WAITING:
-        require((d / "rejection.md").exists(), "use `job reject` to reject a waiting job")
+    elif stage == "rejected" and (old in WAITING | REJECTABLE or (old == "intake" and (d / "rejection.md").exists())):
+        require((d / "rejection.md").exists(), "use `job reject` to reject a job")
         reason = (d / "rejection.md").read_text().split("\n", 1)[1].strip()
         comment("issue", job["issue"], f"### Factory: rejected\n\n{reason}")
         waiting = LABELS["needs_info"] if old == "needs-info" else LABELS["needs_human"]  # paused too
@@ -974,7 +1020,7 @@ def advance(job, stage):
             title += f" (risk {i['risk']}, surfaces: {', '.join(i['surfaces']) or 'none'})"
         if stage == "spec":  # the worktree first: if it fails, nothing was posted
             if GITHUB:
-                run(["git", "fetch", "origin", jbase(job)])
+                fetch_base(jbase(job))
             if not Path(job["worktree"]).exists():  # a rewound job keeps its worktree
                 Path(job["worktree"]).parent.mkdir(parents=True, exist_ok=True)
                 run(["git", "worktree", "add", "-b", job["branch"], job["worktree"], jref(job)])
@@ -1074,6 +1120,9 @@ def advance(job, stage):
         changes = [r for r, v in job["reviews"].items() if v == "CHANGES"]
         if stage == "approve":
             require(not changes, f"reviews want CHANGES: {', '.join(changes)}")
+            ci = ci_status(job)
+            if ci:  # the approver weighs it before a human is ever asked
+                (round_dir(job) / "ci.md").write_text(ci)
         else:
             require(changes, "every review passed")
             last = job["round"] >= job["round_limit"]
@@ -1124,6 +1173,10 @@ def advance(job, stage):
 
     if stage == "needs-human":
         body = f"### Factory: needs a human\n\n{(d / 'decision.md').read_text().split(chr(10), 1)[1].strip()}"
+        ci = ci_status(job)
+        if ci:
+            body += f"\n\n**CI:** {ci.split(chr(10), 1)[0].removeprefix('CI: ')}" + "".join(
+                f"\n{l}" for l in ci.splitlines() if l.startswith("- ") and not l.endswith(": success"))
         if job["pr"]:
             if gh_json("pr", "view", str(job["pr"]), "--json", "isDraft")["isDraft"]:
                 gh("pr", "ready", str(job["pr"]))
@@ -1549,6 +1602,13 @@ def spec_from_intake(job):
     return True
 
 
+def new_dependencies(job):
+    """The bullets of spec.md `## New dependencies`, or [] when it says None."""
+    f = job_dir(job["id"]) / "spec.md"
+    body = section(f, "New dependencies") if f.exists() else None
+    return [l[2:].strip() for l in (body or "").splitlines() if l.startswith("- ")]
+
+
 def hold_point(job, old, stage):
     limit = CONFIG.get("max_cost_usd")
     if limit and stage in BUDGETED and job.get("cost_usd", 0) > job.get("cost_allowance", limit):
@@ -1560,6 +1620,8 @@ def hold_point(job, old, stage):
         return "intake"
     if old == "spec" and stage == "build" and "spec" in holds:
         return "spec"
+    if old == "spec" and stage == "build" and new_dependencies(job):
+        return "dependencies"  # a human approves new dependencies before anything is built
     return None
 
 
@@ -1571,6 +1633,13 @@ def pause(job, after, resume):
                 f"### Factory: paused, over budget\n\nThis job has cost ${job['cost_usd']:.2f} "
                 f"(API-equivalent), over its ${limit:.2f} allowance (`max_cost_usd`). Resume to allow "
                 f"another ${CONFIG['max_cost_usd']:.2f}, give feedback to change course, or reject it.")
+        return label("issue", job["issue"], add=LABELS["needs_human"], remove=LABELS["queue"])
+    if after == "dependencies":
+        deps = "\n".join(f"- {x}" for x in new_dependencies(job))
+        comment("issue", job["issue"],
+                f"### Factory: new dependencies need your OK\n\nThe spec adds:\n\n{deps}\n\nResume to "
+                f"approve them (the approver then won't ask again), edit `factory/jobs/{job['id']}/spec.md` "
+                f"to drop one, or send feedback.")
         return label("issue", job["issue"], add=LABELS["needs_human"], remove=LABELS["queue"])
     f = "intake.md" if after == "intake" else "spec.md"
     comment("issue", job["issue"],
@@ -1595,12 +1664,16 @@ def cmd_resume(job):
     if p["after"] == "budget":
         job["cost_allowance"] = round(job.get("cost_usd", 0) + CONFIG["max_cost_usd"], 2)
     f = job_dir(job["id"]) / ("intake.md" if p["after"] == "intake" else "spec.md")
+    if p["after"] == "dependencies":
+        job["dependencies_approved"] = {"by": operator(), "at": now(), "names": new_dependencies(job)}
     paused_at = datetime.fromisoformat(p["at"].replace("Z", "+00:00")).timestamp()
     edited = p["after"] != "budget" and f.stat().st_mtime > paused_at + 1
+    if edited and p["after"] == "dependencies":
+        job["dependencies_approved"]["names"] = new_dependencies(job)
     if edited:
         append_binding_note(f)
         job.setdefault("human_edits", []).append({"file": f.name, "at": now()})
-        if p["after"] == "spec" and (job["intake"] or {}).get("split"):
+        if p["after"] in {"spec", "dependencies"} and (job["intake"] or {}).get("split"):
             job["slices"] = parse_slices(f)
     sync(job)
     label("issue", job["issue"], add=LABELS["queue"], remove=LABELS["needs_human"])
@@ -2144,27 +2217,36 @@ def cmd_merge(job):
         print(f"{job['id']}: back to the builder for round {job['round']}: {why.splitlines()[0]} "
               f"(round-{job['round']}/merge-back.md)")
 
-    if GITHUB:
-        git(job, "fetch", "origin", jbase(job))
-    merged = git(job, "merge", "--no-edit", jref(job), check=False)
-    if merged.returncode != 0:
-        git(job, "merge", "--abort", check=False)
-        return back(f"The branch conflicts with {jbase(job)}:\n\n```\n{merged.stdout.strip()}\n```")
-    gate = subprocess.run([str(BIN / "gate"), job["id"], "--merge"], capture_output=True, text=True)
-    if gate.returncode != 0:
-        return back(f"The gate failed after syncing with {jbase(job)}. "
-                    f"See round-{job['round']}/merge-checks.md and merge-checks.log.\n\n{gate.stdout.strip()}")
-    try:
+    # The base can move between our sync and the merge (another PR landed):
+    # GitHub then says "Base branch was modified". Sync, gate and merge again;
+    # only a real conflict or a failing gate goes back to the builder.
+    for attempt in range(1, MERGE_ATTEMPTS + 1):
         if GITHUB:
-            git(job, "push", "origin", job["branch"])
-            if gh_json("pr", "view", str(job["pr"]), "--json", "isDraft")["isDraft"]:
-                gh("pr", "ready", str(job["pr"]))
-            gh("pr", "merge", str(job["pr"]), f"--{CONFIG['merge_method']}")
-        else:
-            merge_locally(job["branch"], jbase(job),
-                          f"Merge {job['branch']}: {job['title']} ({job['issue']})", job["id"])
-    except Refused as e:
-        return fail(f"The merge failed:\n\n```\n{e}\n```")
+            fetch_base(jbase(job), job["worktree"])
+        merged = git(job, "merge", "--no-edit", jref(job), check=False)
+        if merged.returncode != 0:
+            git(job, "merge", "--abort", check=False)
+            return back(f"The branch conflicts with {jbase(job)}:\n\n```\n{merged.stdout.strip()}\n```")
+        gate = subprocess.run([str(BIN / "gate"), job["id"], "--merge"], capture_output=True, text=True)
+        if gate.returncode != 0:
+            return back(f"The gate failed after syncing with {jbase(job)}. "
+                        f"See round-{job['round']}/merge-checks.md and merge-checks.log.\n\n{gate.stdout.strip()}")
+        try:
+            if GITHUB:
+                git(job, "push", "origin", job["branch"])
+                if gh_json("pr", "view", str(job["pr"]), "--json", "isDraft")["isDraft"]:
+                    gh("pr", "ready", str(job["pr"]))
+                gh("pr", "merge", str(job["pr"]), f"--{CONFIG['merge_method']}")
+            else:
+                merge_locally(job["branch"], jbase(job),
+                              f"Merge {job['branch']}: {job['title']} ({job['issue']})", job["id"])
+            break
+        except Refused as e:
+            if base_moved(str(e)) and attempt < MERGE_ATTEMPTS:
+                print(f"{job['id']}: {jbase(job)} moved during the merge; syncing and trying again "
+                      f"({attempt + 1}/{MERGE_ATTEMPTS})")
+                continue
+            return fail(f"The merge failed:\n\n```\n{e}\n```")
     if GITHUB:  # GitHub may already have deleted the branch on merge.
         run(["git", "push", "origin", "--delete", job["branch"]], check=False)
     save(advance(sync(job), "merged"))
@@ -2179,6 +2261,15 @@ def cmd_merge(job):
     elif CONFIG.get("retro_after_merge"):
         print(f"{job['id']}: no retro: the job went through without friction")
     feature_hint(job)
+
+
+MERGE_ATTEMPTS = 3
+
+
+def base_moved(error):
+    """The merge lost a race with the base, not a conflict: worth syncing again."""
+    e = error.lower()
+    return any(m in e for m in ("base branch was modified", "not up to date with the base"))
 
 
 def branch_worktree(branch):
@@ -2292,7 +2383,7 @@ def cmd_approve(job):
 def cmd_feedback(job, text):
     if job["stage"] == "paused":  # redo the step it paused after
         after = job["paused"]["after"]
-        return cmd_rewind(job, "build" if after == "budget" else after, text)
+        return cmd_rewind(job, {"budget": "build", "dependencies": "spec"}.get(after, after), text)
     if job["stage"] != "needs-human":
         die(f"{job['id']} is in {job['stage']}, not needs-human")
     if not text.strip():
@@ -2310,8 +2401,8 @@ def cmd_feedback(job, text):
 
 
 def cmd_reject(job, text):
-    if job["stage"] not in WAITING:
-        die(f"{job['id']} is in {job['stage']}, not needs-info or needs-human")
+    if job["stage"] not in WAITING | REJECTABLE | {"intake"}:
+        die(f"{job['id']} is {job['stage']}: only a waiting or running job can be rejected")
     if not text.strip():
         die("no reason on stdin")
     (job_dir(job["id"]) / "rejection.md").write_text(f"REJECTED\n\nBy @{operator()} while the job was {job['stage']}.\n\n{text.strip()}\n")

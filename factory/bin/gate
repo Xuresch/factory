@@ -65,6 +65,19 @@ def run_checks(worktree, base_ref=None, mode="full"):
     return res.returncode, res.stdout + res.stderr, int(time.monotonic() - start)
 
 
+WAIT_NOTE_MINUTES = 5
+
+
+def waited_minutes(job):
+    """Minutes between the job entering `gate` and this run, from its history."""
+    from datetime import datetime, timezone
+    entered = [h["at"] for h in job.get("history") or [] if h.get("stage") == "gate"]
+    if not entered:
+        return None
+    at = datetime.fromisoformat(entered[-1].replace("Z", "+00:00"))
+    return int((datetime.now(timezone.utc) - at).total_seconds() // 60)
+
+
 def gate(job_id, merge):
     job = json.loads((FACTORY / "jobs" / job_id / "job.json").read_text())
     worktree = job["worktree"]
@@ -75,6 +88,7 @@ def gate(job_id, merge):
     # Local trackers have no remote: the job records which base ref it forked from.
     base_ref = job.get("base_ref", f"origin/{CONFIG['base_branch']}")
     protected = protected_changes(worktree, base_ref)
+    waited = waited_minutes(job) if not merge else None
     code, log, seconds = run_checks(worktree, base_ref, "merge" if merge else "round")
     verdict = "PASS" if code == 0 and not protected else "FAIL"
     name = "merge-checks" if merge else "checks"
@@ -85,6 +99,9 @@ def gate(job_id, merge):
         f"Protected paths: {'changed: ' + ', '.join(protected) if protected else 'none changed'}",
         f"Commit {commit[:7]}" + (", synced with the latest main before merging" if merge else ""),
     ]
+    if waited is not None and waited >= WAIT_NOTE_MINUTES:
+        summary.append(f"The gate ran {waited} min after the job entered `gate`: that time went to "
+                       f"waiting for the orchestrator, not to checks.sh ({seconds}s)")
     (round_dir / f"{name}.md").write_text(
         f"GATE: {verdict}\nCOMMIT: {commit}\n\n"
         "## Summary\n" + "\n".join(f"- {s}" for s in summary) + "\n\n"

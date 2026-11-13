@@ -152,6 +152,14 @@ scripts, never type into a worker's terminal.
   naming the missing file. If it stops again, leave the job in its stage and
   tell the user.
 
+**Woken in a new session.** Orca may hand a message to a fresh background
+session (its first prompt is `You have N orchestration messages`) instead of
+the orchestrator that started the run. If you didn't run `/factory run` in
+this session yourself, you are a stand-in: finish only the jobs the messages
+are about (advance them, start their next worker, run `job merge`). Don't run
+`job create`, don't start `new` lines, and don't drain the queue; the run's
+orchestrator, or the user, does that. Never stop workers you didn't start.
+
 Every brief `job start` writes contains `Job folder: <path>/`: the job's
 cost is found by that string.
 
@@ -266,8 +274,10 @@ finished:
   posts the decision on it and labels the issue `ready-for-human`.
 
 **paused.** When `advance` prints `paused`, the job waits for a human after
-intake or spec (the ticket asked for it, or its risk is in `hold.after_spec_risk`).
-Stop working on it and tell the user which file to review. It resumes only
+intake or spec (the ticket asked for it, or its risk is in `hold.after_spec_risk`),
+or after a spec whose `## New dependencies` lists any (`paused after dependencies`).
+Stop working on it and tell the user which file to review. Resuming a
+dependencies pause approves them; the approver won't ask about them again. It resumes only
 through the user (see below).
 
 **retro.** After a merge, `job merge` starts a retro worker itself when the job
@@ -398,8 +408,9 @@ new feature, ask.
   `The user gave feedback: read feedback-<k>.md and address it, push, and update build.md for round <N>.`
   and continue like any job. If it also lists slices to start, the split never
   finished: go to **build, split into slices** instead.
-- **Rejecting or benching a `needs-info` or `needs-human` job**: pass their
-  reason verbatim on stdin:
+- **Rejecting or benching a job**, waiting or running (not while it merges):
+  stop its workers first if it is running (the `orchestration` guide's
+  recovery reference), then pass their reason verbatim on stdin:
 
   ```bash
   factory/bin/job reject <n> <<'EOF'

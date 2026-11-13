@@ -70,6 +70,10 @@ every item must be checkable by someone who only has the repo.
 What a reasonable builder might be tempted to do but must not, including
 everything intake left out.
 
+## New dependencies
+None. Or one bullet per package, tool or service the change adds:
+`- <name>: why, and why what the repo already has isn't enough`.
+
 ## Assumptions
 Decisions you made where the request was ambiguous, each with a one-line reason.
 The approver escalates to a human when one of these is a product decision.
@@ -128,6 +132,12 @@ What this slice builds, in two or three lines.
   the native UI. Give each sink its own acceptance criterion with a test
   against a known synthetic value, and say which sinks are out of scope.
   Otherwise reviewers find the sinks one round at a time.
+- Decide about new dependencies now, not in review: list every package,
+  tool or service the change adds under `## New dependencies`. A listed
+  dependency pauses the job for the human's OK before anything is built, so
+  prefer what the repo already has and list only what's really needed. A
+  dependency the issue or a `feedback-*.md` already approved still goes in
+  the list, with that note.
 - `## Summary` comes right after the issue line: 3 to 5 short bullets a human
   can skim on the dashboard. The detail goes in the sections below it.
 - Don't stop to ask. Intake already asked the author everything only they

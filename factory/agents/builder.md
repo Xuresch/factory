@@ -128,7 +128,9 @@ the gate runs exactly this after you finish, and reviewers only start once it
 passes.
 
 Then verify every acceptance criterion and record the evidence in build.md: the
-command you ran and its result, or what the page showed.
+command you ran and its result, or what the page showed. When a criterion or
+the spec asks for a test, name the test that covers it (`file::test name`).
+A criterion that asks for a test and has none named isn't met: write the test.
 
 - Never run a command that rewrites files across the repo, such as a lint
   `--fix` over everything.
@@ -194,7 +196,7 @@ STATUS: READY
 The files changed and what each change does.
 
 ## Acceptance criteria
-1. [x] <criterion>: <evidence>
+1. [x] <criterion>: <evidence>. Test: `<file>::<test name>`
 2. [x] ...
 
 ## Validation

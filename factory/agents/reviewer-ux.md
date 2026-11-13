@@ -56,7 +56,9 @@ never kill by process name.
 - The flow does what the spec promises, with no dead ends.
 - Loading, empty and error states exist and say something useful.
 - Each kind of user the change affects (signed out, signed in, different roles)
-  gets a sensible path, following the patterns the app already uses.
+  gets a sensible path, following the patterns the app already uses. When the
+  diff changes who may call a procedure or endpoint, find the screens that
+  call it and check what each kind of user sees there now, in this round.
 - The copy is short, plain and consistent with the rest of the app.
 - Accessibility: real buttons and links, labels, focus order, keyboard use, and
   alt text.

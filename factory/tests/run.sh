@@ -455,6 +455,36 @@ t_high_risk_reruns_security() {
   check "code and security run at high" "$out" "start reviewers: code, security"
 }
 
+t_reject_running_job() {
+  new_repo rejectrun; ticket 01 One; commit_all
+  local id; id=$(to_build 01 low none); build_commit "$id" a.txt a; to_review "$id"
+  check "reject needs a reason" "$(J reject "$id" </dev/null 2>&1)" "no reason on stdin" &&
+  check "rejected from review" "$(echo 'not needed' | J reject "$id")" "rejected" &&
+  check "stage" "$(field "$id" "d['stage']")" "rejected" &&
+  check "worktree gone" "$(test -d ".worktrees/$id" && echo yes || echo no)" "no"
+}
+
+t_new_dependencies_pause() {
+  new_repo deps; ticket 01 One; commit_all
+  local id; id=$(J create f/01); intake "$id" medium none
+  factory/bin/route "$id" >/dev/null; J advance "$id" spec >/dev/null
+  printf '# S\n\n## Requirements\n1. x\n\n## New dependencies\n- left-pad: pads\n\n## Assumptions\nNone.\n' \
+    > "factory/jobs/$id/spec.md"
+  check "pauses for dependencies" "$(J advance "$id" build)" "paused" &&
+  check "paused after dependencies" "$(field "$id" "d['paused']['after']")" "dependencies" &&
+  J resume "$id" >/dev/null &&
+  check "approval recorded" "$(field "$id" "d['dependencies_approved']['names']")" "left-pad: pads" &&
+  check "resumed at build" "$(field "$id" "d['stage']")" "build"
+}
+
+t_no_dependencies_no_pause() {
+  new_repo nodeps; ticket 01 One; commit_all
+  local id; id=$(J create f/01); intake "$id" medium none
+  factory/bin/route "$id" >/dev/null; J advance "$id" spec >/dev/null
+  printf '# S\n\n## New dependencies\nNone.\n' > "factory/jobs/$id/spec.md"
+  check "builds right away" "$(J advance "$id" build)" "build (round 1)"
+}
+
 # ---- runner ----------------------------------------------------------------
 
 all_tests=$(declare -F | awk '{print $3}' | grep '^t_')

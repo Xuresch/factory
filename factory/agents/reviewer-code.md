@@ -64,7 +64,12 @@ below alone.
 - **Docs**: AGENTS.md and any docs it lists are updated where the change
   requires it.
 - **Tests**: new behaviour has tests where the repo has a test runner, and no
-  existing test was weakened, skipped or special-cased to pass.
+  existing test was weakened, skipped or special-cased to pass. Each test
+  build.md names for a criterion exists and checks what the criterion says.
+- **Callers**: when the diff changes who may call something (a procedure,
+  endpoint or function: its auth, roles, inputs or errors), find every caller
+  in the repo, the web client included, and check each one still works. Do it
+  in this round, not the next.
 - **Commits**: short one-line messages and nothing stray committed. Trailers
   and attribution (`Co-Authored-By` and the like) are the builder's, not
   yours: the builder runs on a different model than you, so never compare
