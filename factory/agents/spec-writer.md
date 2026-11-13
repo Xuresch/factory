@@ -146,7 +146,11 @@ What this slice builds, in two or three lines.
 - Prefer the smallest change that fully meets the scope. Don't add options,
   fallbacks or "nice to have" extras.
 - Reuse what exists. If the repo already has a pattern for this (a component, a
-  helper, a doc convention), name it in Context and require it.
+  helper, a doc convention), name it in Context and require it. Say in the
+  same requirement what the pattern must keep, the part a copy most easily
+  drops (for example "log the caught error object, not a fixed string", "keep
+  the permission check", "same retry and timeout"), so the builder keeps it
+  and the reviewer checks it.
 - Include the doc updates the change needs (AGENTS.md and any docs it lists) as
   requirements.
 - `factory/checks.sh` runs the repo's tests, lint and build on every round, so

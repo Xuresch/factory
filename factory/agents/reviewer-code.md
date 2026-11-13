@@ -58,7 +58,8 @@ below alone.
 - **Simplicity**: it is the smallest change that fully meets the spec, with no
   speculative options, fallbacks, hidden defaults or swallowed errors.
 - **Reuse**: it uses existing helpers, components and patterns instead of
-  duplicating them.
+  duplicating them. Where the spec names a pattern and what it must keep,
+  check every new use keeps exactly that.
 - **Conventions**: the repo's style as AGENTS.md and the neighbouring code show
   it, and comment density like the neighbouring code.
 - **Docs**: AGENTS.md and any docs it lists are updated where the change

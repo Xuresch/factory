@@ -30,7 +30,8 @@ Usage:
   job slice-start <job> <k>      worktree and branch for slice k (when its Needs are merged)
   job slice-done <job> <k>       slice k reported: merge it into the job branch, or continue/park it
   job approve <job>              needs-human → merging → merged: a human approves an escalated job
-  job resume <job>               paused → on: after the human reviewed (and maybe edited) intake.md or spec.md
+  job resume <job>               paused → on: after the human reviewed (and maybe edited) intake.md or spec.md;
+                                 stdin: one line of what they accepted (goes to accepted.md)
   job rewind <job> <stage>       back to intake, spec or build with your feedback (stdin)
   job route-set <job> k=v...     override for this job: builder=claude/opus, code=codex, ux=claude/sonnet
   job finish <branch>            every ticket for a feature branch is done: sync, check, feature review, merge
@@ -1843,7 +1844,35 @@ def append_binding_note(path):
                     + f"\n\n> Edited by @{operator()} while the job was paused, {now()}. This version is binding.\n")
 
 
-def cmd_resume(job):
+def optional_stdin():
+    """stdin when something was piped in (a heredoc), else "": never waits on a terminal or an idle pipe."""
+    import select
+    if sys.stdin is None or sys.stdin.closed or sys.stdin.isatty():
+        return ""
+    try:
+        ready, _, _ = select.select([sys.stdin], [], [], 0.2)
+    except (OSError, ValueError):
+        return ""
+    return sys.stdin.read() if ready else ""
+
+
+def record_acceptance(job, after, edited, note):
+    """What the human accepted when resuming a pause: one line in accepted.md,
+    so the approver reads it instead of inferring it from the resume."""
+    what = {"intake": "intake.md", "spec": "spec.md", "dependencies": "the new dependencies in spec.md",
+            "budget": "more budget"}.get(after, after)
+    line = note.strip().splitlines()[0] if note.strip() else (
+        f"accepted {what}" + (" with their edits" if edited else " as written"))
+    reason = {"spec": "held after spec", "intake": "held after intake",
+              "dependencies": "new dependencies", "budget": "over budget"}.get(after, after)
+    risk = (job.get("intake") or {}).get("risk")
+    entry = f"- {now()} @{operator()} resumed after {after} ({reason}, risk {risk}): {line}\n"
+    f = job_dir(job["id"]) / "accepted.md"
+    f.write_text((f.read_text() if f.exists() else "# Accepted by a human\n\n") + entry)
+    job.setdefault("accepted", []).append({"after": after, "note": line, "at": now(), "by": operator()})
+
+
+def cmd_resume(job, note=""):
     if job["stage"] != "paused":
         die(f"{job['id']} is in {job['stage']}, not paused")
     p = job["paused"]
@@ -1865,6 +1894,7 @@ def cmd_resume(job):
         job.setdefault("human_edits", []).append({"file": f.name, "at": now()})
         if p["after"] in {"spec", "dependencies"} and (job["intake"] or {}).get("split"):
             job["slices"] = parse_slices(f)
+    record_acceptance(job, p["after"], edited, note)
     sync(job)
     label("issue", job["issue"], add=LABELS["queue"], remove=LABELS["needs_human"])
     job["stage"], job["ended"] = p["resume"], None
@@ -3340,7 +3370,7 @@ def main(argv):
         elif cmd == "continue" and len(args) == 1:
             cmd_continue(resolve(args[0]))
         elif cmd == "resume" and len(args) == 1:
-            cmd_resume(resolve(args[0]))
+            cmd_resume(resolve(args[0]), optional_stdin())
         elif cmd == "rewind" and len(args) == 2:
             cmd_rewind(resolve(args[0]), args[1], sys.stdin.read())
         elif cmd == "route-set" and len(args) >= 2:

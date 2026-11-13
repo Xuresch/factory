@@ -419,8 +419,11 @@ new feature, ask.
   what the job is waiting for: the question in `decision.md` for `needs-human`,
   the question in `intake.md` for `needs-info`.
 - **Resuming a paused job** ("spec passt", "weiter", "I edited the spec"):
-  `factory/bin/job resume <id>`, then start the step it prints. Edits the user
-  made to `intake.md` or `spec.md` while it was paused are binding.
+  pass one line of what they accepted, in their words where they gave any
+  ("spec ok, deleting expired drafts unattended is fine"):
+  `factory/bin/job resume <id> <<'EOF'` … `EOF`, then start the step it
+  prints. It goes to `accepted.md` for the approver. Edits the user made to
+  `intake.md` or `spec.md` while it was paused are binding.
 - **Changing course** on a running or waiting job ("anderer Ansatz", "back to
   the spec", "redo the build with X"): stop the job's running workers, then
   pass their words verbatim:

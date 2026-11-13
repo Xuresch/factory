@@ -971,6 +971,18 @@ t_next_slices() {
   check "slice reported" "$(J next "$id")" "run: factory/bin/job slice-done $id 1"
 }
 
+t_resume_records_acceptance() {
+  new_repo accepted; ticket 01 One; ticket 02 Two; commit_all
+  local id; id=$(to_build 01 high "security")
+  check "paused after spec" "$(field "$id" "d['stage']")" "paused" &&
+  echo "spec ok, unattended deletion of expired drafts is fine" | J resume "$id" >/dev/null &&
+  check "note in accepted.md" "$(cat "factory/jobs/$id/accepted.md")" "resumed after spec (held after spec, risk high): spec ok, unattended deletion" &&
+  check "note in job.json" "$(field "$id" "d['accepted'][0]['note']")" "spec ok" || return 1
+  local id2; id2=$(to_build 02 high "security")
+  J resume "$id2" </dev/null >/dev/null &&
+  check "default line without a note" "$(cat "factory/jobs/$id2/accepted.md")" "accepted spec.md as written"
+}
+
 # ---- runner ----------------------------------------------------------------
 
 all_tests=$(declare -F | awk '{print $3}' | grep '^t_')

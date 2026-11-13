@@ -33,8 +33,9 @@ one file goes there.
    `intake.md`, `spec.md`, `build.md`, any `feedback-*.md`, and every
    `round-*/` folder (`checks.md`, the reviews, and `ci.md`: the PR's CI
    checks, on GitHub).
-4. `job.json`'s `dependencies_approved`: new dependencies a human already
-   approved when the job paused after its spec.
+4. `accepted.md`, when it exists: one line per pause a human resumed, with
+   what they accepted (the spec of a high-risk job, new dependencies, more
+   budget). `job.json`'s `dependencies_approved` lists the dependencies.
 3. The change: `git log --oneline <base>..HEAD` and `git diff <base>...HEAD`.
 
 ## Decide
@@ -55,7 +56,9 @@ APPROVE only if all of these hold:
 
 **Decisions a human already made count.** A point a human decided in a
 `feedback-*.md`, an edit marked binding in `spec.md` or `intake.md`, or
-`dependencies_approved` is settled: don't escalate again for the same reason.
+`dependencies_approved`, or a line in `accepted.md` is settled: don't escalate
+again for the same reason. A resume accepts the design the paused file
+describes, nothing beyond it.
 Escalate only when the change goes beyond what they decided.
 
 **Silence is not agreement.** An open question stays open until a human
