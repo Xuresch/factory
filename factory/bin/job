@@ -22,8 +22,15 @@ Usage:
                                  <job>, one line per unfinished job. Run it after every wake-up
   job tracker                    which issue tracker and labels this repo uses
   job create <issue>             new job for an open `ready-for-agent` issue; prints the job id
-  job advance <job> <stage>      move a job to <stage>, or refuse
-  job merge <job>                APPROVE → sync with the base branch, gate, merge (the PR, or locally)
+  job advance <job> <stage>      move a job to <stage>, or refuse. Entering build merges the base in
+                                 (round-N/base-sync.md). A round whose change equals the last reviewed
+                                 one (it only merged the base) carries every review at `review` and
+                                 an earlier APPROVE at `approve`: then run `job merge`, no workers
+  job merge <job>                APPROVE → sync with the base branch (a conflict only in
+                                 lockfile_regenerate paths is regenerated, not sent back), gate, on
+                                 GitHub push and wait for the PR's CI (ci_wait_minutes; round-N/
+                                 merge-ci.md), merge (the PR, or locally). A conflict, a failing gate
+                                 or CI goes back to build; CI still pending at the timeout, to a human
   job reply <issue>              post your words (stdin) on the issue as the operator, not the factory
   job continue <job>             build.md says STATUS: PARTIAL → the builder goes on, same round
   job slices <job>               a split job's slices and which to start next
@@ -67,6 +74,7 @@ runs while its issue is `ready-for-agent`, waits as `needs-info` or
 `ready-for-human`, and an issue intake turns away goes back to `needs-triage`.
 """
 
+import contextlib
 import fcntl
 import fnmatch
 import json
@@ -890,15 +898,11 @@ def fetch_base(branch, cwd=REPO):
     raise Refused(f"`git fetch origin {branch}` failed: {(res.stderr or res.stdout).strip()}")
 
 
-def ci_status(job):
-    """The PR's CI checks (GitHub Checks and statuses) as markdown, or None
-    without a PR. First line `CI: PASS | FAIL | PENDING | NONE`."""
-    if not (GITHUB and job.get("pr")):
-        return None
-    try:
-        pr = gh_json("pr", "view", str(job["pr"]), "--json", "statusCheckRollup,headRefOid")
-    except Refused as e:
-        return f"CI: UNKNOWN\n\n`gh pr view` failed: {e}\n"
+def ci_checks(job):
+    """The PR's CI checks (GitHub Checks and statuses): {verdict, rows, failing,
+    pending, head}, verdict PASS | FAIL | PENDING | NONE. Raises Refused when
+    `gh pr view` fails."""
+    pr = gh_json("pr", "view", str(job["pr"]), "--json", "statusCheckRollup,headRefOid")
     rows, failing, pending = [], [], []
     for c in pr.get("statusCheckRollup") or []:
         name = c.get("name") or c.get("context") or "?"
@@ -911,12 +915,69 @@ def ci_status(job):
             pending.append(name)
         rows.append(f"- {name}: {state.lower() or 'pending'}")
     verdict = "FAIL" if failing else "PENDING" if pending else "PASS" if rows else "NONE"
-    head = pr.get("headRefOid", "")
+    return {"verdict": verdict, "rows": rows, "failing": failing, "pending": pending,
+            "head": pr.get("headRefOid", "")}
+
+
+def ci_status(job):
+    """The PR's CI checks as markdown, or None without a PR. First line
+    `CI: PASS | FAIL | PENDING | NONE`; at approve time NONE means no check has
+    reported yet (or the repo has no CI): `job merge` waits for CI before merging."""
+    if not (GITHUB and job.get("pr")):
+        return None
+    try:
+        ci = ci_checks(job)
+    except Refused as e:
+        return f"CI: UNKNOWN\n\n`gh pr view` failed: {e}\n"
+    head = ci["head"]
     stale = (f"\nThe PR head {head[:7]} isn't the reviewed commit {job.get('review_head', '')[:7]}: "
              "push the branch, these results are for an older commit.\n"
              if job.get("review_head") and head and head != job["review_head"] else "")
-    return (f"CI: {verdict}\n\n## Checks on PR #{job['pr']}\n" + ("\n".join(rows) or "No checks reported.")
+    return (f"CI: {ci['verdict']}\n\n## Checks on PR #{job['pr']}\n" + ("\n".join(ci["rows"]) or "No checks reported.")
             + "\n" + stale)
+
+
+def ci_poll_seconds():
+    """How often `job merge` asks GitHub about CI; FACTORY_CI_POLL_SECONDS
+    overrides it (the tests poll fast)."""
+    return float(os.environ.get("FACTORY_CI_POLL_SECONDS") or CONFIG.get("ci_poll_seconds", 20))
+
+
+def wait_for_ci(job, head):
+    """Poll the PR's checks for the pushed `head` until none is pending. Returns
+    {verdict, rows, failing, pending, waited}: verdict PASS, FAIL, NONE (no check
+    showed up within `ci_start_grace_seconds`: a repo without CI) or TIMEOUT
+    (still pending after `ci_wait_minutes`). Results for another head count as
+    not started yet: GitHub hasn't seen the push."""
+    grace = float(CONFIG.get("ci_start_grace_seconds", 180))
+    limit = float(CONFIG.get("ci_wait_minutes", 30)) * 60
+    start = time.monotonic()
+    while True:
+        waited = time.monotonic() - start
+        try:
+            ci = ci_checks(job)
+        except Refused:
+            ci = {"verdict": "NONE", "rows": [], "failing": [], "pending": [], "head": ""}
+        if ci["head"] != head:
+            ci.update(verdict="NONE", rows=[], failing=[], pending=[])
+        if ci["verdict"] in {"PASS", "FAIL"}:
+            return dict(ci, waited=waited)
+        if ci["verdict"] == "NONE" and waited >= grace:
+            return dict(ci, waited=waited)
+        if waited >= limit:
+            return dict(ci, verdict="TIMEOUT", waited=waited)
+        time.sleep(ci_poll_seconds())
+
+
+def record_ci(job, head, ci):
+    """round-<N>/merge-ci.md: the CI state `job merge` saw on the head it merges."""
+    state = "PENDING" if ci["verdict"] == "TIMEOUT" else ci["verdict"]
+    note = {"NONE": "No check reported within ci_start_grace_seconds: the repo has no CI for this PR.",
+            "TIMEOUT": f"Checks still pending after ci_wait_minutes: {', '.join(ci['pending'])}.",
+            "FAIL": f"Failing: {', '.join(ci['failing'])}.", "PASS": "Every check passed."}[ci["verdict"]]
+    (round_dir(job) / "merge-ci.md").write_text(
+        f"CI: {state}\nCOMMIT: {head}\n\n## Summary\n- {note}\n- Waited {int(ci['waited'])}s before merging.\n\n"
+        f"## Checks on PR #{job['pr']}\n" + ("\n".join(ci["rows"]) or "No checks reported.") + "\n")
 
 
 def pr_state(job):
@@ -1048,10 +1109,13 @@ def maybe_fall_back(job, changes):
 
 
 def sync_with_base(job):
-    """Merge the base into the job branch before a build round, so a job never
-    builds on a stale base and conflicts surface while a builder can fix them.
+    """Merge the base into the job branch before a build round (the first one
+    too, and when a paused job resumes into build), so a job never builds on a
+    stale base and conflicts surface while a builder can fix them. A conflict
+    only in lockfiles is resolved here (`lockfile_regenerate`).
     Writes round-<N>/base-sync.md; the builder reads it."""
     rd = round_dir(job)
+    rd.mkdir(parents=True, exist_ok=True)
     if git(job, "status", "--porcelain").stdout.strip():
         (rd / "base-sync.md").write_text("SYNC: SKIPPED\n\nThe worktree has uncommitted changes.\n")
         return
@@ -1059,19 +1123,100 @@ def sync_with_base(job):
         git(job, "fetch", "origin", jbase(job), check=False)
     ref = jref(job)
     before = git(job, "rev-parse", "HEAD").stdout.strip()
-    res = git(job, "merge", "--no-edit", ref, check=False)
-    if res.returncode != 0:
-        git(job, "merge", "--abort", check=False)
+    ok, out, note = merge_base_into(job, ref, rd / "lockfile-regenerate.log")
+    note = f"\n{note}\n" if note else ""
+    if not ok:
         (rd / "base-sync.md").write_text(
             f"SYNC: CONFLICT\n\n{job['branch']} conflicts with {ref}. Before anything else this round, "
             f"run `git merge {ref}` in the worktree, resolve every conflict so both sides' changes "
-            f"survive, run the checks, and commit.\n\n```\n{(res.stdout or res.stderr).strip()}\n```\n")
+            f"survive, run the checks, and commit.\n{note}\n```\n{out}\n```\n")
         return
     after = git(job, "rev-parse", "HEAD").stdout.strip()
     (rd / "base-sync.md").write_text(
         f"SYNC: {'MERGED' if after != before else 'UP-TO-DATE'}\n\n"
         + (f"Merged {ref} into {job['branch']} ({after[:7]}). Check that your change still fits "
-           f"what landed there.\n" if after != before else f"{job['branch']} already contains {ref}.\n"))
+           f"what landed there.\n" if after != before else f"{job['branch']} already contains {ref}.\n")
+        + note)
+
+
+# ---- Lockfiles: conflicts the factory resolves itself -----------------------
+#
+# Concurrent dependency bumps all touch the lockfile, so each merge of the base
+# conflicts there. A lockfile is generated, never hand-merged: when every
+# conflicted path is one config.json `lockfile_regenerate` names, the factory
+# takes the base's lockfile, runs the package manager's lockfile-only command
+# in the worktree, and commits the merge. Any other conflict stays the builder's.
+
+
+def lockfile_command(path):
+    """The regenerate command for a lockfile path (a key of config.json
+    `lockfile_regenerate`: a path, or an fnmatch pattern), or None."""
+    for pattern, cmd in (CONFIG.get("lockfile_regenerate") or {}).items():
+        if path == pattern or fnmatch.fnmatch(path, pattern):
+            return cmd
+    return None
+
+
+def conflicted_paths(job):
+    res = git(job, "diff", "--name-only", "--diff-filter=U", "-z", check=False)
+    return [p for p in res.stdout.split("\0") if p]
+
+
+def run_in_worktree(job, script, log):
+    """Run a shell command in the job's worktree with factory/env.sh sourced, as
+    checks.sh runs; appends its output to `log`. Returns the exit code."""
+    env_sh = FACTORY / "env.sh"
+    full = (f"source {shlex.quote(str(env_sh))}\n" if env_sh.exists() else "") + script
+    try:
+        res = subprocess.run(["bash", "-c", full], cwd=job["worktree"], capture_output=True, text=True,
+                             timeout=CONFIG.get("lockfile_regenerate_timeout", 900))
+        code, out = res.returncode, res.stdout + res.stderr
+    except subprocess.TimeoutExpired as e:
+        code, out = "timeout", f"{e.stdout or ''}{e.stderr or ''}"
+    with open(log, "a") as f:
+        f.write(f"$ {script}\nexit {code}\n{out}\n")
+    return code
+
+
+def regenerate_lockfiles(job, ref, paths, log):
+    """In a merge that conflicts only in lockfiles: take `ref`'s version of each,
+    run its regenerate command once, stage and commit the merge. Returns
+    (True, note) or (False, why); on False the merge is still in progress."""
+    git(job, "checkout", "--theirs", "--", *paths)
+    commands = list(dict.fromkeys(lockfile_command(p) for p in paths))
+    for cmd in commands:
+        code = run_in_worktree(job, cmd, log)
+        if code != 0:
+            return False, f"`{cmd}` failed (exit {code}); see {log.parent.name}/{log.name}."
+    git(job, "add", "--", *paths)
+    stray = [l[3:] for l in git(job, "status", "--porcelain", "--untracked-files=no").stdout.splitlines()
+             if l[1] != " "]  # changed in the worktree, not staged by the merge or by us
+    if stray:
+        return False, f"regenerating changed more than the lockfiles: {', '.join(stray)}."
+    git(job, "commit", "--no-edit")
+    ran = ", ".join(f"`{c}`" for c in commands)
+    return True, (f"Lockfile conflict in {', '.join(paths)} resolved by the factory: took {ref}'s version "
+                  f"and ran {ran} (log: {log.parent.name}/{log.name}).")
+
+
+def merge_base_into(job, ref, log):
+    """Merge `ref` into the job branch. Returns (ok, git output, note): a
+    conflict only in `lockfile_regenerate` paths is resolved by regenerating
+    them; any other conflict, or a failing regenerate, aborts the merge
+    (ok False). `note` says what the factory did about lockfiles, or is None."""
+    res = git(job, "merge", "--no-edit", ref, check=False)
+    out = (res.stdout or res.stderr).strip()
+    if res.returncode == 0:
+        return True, out, None
+    paths = conflicted_paths(job)
+    note = None
+    if paths and all(lockfile_command(p) for p in paths):
+        ok, note = regenerate_lockfiles(job, ref, paths, log)
+        if ok:
+            return True, out, note
+        note = f"The conflict is only in lockfiles ({', '.join(paths)}), but the factory couldn't regenerate them: {note}"
+    git(job, "merge", "--abort", check=False)
+    return False, out, note
 
 
 def next_round(job):
@@ -1090,6 +1235,77 @@ def remember_reviewed(job):
     for lens in job["reviews"]:
         if lens not in (job.get("skipped_reviews") or {}):
             seen[lens] = job["review_head"]
+
+
+# ---- Merge-only rounds: the change didn't change ---------------------------
+#
+# A merge that fails after approval (a conflict, a failing merge gate) sends the
+# job back for a round. Often the builder only merges the base: the job's own
+# change is what was reviewed and approved. Then the reviews and the approval
+# carry over instead of running again.
+
+
+def change_id(job, head):
+    """What `head` changes compared to the base: the patch-id of
+    `git diff <base>...<head>` without the lockfile_regenerate paths, or None."""
+    exclude = [f":(exclude){p}" for p in (CONFIG.get("lockfile_regenerate") or {})]
+    diff = git(job, "diff", "--no-color", "--no-ext-diff", f"{jref(job)}...{head}", "--", ".", *exclude, check=False)
+    if diff.returncode != 0 or not diff.stdout.strip():
+        return None
+    res = subprocess.run(["git", "patch-id", "--stable"], cwd=job["worktree"], input=diff.stdout,
+                         capture_output=True, text=True)
+    return res.stdout.split(" ", 1)[0] or None
+
+
+def merge_only_from(job, head):
+    """The reviewed round whose change `head` repeats, when every lens passed it:
+    this round only merged the base. None otherwise, and always after a human's
+    feedback or a rewind (they drop `carry`)."""
+    carry = job.get("carry")
+    if job["round"] < 2 or not carry or not set(reviewers(job)) <= set(carry["passed"]):
+        return None
+    now_id = change_id(job, head)
+    return carry["round"] if now_id and now_id == change_id(job, carry["head"]) else None
+
+
+def carry_merge_only(job, k):
+    """Every lens carries its PASS from round k: write round-<N>/review-<lens>.md
+    for each; returns {lens: reason}."""
+    rd, why = round_dir(job), f"merge-only round: the change is the same as round {k}"
+    for lens in reviewers(job):
+        sections = "".join(f"\n## {h}\nCarried forward from round-{k}/review-{lens}.md.\n"
+                           for h in CONFIG.get("review_sections", {}).get(lens, []))
+        (rd / f"review-{lens}.md").write_text(
+            f"VERDICT: PASS\n\n## Summary\n- Not run in round {job['round']}: {why}.\n\n## Skipped\n"
+            f"The factory skipped this review. `git diff {jref(job)}...HEAD` (without lockfiles) is the "
+            f"same change {lens} passed in round {k}; this round only merged the base.\n{sections}"
+            f"\n## Findings\nNone.\n")
+    return {lens: why for lens in reviewers(job)}
+
+
+def carry_approval(job):
+    """In a merge-only round, an approval of the same change carries over:
+    decision.md becomes APPROVE with a note, so `job merge` runs without an
+    approver. Returns the round it came from, or None."""
+    merge_only, approved = job.get("merge_only") or {}, job.get("approved") or {}
+    k = merge_only.get("from") if merge_only.get("round") == job["round"] else None
+    if k is None or approved.get("round") != k or approved.get("head") != (job.get("carry") or {}).get("head"):
+        return None
+    d = job_dir(job["id"])
+    human = approved.get("by") == "human"
+    note = (f"- Carried from round {k}: merge-only round. The change is the same one "
+            f"{'a human' if human else 'the approver'} approved in round {k}; this round only merged "
+            f"the base, and the merge gate checks it again.")
+    old = (d / "decision.md").read_text().split("\n", 1)[-1] if (d / "decision.md").exists() else ""
+    if human:  # decision.md is the escalation the human overruled with `job approve`
+        body = f"\n## Summary\n{note}\n\n## Why\nA human approved round {k} with `job approve` (approval.md).\n"
+    elif "## Summary\n" in old:
+        body = old.replace("## Summary\n", f"## Summary\n{note}\n", 1)
+    else:
+        body = f"\n## Summary\n{note}\n{old}"
+    (d / "decision.md").write_text(f"APPROVE\n{body}")
+    job["approve_carried"] = job["round"]
+    return k
 
 
 def advance(job, stage):
@@ -1211,7 +1427,9 @@ def advance(job, stage):
             require(h.get("GATE") == "PASS", "the gate didn't pass")
             job["reviews"] = {r: "pending" for r in reviewers(job)}
             job["review_head"] = h["COMMIT"]
-            job["skipped_reviews"] = skip_unchanged_reviews(job)
+            k = merge_only_from(job, h["COMMIT"])
+            job["merge_only"] = {"round": job["round"], "from": k} if k else None
+            job["skipped_reviews"] = carry_merge_only(job, k) if k else skip_unchanged_reviews(job)
             job["reviews"].update({r: "PASS" for r in job["skipped_reviews"]})
         else:
             require(h.get("GATE") == "FAIL", "the gate passed")
@@ -1238,6 +1456,8 @@ def advance(job, stage):
             ci = ci_status(job)
             if ci:  # the approver weighs it before a human is ever asked
                 (round_dir(job) / "ci.md").write_text(ci)
+            job.pop("approve_carried", None)
+            carry_approval(job)
         else:
             require(changes, "every review passed")
             last = job["round"] >= job["round_limit"]
@@ -1258,11 +1478,14 @@ def advance(job, stage):
         require(not git(job, "status", "--porcelain").stdout.strip()
                 and git(job, "rev-parse", "HEAD").stdout.strip() == job.get("review_head"),
                 "the branch changed after review; the approver only writes decision.md")
+        if stage == "merging":  # a merge-only round after a failed merge may carry this approval
+            job["approved"] = {"round": job["round"], "head": job["review_head"], "by": "approver"}
 
     elif old == "needs-human" and stage == "merging":
         require((d / "approval.md").exists()
                 and (d / "approval.md").stat().st_mtime > (d / "decision.md").stat().st_mtime,
                 "use `job approve` to merge an escalated job")
+        job["approved"] = {"round": job["round"], "head": job.get("review_head"), "by": "human"}
         label("issue", job["issue"], add=LABELS["queue"], remove=LABELS["needs_human"])
 
     elif old == "needs-human":
@@ -1270,8 +1493,9 @@ def advance(job, stage):
         require(feedback and feedback[-1].stat().st_mtime > (d / "decision.md").stat().st_mtime,
                 "use `job feedback` to send a job back to the builder")
         job["round_limit"] = job["round"] + CONFIG["max_rounds"]
-        job.pop("carry", None)  # a human's feedback: every lens looks again, at the whole change
-        job.pop("reviewed_at", None)
+        job.pop("carry", None)  # a human's feedback: every lens looks again, at the whole change,
+        job.pop("reviewed_at", None)  # and no round after it is merge-only
+        job.pop("approved", None)
         next_round(job)
         label("issue", job["issue"], add=LABELS["queue"], remove=LABELS["needs_human"])
 
@@ -1282,9 +1506,6 @@ def advance(job, stage):
         (round_dir(job) / "merge-back.md").write_text(
             f"MERGE: BACK\n\nThe merge after approval didn't go through, so this round fixes it:\n\n"
             f"{job.pop('merge_back')}\n")
-
-    if stage == "build" and old in {"gate", "review", "needs-human", "merging"}:
-        sync_with_base(job)
 
     if stage == "needs-human":
         body = f"### Factory: needs a human\n\n{(d / 'decision.md').read_text().split(chr(10), 1)[1].strip()}"
@@ -1313,6 +1534,8 @@ def advance(job, stage):
     if after:
         pause(job, after, stage)
         stage = "paused"
+    elif stage == "build" and old in {"spec", "gate", "review", "needs-human", "merging"}:
+        sync_with_base(job)  # a paused job syncs when it resumes
     job["stage"] = stage
     job["ended"] = now() if stage in TERMINAL | WAITING else None
     if stage in TERMINAL | WAITING:
@@ -2026,6 +2249,8 @@ def cmd_resume(job, note=""):
     label("issue", job["issue"], add=LABELS["queue"], remove=LABELS["needs_human"])
     job["stage"], job["ended"] = p["resume"], None
     job.pop("paused")
+    if job["stage"] == "build":  # it may have waited for hours: build on the current base
+        sync_with_base(job)
     job.setdefault("history", []).append({"stage": job["stage"], "round": job["round"], "at": now(), "t": time.time()})
     save(job)
     nxt = "spec" if job["stage"] == "spec" else "builder"
@@ -2066,8 +2291,9 @@ def cmd_rewind(job, target, text):
         for role in ("intake", "spec"):
             (job.get("dispatch") or {}).pop(role, None)
     job["round_limit"] = max(job["round_limit"], job["round"] + CONFIG["max_rounds"])
-    job.pop("carry", None)  # a human's feedback: every lens looks again, at the whole change
-    job.pop("reviewed_at", None)
+    job.pop("carry", None)  # a human's feedback: every lens looks again, at the whole change,
+    job.pop("reviewed_at", None)  # and no round after it is merge-only
+    job.pop("approved", None)
     reopened = []
     if target == "build":
         next_round(job)
@@ -2789,6 +3015,10 @@ def cmd_merge(job):
         save(advance(job, "merging"))
     if job["stage"] != "merging":
         die(f"{job['id']} is in {job['stage']}, not approve or merging")
+    w = merge_waiting(job)
+    if w:
+        die(f"{job['id']}: another `job merge` (pid {w['pid']}) has been waiting for CI on "
+            f"{w['head'][:7]} since {w['since']}; let it finish")
     if is_merged(job):
         save(advance(sync(job), "merged"))
         print(f"{job['id']}: merged " + (f"PR #{job['pr']}" if GITHUB else f"{job['branch']} into {jbase(job)}"))
@@ -2815,11 +3045,14 @@ def cmd_merge(job):
     for attempt in range(1, MERGE_ATTEMPTS + 1):
         if GITHUB:
             fetch_base(jbase(job), job["worktree"])
-        merged = git(job, "merge", "--no-edit", jref(job), check=False)
-        if merged.returncode != 0:
-            git(job, "merge", "--abort", check=False)
-            return back(f"The branch conflicts with {jbase(job)}:\n\n```\n{merged.stdout.strip()}\n```")
-        gate = subprocess.run([str(BIN / "gate"), job["id"], "--merge"], capture_output=True, text=True)
+        rd = round_dir(job)
+        ok, out, note = merge_base_into(job, jref(job), rd / "lockfile-regenerate.log")
+        if note:  # what the factory did about a lockfile conflict, for the builder and the retro
+            (rd / "merge-sync.md").write_text(f"SYNC: {'MERGED' if ok else 'CONFLICT'}\n\n{note}\n")
+        if not ok:
+            return back(f"The branch conflicts with {jbase(job)}:\n\n" + (f"{note}\n\n" if note else "")
+                        + f"```\n{out}\n```")
+        gate = subprocess.run([str(BIN / "gate"), job["id"], "--merge"], stdout=subprocess.PIPE, text=True)  # stderr shows "gate: waiting for ..."
         if gate.returncode != 0:
             return back(f"The gate failed after syncing with {jbase(job)}. "
                         f"See round-{job['round']}/merge-checks.md and merge-checks.log.\n\n{gate.stdout.strip()}")
@@ -2829,6 +3062,11 @@ def cmd_merge(job):
                 git(job, "push", "--force-with-lease", "origin", job["branch"])
                 if gh_json("pr", "view", str(job["pr"]), "--json", "isDraft")["isDraft"]:
                     gh("pr", "ready", str(job["pr"]))
+                blocked = merge_ci(job)
+                if blocked and blocked[0] == "gone":
+                    return print(f"{job['id']}: {blocked[1]}")
+                if blocked:
+                    return (back if blocked[0] == "build" else fail)(blocked[1])
                 gh("pr", "merge", str(job["pr"]), f"--{CONFIG['merge_method']}")
             else:
                 merge_locally(job["branch"], jbase(job),
@@ -2857,6 +3095,62 @@ def cmd_merge(job):
 
 
 MERGE_ATTEMPTS = 3
+
+
+@contextlib.contextmanager
+def unlocked(job):
+    """Release the job's lock while this process waits, so other `job` commands
+    (queue, next, sync, every other job) aren't stuck behind it; take it back
+    and reload the job afterwards, since one of them may have changed it."""
+    lock = _locks.get(job["id"])
+    if lock:
+        fcntl.flock(lock, fcntl.LOCK_UN)
+    try:
+        yield
+    finally:
+        if lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        fresh = json.loads((job_dir(job["id"]) / "job.json").read_text())
+        job.clear()
+        job.update(fresh)
+
+
+def merge_waiting(job):
+    """The `job merge` process waiting for this job's CI, while it lives; else None."""
+    w = job.get("ci_wait")
+    if w and w["pid"] != os.getpid() and pid_alive(w["pid"], w.get("start")):
+        return w
+    return None
+
+
+def merge_ci(job):
+    """Wait for the PR's CI on the head `job merge` just pushed, and write
+    round-<N>/merge-ci.md. None when the merge may go on (PASS, or NONE: no
+    check within the grace period); ("build", why) when a check failed;
+    ("needs-human", why) when checks were still pending after ci_wait_minutes;
+    ("gone", why) when another command moved the job on during the wait."""
+    head = git(job, "rev-parse", "HEAD").stdout.strip()
+    print(f"{job['id']}: waiting for CI on PR #{job['pr']} ({head[:7]}), up to "
+          f"{CONFIG.get('ci_wait_minutes', 30)} min", flush=True)
+    job["ci_wait"] = {"pid": os.getpid(), "start": proc_start(os.getpid()), "since": now(), "head": head}
+    save(job)
+    with unlocked(job):  # `job queue`, `job next` and the other jobs go on meanwhile
+        ci = wait_for_ci(job, head)
+    job.pop("ci_wait", None)
+    if job["stage"] != "merging":  # moved on while we waited: a human merged the PR, say
+        save(job)
+        return ("gone", f"{job['id']} is {job['stage']} now; nothing more to merge")
+    record_ci(job, head, ci)
+    where = f"round-{job['round']}/merge-ci.md"
+    if ci["verdict"] == "FAIL":
+        return ("build", f"CI failed on PR #{job['pr']} after syncing with {jbase(job)}: "
+                         f"{', '.join(ci['failing'])}. See {where} and the PR's checks.")
+    if ci["verdict"] == "TIMEOUT":
+        return ("needs-human", f"CI on PR #{job['pr']} was still running after {CONFIG.get('ci_wait_minutes', 30)} "
+                               f"min (ci_wait_minutes): pending {', '.join(ci['pending']) or 'no result yet'}. "
+                               f"Nothing was merged. When CI passes, merge PR #{job['pr']} on GitHub (the "
+                               f"factory then marks the job merged), or give feedback. See {where}.")
+    return None
 
 
 def base_moved(error):
@@ -3117,6 +3411,9 @@ def cmd_start(job, role, extra):
     if port and (role.startswith("builder") or role in {"reviewer-ux", "reviewer-ui"}):
         lines.append(f"Port: {port}.")
     if role == "approver":
+        if job["stage"] == "approve" and job.get("approve_carried") == job["round"]:
+            die(f"the approval is carried in round {job['round']} (merge-only round, see decision.md); "
+                f"run `job merge {job['id']}`")
         lines.append(f"PR: {'#' + str(job['pr']) if job['pr'] else 'none'}. Final round: {job['round']}.")
     if extra:
         lines.append(extra.strip())
@@ -3463,6 +3760,8 @@ def next_review(job, since):
 
 def next_approve(job, since):
     i, f = job["id"], job_dir(job["id"]) / "decision.md"
+    if job.get("approve_carried") == job["round"] and first_line(f) == "APPROVE":
+        return [("run", f"{JOB} merge {i}")]  # a merge-only round: no approver runs
     step = worker_step(job, "approver", f, since)
     if step:
         return [step]
@@ -3490,9 +3789,15 @@ def next_waiting(job, since):
                      f"(`{JOB} approve {i}`), give feedback or reject")]
 
 
+def next_merging(job, since):
+    w = merge_waiting(job)
+    if w:
+        return [("wait", f"job merge (pid {w['pid']}) waiting for CI on PR #{job['pr']} since {clock(entry_time({'at': w['since']}))}")]
+    return [("run", f"{JOB} merge {job['id']}")]
+
+
 NEXT = {"intake": next_intake, "spec": next_spec, "build": next_build, "gate": next_gate,
-        "review": next_review, "approve": next_approve,
-        "merging": lambda job, since: [("run", f"{JOB} merge {job['id']}")],
+        "review": next_review, "approve": next_approve, "merging": next_merging,
         "paused": next_waiting, "needs-info": next_waiting, "needs-human": next_waiting}
 
 
@@ -3580,13 +3885,19 @@ def main(argv):
             job = advance(sync(resolve(args[0])), args[1])
             save(sync(job))
             print(f"{job['id']}: {job['stage']} (round {job['round']})")
-            if args[1] == "review":
+            if args[1] == "review" and job.get("merge_only"):
+                print(f"{job['id']}: merge-only round: the change is the same as round {job['merge_only']['from']}, "
+                      f"every review carries its PASS; don't start reviewers: `job advance {job['id']} approve`")
+            elif args[1] == "review":
                 skipped = job.get("skipped_reviews") or {}
                 run_now = [r for r in reviewers(job) if r not in skipped]
                 print(f"{job['id']}: start reviewers: {', '.join(run_now)}")
                 for lens, why in skipped.items():
                     print(f"{job['id']}: skipped reviewer-{lens}: {why}; "
                           f"round-{job['round']}/review-{lens}.md carries its PASS, don't start it")
+            if args[1] == "approve" and job.get("approve_carried") == job["round"]:
+                print(f"{job['id']}: approval carried from round {job['merge_only']['from']} (merge-only round, "
+                      f"decision.md says APPROVE); don't start the approver: `job merge {job['id']}`")
             if args[1] == "spec" and job["stage"] == "build":
                 print(f"{job['id']}: spec skipped (small, low risk): spec.md is intake's scope and criteria; "
                       f"start the builder: `job start {job['id']} builder`")

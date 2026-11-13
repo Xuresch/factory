@@ -101,7 +101,8 @@ they read the diff for correctness, scope, security, UX and visual fit.
 the main checkout was dirty or busy. v2 merges with `gh pr merge`, so branch
 protection, required checks and the PR history all apply, and your main
 checkout is never touched. Before merging, the branch is synced with `main` and
-gated again, because another job may have merged since it was tested.
+gated again, because another job may have merged since it was tested, and
+`job merge` waits for the PR's CI on that head before `gh pr merge`.
 
 **You approve by merging.** The approver merges what it would merge itself and
 escalates the rest with a specific question. An escalated PR is ready for
@@ -191,12 +192,17 @@ worker. The orchestrator never passes `--agent` or `--model` itself: in the
 first real run it started every reviewer on Claude, so cross-review never
 happened.
 
-**Jobs build on a current base.** Before every build round after the first,
-`job advance` merges the base into the job branch and writes
-`round-<N>/base-sync.md`; a conflict is resolved by the builder at the start
-of that round. A conflict or a failing gate during `job merge` sends the job
-back to the builder too. Only with no round left does it reach a human.
-`job approve` merges an escalated job the same way.
+**Jobs build on a current base.** Before every build round, the first one and
+a paused job's resumed one included, `job advance` merges the base into the
+job branch and writes `round-<N>/base-sync.md`; a conflict is resolved by the
+builder at the start of that round. A conflict only in lockfiles
+(`lockfile_regenerate`) the factory resolves itself: it takes the base's
+lockfile and regenerates it, as a builder should. A conflict, a failing gate
+or a failing CI check during `job merge` sends the job back to the builder
+too. Only with no round left does it reach a human. When that round only
+merged the base (the change compared to the base is the same patch as the
+approved one), the reviews and the approval carry over and nobody reviews the
+same change twice. `job approve` merges an escalated job the same way.
 
 **Every job keeps a timeline and its follow-ups.** `job advance` appends each
 stage with its round and time to `history`; the dashboard's overview shows how

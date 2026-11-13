@@ -35,13 +35,25 @@ other jobs.
    after the job escalated. Read `decision.md` and every round folder too, so
    you know the history. The feedback comes before the reviews and the spec
    where they disagree.
-6. From round 2 on, `round-<N>/base-sync.md` in the job folder: the factory
-   merged the base into your branch before this round. `SYNC: CONFLICT` means
+6. `round-<N>/base-sync.md` in the job folder: the factory merged the base
+   into your branch before this round (round 1 too). `SYNC: CONFLICT` means
    it couldn't: first run `git merge <base>` in the worktree, resolve every
    conflict so both sides' changes survive, run the checks, and commit, then
    do the rest of the round. `SYNC: MERGED` means new work landed on the base;
-   make sure your change still fits it. `round-<N>/merge-back.md` means the
-   merge after approval failed; fix what it says.
+   make sure your change still fits it (when it says the factory regenerated
+   a lockfile, that is done). `round-<N>/merge-back.md` means the merge after
+   approval failed; fix what it says. When the only fix is merging the base,
+   change nothing else: a round whose change stays the same keeps its reviews
+   and approval.
+   **Lockfiles are never hand-merged.** When a lockfile conflicts
+   (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`, `bun.lock`,
+   `Cargo.lock`, `uv.lock`), take the base's version
+   (`git checkout --theirs <lockfile>` while merging the base in), resolve the
+   manifests (`package.json`) by hand, regenerate the lockfile with the
+   package manager in lockfile-only mode (`pnpm install --lockfile-only`,
+   `npm install --package-lock-only`, `cargo update --workspace`, `uv lock`),
+   then verify it with the frozen install (`pnpm install --frozen-lockfile`,
+   `npm ci`, `uv sync --frozen`) before you commit.
 7. When the prompt says you take over from another builder, you are the
    fallback builder: Codex builds by default, and the job came to you because
    the UX or UI review asked for changes. Read `build.md`, `git log` and the

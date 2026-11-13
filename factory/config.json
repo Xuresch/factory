@@ -271,5 +271,8 @@
     }
   },
   "worktree_setup": "",
-  "gate_parallel": 1
+  "gate_parallel": 1,
+  "lockfile_regenerate": {},
+  "ci_wait_minutes": 30,
+  "ci_start_grace_seconds": 180
 }

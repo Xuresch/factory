@@ -134,6 +134,36 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
   or the CPU. A gate that waits prints `gate: waiting for <job>'s gate (since
   HH:MM)`, and checks.md records the wait apart from `checks.sh`'s own time.
   The builder's `gate --hook` self-check doesn't wait for other gates.
+- `lockfile_regenerate`: `{lockfile path: shell command}` (a key may be an
+  fnmatch pattern). When merging the base into a job branch conflicts only in
+  these files, the factory takes the base's lockfile, runs the command in the
+  worktree with `factory/env.sh` sourced, and commits the merge, instead of
+  sending the job back to a builder; `checks.sh`'s frozen install then
+  verifies it. A conflict in any other file still goes to the builder. Leave
+  it `{}` when the project has no lockfile; otherwise, by package manager:
+
+  | Package manager | Entry |
+  |---|---|
+  | pnpm | `"pnpm-lock.yaml": "pnpm install --lockfile-only"` |
+  | npm | `"package-lock.json": "npm install --package-lock-only"` |
+  | yarn (berry) | `"yarn.lock": "yarn install --mode update-lockfile"` |
+  | bun | `"bun.lock": "bun install --lockfile-only"` |
+  | cargo | `"Cargo.lock": "cargo update --workspace"` (not `generate-lockfile`, which bumps every crate) |
+  | uv | `"uv.lock": "uv lock"` |
+
+  Only the lockfile may change: if the command rewrites any other tracked
+  file, the conflict goes to the builder. Don't list a manifest
+  (`package.json`, `Cargo.toml`): a conflict there is a real one. The lockfile
+  paths are also left out when the factory decides whether a round after a
+  failed merge changed the job's code (if not, its reviews and approval
+  carry over).
+- `ci_wait_minutes` (default 30) and `ci_start_grace_seconds` (default 180),
+  GitHub only: `job merge` pushes the synced, gated branch and waits for the
+  PR's checks on that commit before `gh pr merge`. A failing check sends the
+  job back to the builder; checks still pending after `ci_wait_minutes` send
+  it to a human; no check within the grace period means the repo has no CI,
+  and it merges. Raise the minutes if CI takes longer; a repo without CI loses
+  the grace period on every merge, so lower it there (`0` skips the wait).
 - `rerun_every_round`: which lenses review every round, by risk (default
   code always, security at high). From round 2 on every other lens that passed
   carries its PASS forward; only the lenses that asked for CHANGES run again,

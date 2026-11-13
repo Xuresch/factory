@@ -72,6 +72,13 @@ ticket() {  # ticket <nn> <title> [extra lines...]
 
 commit_all() { git add -A && git commit -qm "${1:-setup}"; }
 
+set_config() {  # set_config <key> <json value> [<key> <json value>...]: edit factory/config.json
+  python3 - "$@" <<'EOF'
+import json, sys; p = "factory/config.json"; c = json.load(open(p)); a = sys.argv[1:]
+c.update({a[i]: json.loads(a[i + 1]) for i in range(0, len(a), 2)}); json.dump(c, open(p, "w"), indent=2)
+EOF
+}
+
 J() { factory/bin/job "$@"; }
 
 intake() {  # intake <job> <risk> <surfaces> [extra header lines]
@@ -173,16 +180,20 @@ elif cmd == ["pr", "merge"]:
 else:
     sys.exit(f"fake gh: unsupported call: gh {' '.join(args)}")
 EOF
-  # land <file> <content>: another PR lands on origin's master; prints its sha. A merge-fail hook can run it.
+  # land <file> <content> [<file> <content>...]: another PR lands on origin's master; prints its sha.
+  # A merge-fail hook can run it.
   cat > "$dir/bin/land" <<'EOF'
 #!/usr/bin/env bash
 set -e; tmp="$(dirname "$0")/land-$$"; git clone -q "$(dirname "$0")/../origin.git" "$tmp/c"; cd "$tmp/c"
 git config user.email t@t; git config user.name t
-echo "$2" > "$1"; git add "$1"; git commit -qm "other PR"; git push -q origin master; git rev-parse HEAD
+while (( $# )); do mkdir -p "$(dirname "$1")"; echo "$2" > "$1"; git add "$1"; shift 2; done
+git commit -qm "other PR"; git push -q origin master; git rev-parse HEAD
 EOF
   chmod +x "$dir/bin/gh" "$dir/bin/land"
   export PATH="$dir/bin:$PATH" GH="$dir/bin" GH_LOG="$dir/bin/gh.log" GATES_LOG="$dir/bin/gates.log"
+  export FACTORY_CI_POLL_SECONDS=0.05  # job merge polls CI fast; no check within the grace = no CI
   sed -i 's/"tracker": "local"/"tracker": "github"/' factory/config.json
+  set_config ci_start_grace_seconds 0 ci_wait_minutes 0.01
   printf '#!/usr/bin/env bash\nset -e\necho "$FACTORY_GATE" >> "$GATES_LOG"\ntest ! -f FAIL\n' > factory/checks.sh
   git init -q --bare "$dir/origin.git" && git remote add origin "$dir/origin.git"
   commit_all && git push -q -u origin master
@@ -202,19 +213,20 @@ gh_pr_set() {  # gh_pr_set <python statement on pr>: edit the fake's pr.json
   python3 -c "import json; p='$GH/pr.json'; pr=json.load(open(p)); $1; json.dump(pr, open(p, 'w'))"
 }
 
-gh_to_approve() {  # gh_to_approve <issue>: create .. review on GitHub, PR pushed; stops before approve
-  local id; id=$(J create "$1") || return 1
+gh_to_approve() {  # gh_to_approve <issue> [<file> <content>...]: create .. review on GitHub, PR pushed
+  local id; id=$(J create "$1") || return 1; shift  # the build commits y.txt, or the files given
   intake "$id" low none; factory/bin/route "$id" >/dev/null && J advance "$id" spec >/dev/null || return 1
   echo "# Spec" > "factory/jobs/$id/spec.md"; J advance "$id" build >/dev/null
-  build_commit "$id" y.txt y
+  (( $# )) || set -- y.txt y
+  while (( $# )); do mkdir -p ".worktrees/$id/$(dirname "$1")"; build_commit "$id" "$1" "$2"; shift 2; done
   (cd ".worktrees/$id" && git push -q -u origin "factory/$id" 2>/dev/null &&
    gh pr create --draft --base master --head "factory/$id" --title t --body b >/dev/null)
   to_review "$id"; review "$id" 1 code PASS
   echo "$id"
 }
 
-gh_to_merging() {  # gh_to_merging <issue>: .. approve with an APPROVE decision
-  local id; id=$(gh_to_approve "$1") || return 1
+gh_to_merging() {  # gh_to_merging <issue> [<file> <content>...]: .. approve with an APPROVE decision
+  local id; id=$(gh_to_approve "$@") || return 1
   J advance "$id" approve >/dev/null; printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"
   echo "$id"
 }
@@ -1179,6 +1191,172 @@ EOF
   check "a mutating command says why it waits" "$err" "job: $id: merge in progress since " &&
   check "job.json untouched by the readers" "$(field "$id" "d['stage']")" "build" &&
   check "once free, next works again" "$(J next "$id")" "$id: start: factory/bin/job start $id builder"
+}
+
+lockfile_repo() {  # lockfile_repo <name> <regenerate command> [gh]: deps/*.txt and a deps.lock generated from them
+  if [[ "${3:-}" == gh ]]; then new_gh_repo "$1"; else new_repo "$1"; ticket 01 One; fi
+  mkdir -p deps && echo a > deps/a.txt && echo a > deps.lock
+  set_config lockfile_regenerate "{\"deps.lock\": \"$2\"}"
+  commit_all lockfile; [[ "${3:-}" == gh ]] && git push -q origin master
+  return 0
+}
+
+REGEN='cat deps/*.txt | sort > deps.lock'
+
+t_gh_lockfile_conflict_regenerated_at_merge() {
+  lockfile_repo ghlock "$REGEN" gh; gh_issue 1 One
+  local id; id=$(gh_to_merging 1 deps/b.txt b deps.lock $'a\nb') || return 1
+  "$GH/land" deps/c.txt c deps.lock $'a\nc' >/dev/null
+  local out; out=$(J merge "$id" 2>&1)
+  local merged; merged=$(python3 -c "import json; print(json.load(open('$GH/pr.json'))['mergedHead'])")
+  check "merged without a build round" "$out" "merged PR #7" &&
+  check "still round 1" "$(field "$id" "d['round']")" "1" &&
+  check "lockfile regenerated from both sides" "$(git -C "$GH/../origin.git" show "$merged:deps.lock" | tr '\n' ' ')" "a b c" &&
+  check "recorded" "$(cat "factory/jobs/$id/round-1/merge-sync.md")" "Lockfile conflict in deps.lock resolved by the factory" &&
+  check "log kept" "$(cat "factory/jobs/$id/round-1/lockfile-regenerate.log")" "exit 0" &&
+  check "merge gate ran on it" "$(grep -c merge "$GATES_LOG")" "1"
+}
+
+t_gh_lockfile_and_code_conflict_goes_back() {
+  lockfile_repo ghlockcode "$REGEN" gh; gh_issue 1 One
+  local id; id=$(gh_to_merging 1 deps/b.txt b deps.lock $'a\nb' y.txt y) || return 1
+  "$GH/land" deps/c.txt c deps.lock $'a\nc' y.txt other >/dev/null
+  local out; out=$(J merge "$id" 2>&1)
+  check "back to builder" "$out" "back to the builder for round 2" &&
+  check "merge-back names the conflict" "$(cat "factory/jobs/$id/round-2/merge-back.md")" "conflicts with master" &&
+  check "no regenerate for a mixed conflict" "$(test -f "factory/jobs/$id/round-1/lockfile-regenerate.log" && echo yes || echo no)" "no" &&
+  check "round 2 sync: conflict for the builder" "$(head -1 "factory/jobs/$id/round-2/base-sync.md")" "SYNC: CONFLICT" &&
+  check "worktree clean" "[$(git -C ".worktrees/$id" status --porcelain)]" "[]" &&
+  check "no merge call" "[$(grep -c '^pr merge' "$GH_LOG")]" "[0]"
+}
+
+t_lockfile_conflict_regenerated_in_base_sync() {
+  lockfile_repo locksync "$REGEN"
+  local id; id=$(to_build 01 low none); mkdir -p ".worktrees/$id/deps"
+  build_commit "$id" deps/b.txt b; build_commit "$id" deps.lock $'a\nb'; to_review "$id"
+  echo c > deps/c.txt && printf 'a\nc\n' > deps.lock && git add -A && git commit -qm "master deps"
+  review "$id" 1 code CHANGES; J advance "$id" build >/dev/null
+  check "sync merged" "$(head -1 "factory/jobs/$id/round-2/base-sync.md")" "SYNC: MERGED" &&
+  check "says what it did" "$(cat "factory/jobs/$id/round-2/base-sync.md")" "took master's version and ran" &&
+  check "lockfile regenerated" "$(tr '\n' ' ' < ".worktrees/$id/deps.lock")" "a b c" &&
+  check "merge committed" "[$(git -C ".worktrees/$id" status --porcelain)]" "[]"
+}
+
+merge_back_round() {  # merge_back_round <name>: a medium ui job approved in round 1, sent back by a
+  lockfile_repo "$1" 'exit 3'  # failed lockfile regenerate; sets MB_ID (it cds, so not in a subshell)
+  local id; id=$(to_build 01 medium ui) || return 1; mkdir -p ".worktrees/$id/deps"
+  build_commit "$id" deps/b.txt b; build_commit "$id" deps.lock $'a\nb'; build_commit "$id" y.txt y; to_review "$id"
+  for l in code ux ui; do review "$id" 1 "$l" PASS; done
+  J advance "$id" approve >/dev/null; printf 'APPROVE\n\n## Summary\n- fine\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"
+  echo c > deps/c.txt && printf 'a\nc\n' > deps.lock && git add -A && git commit -qm "master deps"
+  J merge "$id" > "$TMP_ROOT/$1.merge" 2>&1
+  # The builder resolves it: the base's lockfile, regenerated.
+  (cd ".worktrees/$id" && { git merge -q master >/dev/null 2>&1; true; } && printf 'a\nb\nc\n' > deps.lock &&
+   git add deps.lock && git commit -q --no-edit)
+  MB_ID=$id
+}
+
+t_merge_only_round_carries_reviews_and_approve() {
+  merge_back_round mergeonly || return 1; local id=$MB_ID J_="factory/bin/job"
+  check "regenerate failed: back to build" "$(cat "$TMP_ROOT/mergeonly.merge")" "back to the builder for round 2" &&
+  check "merge-back says why" "$(cat "factory/jobs/$id/round-2/merge-back.md")" "couldn't regenerate them" || return 1
+  ready "$id"; J advance "$id" gate >/dev/null; factory/bin/gate "$id" >/dev/null
+  local out; out=$(J advance "$id" review)
+  check "merge-only round" "$out" "merge-only round: the change is the same as round 1" &&
+  check "every lens carried" "$(field "$id" "sorted(d['skipped_reviews'])")" "['code', 'ui', 'ux']" &&
+  check "carried file" "$(cat "factory/jobs/$id/round-2/review-code.md")" "merge-only round: the change is the same as round 1" &&
+  check "start refuses" "$(J start "$id" reviewer-code 2>&1)" "is skipped in round 2" &&
+  check "next: approve" "$(J next "$id")" "advance: $J_ advance $id approve" || return 1
+  out=$(J advance "$id" approve)
+  check "approval carried" "$out" "approval carried from round 1" &&
+  check "decision APPROVE" "$(head -1 "factory/jobs/$id/decision.md")" "APPROVE" &&
+  check "decision note" "$(cat "factory/jobs/$id/decision.md")" "Carried from round 1: merge-only round" &&
+  check "earlier summary kept" "$(cat "factory/jobs/$id/decision.md")" "- fine" &&
+  check "next: merge" "$(J next "$id")" "run: $J_ merge $id" &&
+  check "approver refused" "$(J start "$id" approver 2>&1)" "the approval is carried in round 2" || return 1
+  out=$(J merge "$id")
+  check "merged" "$out" "merged factory/$id into master" &&
+  check "master has both deps" "$(git show master:deps.lock | tr '\n' ' ')" "a b c"
+}
+
+t_real_change_or_feedback_is_not_carried() {
+  merge_back_round notcarried || return 1; local id=$MB_ID J_="factory/bin/job"
+  build_commit "$id" y.txt changed; ready "$id"
+  J advance "$id" gate >/dev/null; factory/bin/gate "$id" >/dev/null
+  local out; out=$(J advance "$id" review)
+  check "a code change: reviews run" "$out" "start reviewers: code" &&
+  check "not merge-only" "$(field "$id" "d.get('merge_only')")" "None" || return 1
+  for l in code ux ui; do [[ -f "factory/jobs/$id/round-2/review-$l.md" ]] || review "$id" 2 "$l" PASS; done
+  J advance "$id" approve >/dev/null
+  check "approver runs" "$(J next "$id")" "start: $J_ start $id approver" || return 1
+  # A human's feedback round never carries, even when the change stays the same.
+  printf 'ESCALATE\n\n## Why\nhuman\n' > "factory/jobs/$id/decision.md"; J advance "$id" needs-human >/dev/null
+  echo "looks the same to me, rerun" | J feedback "$id" >/dev/null
+  (cd ".worktrees/$id" && git commit -q --allow-empty -m "nothing new"); ready "$id"
+  J advance "$id" gate >/dev/null; factory/bin/gate "$id" >/dev/null
+  out=$(J advance "$id" review)
+  check "feedback round: every lens runs" "$out" "start reviewers: code, ux, ui"
+}
+
+t_gh_merge_waits_for_ci() {
+  local case rollup
+  for case in pass fail none pending; do
+    new_gh_repo "ghciwait-$case"; gh_issue 1 One
+    local id; id=$(gh_to_merging 1) || return 1
+    case $case in
+      pass) rollup="[{'name': 'build', 'status': 'COMPLETED', 'conclusion': 'SUCCESS'}]" ;;
+      fail) rollup="[{'name': 'build', 'status': 'COMPLETED', 'conclusion': 'SUCCESS'}, {'context': 'ci/test', 'state': 'FAILURE'}]" ;;
+      none) rollup="[]"; set_config ci_start_grace_seconds 0.3 ;;
+      pending) rollup="[{'name': 'lint', 'status': 'IN_PROGRESS', 'conclusion': ''}]" ;;
+    esac
+    gh_pr_set "pr['statusCheckRollup'] = $rollup"
+    local out; out=$(J merge "$id" 2>&1)
+    local ci; ci=$(cat "factory/jobs/$id/round-1/merge-ci.md" 2>/dev/null)
+    check "$case: waits" "$out" "waiting for CI on PR #7" || return 1
+    case $case in
+      pass) check "pass: merged" "$out" "merged PR #7" && check "pass: recorded" "$ci" "CI: PASS" ;;
+      none) check "none: merged" "$out" "merged PR #7" && check "none: recorded" "$ci" "CI: NONE" ;;
+      fail) check "fail: back to build" "$out" "back to the builder for round 2: CI failed on PR #7" &&
+            check "fail: merge-back names the check" "$(cat "factory/jobs/$id/round-2/merge-back.md")" "ci/test" &&
+            check "fail: recorded" "$ci" "CI: FAIL" &&
+            check "fail: not merged" "[$(grep -c '^pr merge' "$GH_LOG")]" "[0]" ;;
+      pending) check "pending: needs-human" "$out" "needs-human: CI on PR #7 was still running" &&
+               check "pending: decision says so" "$(cat "factory/jobs/$id/decision.md")" "pending lint" &&
+               check "pending: recorded" "$ci" "CI: PENDING" &&
+               check "pending: not merged" "[$(grep -c '^pr merge' "$GH_LOG")]" "[0]" ;;
+    esac || return 1
+  done
+}
+
+t_gh_ci_wait_frees_the_job() {
+  new_gh_repo ghciwaitlock; gh_issue 1 One; set_config ci_wait_minutes 0.1
+  local id; id=$(gh_to_merging 1) || return 1
+  gh_pr_set "pr['statusCheckRollup'] = [{'name': 'lint', 'status': 'IN_PROGRESS', 'conclusion': ''}]"
+  factory/bin/job merge "$id" > "$TMP_ROOT/ciwait.out" 2>&1 & local pid=$!  # not J: $! must be the job process
+  for _ in $(seq 50); do grep -q ci_wait "factory/jobs/$id/job.json" && break; sleep 0.1; done
+  check "next doesn't block, it waits" "$(timeout 3 factory/bin/job next "$id")" "wait: job merge (pid $pid) waiting for CI on PR #7" &&
+  check "a second merge refuses" "$(timeout 3 factory/bin/job merge "$id" 2>&1)" "another \`job merge\` (pid $pid) has been waiting for CI" &&
+  check "queue runs meanwhile" "$(timeout 3 factory/bin/job queue >/dev/null 2>&1 && echo ran)" "ran" || return 1
+  wait "$pid"
+  check "then needs-human" "$(cat "$TMP_ROOT/ciwait.out")" "needs-human: CI on PR #7 was still running" &&
+  check "marker gone" "$(field "$id" "d.get('ci_wait')")" "None"
+}
+
+t_first_build_and_resume_sync_with_base() {
+  new_repo firstsync; ticket 01 One; ticket 02 Risky; commit_all
+  local id; id=$(J create f/01); intake "$id" medium none
+  factory/bin/route "$id" >/dev/null; J advance "$id" spec >/dev/null; echo "# Spec" > "factory/jobs/$id/spec.md"
+  echo m1 > m1.txt && git add m1.txt && git commit -qm "master moves during spec"
+  J advance "$id" build >/dev/null
+  check "spec → build syncs" "$(head -1 "factory/jobs/$id/round-1/base-sync.md")" "SYNC: MERGED" &&
+  check "worktree has the base's work" "$(cat ".worktrees/$id/m1.txt")" "m1" || return 1
+  local id2; id2=$(to_build 02 high security)
+  check "paused" "$(field "$id2" "d['stage']")" "paused" &&
+  check "no sync while paused" "$(test -f "factory/jobs/$id2/round-1/base-sync.md" && echo yes || echo no)" "no" || return 1
+  echo m2 > m2.txt && git add m2.txt && git commit -qm "master moves during the pause"
+  J resume "$id2" </dev/null >/dev/null
+  check "resume syncs" "$(head -1 "factory/jobs/$id2/round-1/base-sync.md")" "SYNC: MERGED" &&
+  check "resumed worktree has the base's work" "$(cat ".worktrees/$id2/m2.txt")" "m2"
 }
 
 # ---- runner ----------------------------------------------------------------

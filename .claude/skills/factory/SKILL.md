@@ -32,7 +32,8 @@ gate (script)          → checks.sh; FAIL → builder gets the log, no reviewer
 reviewers (routed)     → parallel, WAIT FOR ALL; CHANGES → builder → gate → reviewers
                          code and security never run on the builder's agent
                          CHANGES from ux or ui → the next round's builder is claude
-approver (claude/opus) → APPROVE: sync with the base, gate, merge (gh pr merge, or locally)
+approver (claude/opus) → APPROVE: sync with the base, gate, wait for CI (GitHub), merge (gh pr merge, or locally)
+                         a round that only merged the base carries its reviews and APPROVE
                          ESCALATE: PR ready (GitHub), decision as a comment, label ready-for-human
 ```
 
@@ -82,6 +83,8 @@ through the scripts. `factory/jobs/` is gitignored runtime state.
 <repo>/factory/jobs/<job-id>/build.md
 <repo>/factory/jobs/<job-id>/round-<N>/checks.md        the gate's verdict for round N
 <repo>/factory/jobs/<job-id>/round-<N>/review-<r>.md    one per routed reviewer
+<repo>/factory/jobs/<job-id>/round-<N>/base-sync.md     the base merged in before round N's build
+<repo>/factory/jobs/<job-id>/round-<N>/merge-ci.md      the PR's CI on the head `job merge` merged
 <repo>/factory/jobs/<job-id>/decision.md                APPROVE or ESCALATE
 <repo>/factory/jobs/<job-id>/feedback-<k>.md            the user's feedback on an escalated job
 <repo>/factory/jobs/_orchestrator.json         which session orchestrates the run (`job claim`)
@@ -239,9 +242,12 @@ decision:
 **build.** Round 1: `factory/bin/job start <id> builder`. Later rounds:
 `factory/bin/job send <id> builder "<what this round is for>"`: the gate's
 `round-<N-1>/checks.md`, the reviews in `round-<N-1>/`, `feedback-<k>.md`, or
-`round-<N>/merge-back.md`. Every later round starts with the base already
-merged in; when that conflicted, `round-<N>/base-sync.md` says so and the
-builder resolves it first, so mention it. If `send` refuses because no builder
+`round-<N>/merge-back.md`. Every round, the first one and a resumed one too,
+starts with the base already merged in; when that conflicted,
+`round-<N>/base-sync.md` says so and the builder resolves it first, so mention
+it. A conflict only in lockfiles that config.json `lockfile_regenerate` names
+never reaches the builder: the script regenerates them and says so in
+`base-sync.md`. If `send` refuses because no builder
 is recorded, `job start` a new one. When it returns, read `build.md`'s first
 line:
 
@@ -303,6 +309,12 @@ From round 2 on, only the lenses that asked for CHANGES, those config.json
 paths the round touched run again; every other lens that passed is `skipped`:
 its `review-<r>.md` carries the PASS forward, so don't start it (`job start`
 refuses). The reviewers that run get the diff since they last looked.
+A **merge-only round** (the round after a failed merge, when the builder only
+merged the base: `git diff <base>...HEAD` without lockfiles is the same patch
+as the last reviewed round's, and every lens passed it) carries every lens:
+`advance` prints `merge-only round` and lists no reviewer; go straight to
+`job advance <id> approve`. A round after a human's feedback is never
+merge-only.
 Each lens runs on the agent `job.json` gives it; that is how a Codex build gets
 a Claude review and the other way round. **WAIT FOR ALL.** Each time one finishes, run
 `factory/bin/job sync <id>` so the dashboard fills in. When every reviewer has
@@ -312,7 +324,10 @@ finished:
   section such as `## Standards` or `## Spec` missing): `job send` that
   reviewer the refusal, and advance again when it reports.
 - all PASS: `factory/bin/job advance <id> approve`, then
-  `factory/bin/job start <id> approver`.
+  `factory/bin/job start <id> approver`. In a merge-only round whose change
+  was approved before, `advance` writes `decision.md` (`APPROVE`, carried from
+  round k) itself and prints `approval carried`: don't start the approver
+  (`job start` refuses), run `factory/bin/job merge <id>`.
 - any CHANGES: `factory/bin/job advance <id> build` (or `needs-human` when it
   refuses because this was the last round), then `factory/bin/job send <id> builder "Round <N-1> reviews are in round-<N-1>/. Address every VERDICT: CHANGES, push, and update build.md for round <N>."`
   When ux or ui asked for changes, `advance` switches the builder to the
@@ -321,12 +336,20 @@ finished:
 
 **approve.** When the approver returns, read `decision.md`'s first line:
 
-- `APPROVE`: `factory/bin/job merge <id>`. It syncs the branch with the base,
-  runs the gate again, and merges (the PR, or locally), ending in `merged`. A
-  conflict or a failing gate after the sync is the builder's to fix: it sends
-  the job back to **build** for another round and says so; `job send` the
-  builder `Read round-<N>/merge-back.md and base-sync.md, fix it, and update
-  build.md.` Only with no round left does it go to `needs-human`.
+- `APPROVE`: `factory/bin/job merge <id>`. It syncs the branch with the base
+  (regenerating lockfiles when only they conflict), runs the gate again, on
+  GitHub pushes and waits for the PR's CI on that head, and merges (the PR, or
+  locally), ending in `merged`. The CI wait can take up to `ci_wait_minutes`
+  (default 30): run `job merge` as a background command and act on its output
+  when it exits. While it waits, the other jobs go on, `job next` says `wait`
+  for this one and a second `job merge` refuses; if it was cut off, the job is
+  still `merging` and `job next` says to run it again. A conflict, a failing gate or a failing CI check after
+  the sync is the builder's to fix: it sends the job back to **build** for
+  another round and says so; `job send` the builder `Read
+  round-<N>/merge-back.md and base-sync.md, fix it, and update build.md.` Only
+  with no round left does it go to `needs-human`, and CI still pending after
+  `ci_wait_minutes` goes there too. No check within `ci_start_grace_seconds`
+  means the repo has no CI: it merges, with `CI: NONE` in `merge-ci.md`.
 - `ESCALATE`: `factory/bin/job advance <id> needs-human`. It marks the PR ready,
   posts the decision on it and labels the issue `ready-for-human`.
 
