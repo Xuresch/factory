@@ -268,5 +268,6 @@
       "model": "gpt-6.1-sol",
       "effort": "high"
     }
-  }
+  },
+  "worktree_setup": ""
 }

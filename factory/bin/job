@@ -184,6 +184,29 @@ def worktree_base():
     return Path(os.path.expanduser(root)) / REPO.name if root else REPO / ".worktrees"
 
 
+def setup_worktree(where, log):
+    """Run config.json `worktree_setup` in a new job or slice worktree: what the
+    project needs in a fresh checkout (env files, install, indexes). The factory
+    creates worktrees itself, so a setup hook in Orca never runs for them;
+    ORCA_ROOT_PATH is set so an Orca setup script works unchanged. A failing
+    setup doesn't stop the job: the log says what broke and the gate shows it."""
+    script = CONFIG.get("worktree_setup")
+    if not script:
+        return
+    env = dict(os.environ, ORCA_ROOT_PATH=str(REPO), FACTORY_MAIN_CHECKOUT=str(REPO), FACTORY_WORKTREE=str(where))
+    start = time.monotonic()
+    try:
+        res = subprocess.run(["bash", "-c", script], cwd=where, env=env, capture_output=True, text=True,
+                             timeout=CONFIG.get("worktree_setup_timeout", 900))
+        code, out = res.returncode, res.stdout + res.stderr
+    except subprocess.TimeoutExpired as e:
+        code, out = "timeout", f"{e.stdout or ''}{e.stderr or ''}"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(f"worktree_setup exit {code} in {int(time.monotonic() - start)}s\n\n{out}")
+    if code != 0:
+        print(f"job: worktree_setup failed (exit {code}) in {where}; see {log}", file=sys.stderr)
+
+
 def remove_worktree(where, check=True):
     """Remove a job's or slice's worktree and the per-worktree build dirs
     env.sh gave it: config.json `worktree_cache_dirs`, paths in the main
@@ -1045,6 +1068,7 @@ def advance(job, stage):
                 Path(job["worktree"]).parent.mkdir(parents=True, exist_ok=True)
                 run(["git", "worktree", "add", "-b", job["branch"], job["worktree"], jref(job)])
                 job["fork_point"] = run(["git", "rev-parse", jref(job)]).stdout.strip()
+                setup_worktree(job["worktree"], job_dir(job["id"]) / "worktree-setup.log")
         comment("issue", job["issue"], f"{title}\n\n{intake_body()}")
         create_follow_ups(job)
         if stage == "spec" and spec_from_intake(job):
@@ -1391,9 +1415,11 @@ def cmd_slice_start(job, k):
         if not Path(where).exists():
             run(["git", "worktree", "prune"], check=False)
             run(["git", "worktree", "add", where, branch])
+            setup_worktree(where, job_dir(job["id"]) / f"worktree-setup-s{k}.log")
     else:
         run(["git", "worktree", "add", "-b", branch, where, job["branch"]])
         s["fork"] = run(["git", "rev-parse", job["branch"]]).stdout.strip()
+        setup_worktree(where, job_dir(job["id"]) / f"worktree-setup-s{k}.log")
     s["state"], s["started"] = "running", time.time()
     save(job)
     print(f"{job['id']}: slice {k} {'resumes in' if resumed else 'worktree'} {where} on {branch}, "

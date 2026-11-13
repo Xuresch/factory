@@ -45,7 +45,7 @@ EOF
   python3 - <<'EOF'
 import json
 p = "factory/config.json"; c = json.load(open(p))
-c.update(base_branch="master", concurrency=3, notify="", tracker="local", merge_method="merge", worktree_root=None,
+c.update(base_branch="master", concurrency=3, notify="", tracker="local", merge_method="merge", worktree_root=None, worktree_setup="",
          worktree_cache_dirs=["target/factory-jobs/{name}", "target/factory-jobs/{name}-native"])
 json.dump(c, open(p, "w"), indent=2)
 EOF
@@ -1026,6 +1026,26 @@ t_gate_strips_coauthor_trailers() {
   check "gate notes it" "$(cat "factory/jobs/$id/round-1/checks.md")" "Removed Co-Authored-By" &&
   check "checks.md names the new head" "$(sed -n 2p "factory/jobs/$id/round-1/checks.md")" "$(git -C ".worktrees/$id" rev-parse HEAD)" &&
   check "no backup ref" "[$(git for-each-ref refs/original | wc -l)]" "[0]"
+}
+
+t_worktree_setup_runs() {
+  new_repo wtsetup; ticket 01 One; ticket 02 Two; commit_all
+  echo "SECRET=1" > .env
+  python3 - <<'EOF'
+import json; p = "factory/config.json"; c = json.load(open(p))
+c["worktree_setup"] = 'install -Dm600 "$ORCA_ROOT_PATH/.env" .env\necho done > setup.txt'
+json.dump(c, open(p, "w"))
+EOF
+  local id; id=$(to_build 01 low none)
+  check "env copied from the main checkout" "$(cat ".worktrees/$id/.env")" "SECRET=1" &&
+  check "script ran in the worktree" "$(cat ".worktrees/$id/setup.txt")" "done" &&
+  check "log written" "$(head -1 "factory/jobs/$id/worktree-setup.log")" "worktree_setup exit 0" || return 1
+  python3 - <<'EOF'
+import json; p = "factory/config.json"; c = json.load(open(p)); c["worktree_setup"] = "exit 3"; json.dump(c, open(p, "w"))
+EOF
+  local id2; id2=$(to_build 02 low none 2>/dev/null)
+  check "a failing setup doesn't stop the job" "$(field "$id2" "d['stage']")" "build" &&
+  check "failure logged" "$(head -1 "factory/jobs/$id2/worktree-setup.log")" "exit 3"
 }
 
 # ---- runner ----------------------------------------------------------------

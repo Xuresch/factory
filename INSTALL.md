@@ -112,6 +112,13 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
   paths in the main checkout with `{name}` for the worktree's folder, such as
   `"target/factory-jobs/{name}"` for Rust. The factory deletes them with the
   worktree. Leave it `[]` when builds don't keep a directory per worktree.
+- `worktree_setup`: a shell script run in every new job and slice worktree,
+  for what a fresh checkout needs (env files, dependency install, indexes).
+  The factory creates its worktrees itself, so a setup hook configured in Orca
+  (`<orca> repo list --json`, `hookSettings.scripts.setup`) never runs for
+  them: copy that script here. `ORCA_ROOT_PATH` and `FACTORY_MAIN_CHECKOUT`
+  point at the main checkout. A failing setup is logged in the job folder
+  (`worktree-setup.log`) and doesn't stop the job.
 - `rerun_every_round`: which lenses review every round, by risk (default
   code always, security at high). From round 2 on every other lens that passed
   carries its PASS forward; only the lenses that asked for CHANGES run again,
