@@ -799,48 +799,60 @@ def check_reviews_done(job):
         raise Refused(f"review-{r}.md doesn't count: {why}. Send the reviewer-{r} worker this message.")
 
 
-NEVER_SKIP = {"code", "security"}
-
-
 def touches(path, rule):
     """Does `path` fall under a review_skip rule? fnmatch, where `*` also matches `/`."""
     return (any(fnmatch.fnmatch(path, p) for p in rule.get("paths", []))
             and not any(fnmatch.fnmatch(path, p) for p in rule.get("except", [])))
 
 
+def rerun_lenses(job):
+    """Lenses that review every round, for this job's risk (config.json `rerun_every_round`)."""
+    risk = (job.get("intake") or {}).get("risk")
+    return set(CONFIG.get("rerun_every_round", {}).get(risk, ["code", "security"]))
+
+
 def skip_unchanged_reviews(job):
-    """From round 2 on, carry a lens's PASS forward instead of running it again
-    when the round's diff touches none of its paths (config.json `review_skip`).
-    `job["carry"]` is the last reviewed round: its head and the lenses that
-    passed there. Code and security always run, and so does a lens that asked
-    for CHANGES. Writes round-<N>/review-<lens>.md; returns {lens: reason}."""
+    """From round 2 on, a lens that passed carries its PASS forward instead of
+    running again, unless it reviews every round at this risk
+    (`rerun_every_round`) or the diff since it last looked touches its
+    `review_skip` paths. `job["carry"]` is the last reviewed round: its head and
+    the lenses that passed there; `job["reviewed_at"]` is the commit each lens
+    last actually reviewed. Writes round-<N>/review-<lens>.md; returns {lens: reason}."""
     carry, rules = job.get("carry"), CONFIG.get("review_skip") or {}
-    if job["round"] < 2 or not carry or not rules:
+    if job["round"] < 2 or not carry:
         return {}
     head = git(job, "rev-parse", "HEAD").stdout.strip()
-    res = git(job, "diff", "--name-only", "--no-renames", "-z", f"{carry['head']}..{head}", check=False)
-    if res.returncode != 0:  # the reviewed commit is gone (a rewritten branch): review everything
-        return {}
-    changed = [p for p in res.stdout.split("\0") if p]
-    rd, k, span = round_dir(job), carry["round"], f"{carry['head'][:7]}..{head[:7]}"
+    rd, k = round_dir(job), carry["round"]
+    always = rerun_lenses(job)
     skipped = {}
     for lens in reviewers(job):
-        rule = rules.get(lens)
         f = rd / f"review-{lens}.md"
-        if (lens in NEVER_SKIP or lens in CONFIG["cross_review"]["lenses"] or not rule
-                or lens not in carry["passed"] or f.exists() or any(touches(p, rule) for p in changed)):
+        if lens in always or lens not in carry["passed"] or f.exists():
             continue
-        scope = ", ".join(rule.get("paths", [])) + (
-            f" (except {', '.join(rule['except'])})" if rule.get("except") else "")
-        files = f"{len(changed)} file" + ("" if len(changed) == 1 else "s")
-        why = f"PASS in round {k} and no {lens} file changed since ({span}, {files})"
+        since = (job.get("reviewed_at") or {}).get(lens, carry["head"])
+        rule = rules.get(lens)
+        if rule:
+            res = git(job, "diff", "--name-only", "--no-renames", "-z", f"{since}..{head}", check=False)
+            if res.returncode != 0:  # the reviewed commit is gone (a rewritten branch): look again
+                continue
+            if any(touches(p, rule) for p in res.stdout.split("\0") if p):
+                continue
+            scope = ", ".join(rule.get("paths", [])) + (
+                f" (except {', '.join(rule['except'])})" if rule.get("except") else "")
+            why = f"PASS in round {k} and no {lens} file changed since {since[:7]}"
+            detail = (f"The diff since {lens} last reviewed ({since[:7]}..{head[:7]}) changes "
+                      f"none of {scope}, so its last PASS still holds.")
+        else:
+            why = f"PASS in round {k}; follow-up rounds re-run only lenses that asked for CHANGES" + (
+                f" and {', '.join(sorted(always))}" if always else "")
+            detail = (f"{lens} passed in round {k}. Follow-up rounds re-run only the lenses that asked for "
+                      f"CHANGES and those config.json `rerun_every_round` lists for this risk.")
         sections = "".join(f"\n## {h}\nCarried forward from round-{k}/review-{lens}.md.\n"
                            for h in CONFIG.get("review_sections", {}).get(lens, []))
         f.write_text(
             f"VERDICT: PASS\n\n## Summary\n- Not run in round {job['round']}: carried forward from round {k}, "
-            f"where {lens} passed.\n\n## Skipped\nThe factory skipped this review. The diff since round {k}'s "
-            f"reviewed commit ({span}) changes {files}, none under {scope}, so "
-            f"round-{k}/review-{lens}.md still holds.\n{sections}\n## Findings\nNone.\n")
+            f"where {lens} passed.\n\n## Skipped\nThe factory skipped this review. {detail}\n{sections}"
+            f"\n## Findings\nNone.\n")
         skipped[lens] = why
     return skipped
 
@@ -917,6 +929,10 @@ def remember_reviewed(job):
     """The round that just ended was reviewed: the next round may carry its PASSes."""
     job["carry"] = {"round": job["round"], "head": job["review_head"],
                     "passed": [r for r, v in job["reviews"].items() if v == "PASS"]}
+    seen = job.setdefault("reviewed_at", {})
+    for lens in job["reviews"]:
+        if lens not in (job.get("skipped_reviews") or {}):
+            seen[lens] = job["review_head"]
 
 
 def advance(job, stage):
@@ -1090,7 +1106,8 @@ def advance(job, stage):
         require(feedback and feedback[-1].stat().st_mtime > (d / "decision.md").stat().st_mtime,
                 "use `job feedback` to send a job back to the builder")
         job["round_limit"] = job["round"] + CONFIG["max_rounds"]
-        job.pop("carry", None)  # a human's feedback: every lens looks again
+        job.pop("carry", None)  # a human's feedback: every lens looks again, at the whole change
+        job.pop("reviewed_at", None)
         next_round(job)
         label("issue", job["issue"], add=LABELS["queue"], remove=LABELS["needs_human"])
 
@@ -1629,7 +1646,8 @@ def cmd_rewind(job, target, text):
         for role in ("intake", "spec"):
             (job.get("dispatch") or {}).pop(role, None)
     job["round_limit"] = max(job["round_limit"], job["round"] + CONFIG["max_rounds"])
-    job.pop("carry", None)  # a human's feedback: every lens looks again
+    job.pop("carry", None)  # a human's feedback: every lens looks again, at the whole change
+    job.pop("reviewed_at", None)
     reopened = []
     if target == "build":
         next_round(job)
@@ -2406,6 +2424,10 @@ def cmd_start(job, role, extra):
                          f"(the user's answer) before you build.")
     if role.startswith("builder") or role.startswith("reviewer"):
         lines.append(f"{'Build' if role.startswith('builder') else 'Review'} round {job['round']}.")
+    since = (job.get("reviewed_at") or {}).get(role.removeprefix("reviewer-"))
+    if role.startswith("reviewer-") and job["round"] > 1 and since:
+        lines.append(f"Follow-up review: your lens last reviewed {since[:12]}. Review the fixes, "
+                     f"`git diff {since[:12]}..HEAD`, not the whole change again.")
     if port and (role.startswith("builder") or role in {"reviewer-ux", "reviewer-ui"}):
         lines.append(f"Port: {port}.")
     if role == "approver":

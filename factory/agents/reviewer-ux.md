@@ -29,6 +29,10 @@ is in the main checkout; your one file goes there.
 4. From round 2 on, the last earlier review of your lens
    (`round-<M>/review-ux.md`). Another agent may have written it, so don't call
    it yours. Check whether each finding was fixed.
+   When your header says **Follow-up review**, the rest of the change already
+   passed: review only the diff it names and whether the earlier findings
+   were fixed. Raise something outside that diff only when the new diff
+   breaks it; don't reopen points an earlier round settled.
 
 ## Look at it
 

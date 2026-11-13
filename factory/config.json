@@ -204,5 +204,17 @@
     }
   },
   "commit_tickets": true,
-  "retro_cost_usd": null
+  "retro_cost_usd": null,
+  "rerun_every_round": {
+    "low": [
+      "code"
+    ],
+    "medium": [
+      "code"
+    ],
+    "high": [
+      "code",
+      "security"
+    ]
+  }
 }

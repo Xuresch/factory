@@ -233,9 +233,11 @@ start a new `builder` worker told it takes over from the slice builders.
 
 **review.** `factory/bin/job start <id> reviewer-<r>` for every lens that
 `job advance <id> review` lists under `start reviewers:`, **in one message**, so they run in parallel.
-From round 2 on, a ux or ui lens that passed last round and whose paths
-(config.json `review_skip`) the round didn't touch is `skipped`: its
-`review-<r>.md` carries the PASS forward, so don't start it (`job start` refuses).
+From round 2 on, only the lenses that asked for CHANGES, those config.json
+`rerun_every_round` lists for the job's risk, and those whose `review_skip`
+paths the round touched run again; every other lens that passed is `skipped`:
+its `review-<r>.md` carries the PASS forward, so don't start it (`job start`
+refuses). The reviewers that run get the diff since they last looked.
 Each lens runs on the agent `job.json` gives it; that is how a Codex build gets
 a Claude review and the other way round. **WAIT FOR ALL.** Each time one finishes, run
 `factory/bin/job sync <id>` so the dashboard fills in. When every reviewer has

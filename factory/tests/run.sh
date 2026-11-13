@@ -420,25 +420,39 @@ EOF
   mkdir -p ".worktrees/$id/crates"; build_commit "$id" crates/core.rs c
   ready "$id"; J advance "$id" gate >/dev/null; factory/bin/gate "$id" >/dev/null
   local out; out=$(J advance "$id" review)
-  check "round 2 starts the rest" "$out" "start reviewers: code, ux, security" &&
+  check "round 2 runs code and the lens that asked" "$out" "start reviewers: code, ux" &&
   check "ui skipped" "$out" "skipped reviewer-ui: PASS in round 1" &&
+  check "security carried at medium" "$out" "skipped reviewer-security: PASS in round 1" &&
   check "carried file passes" "$(head -1 "factory/jobs/$id/round-2/review-ui.md")" "VERDICT: PASS" &&
   check "start refuses skipped" "$(J start "$id" reviewer-ui 2>&1)" "reviewer-ui is skipped in round 2" &&
-  check "ux CHANGES not carried" "[$(ls "factory/jobs/$id/round-2")]" "checks.md" &&
-  check "no ux file" "$(test -f "factory/jobs/$id/round-2/review-ux.md" && echo yes || echo no)" "no"
-  review "$id" 2 code CHANGES; review "$id" 2 security PASS; review "$id" 2 ux PASS
+  check "no ux file" "$(test -f "factory/jobs/$id/round-2/review-ux.md" && echo yes || echo no)" "no" || return 1
+  J start "$id" reviewer-ux >/dev/null
+  check "ux told to review the fixes" "$(tail -3 "$SPECS")" "Follow-up review: your lens last reviewed" || return 1
+  review "$id" 2 code CHANGES; review "$id" 2 ux PASS
   J advance "$id" build >/dev/null
   mkdir -p ".worktrees/$id/apps/native/src"; build_commit "$id" apps/native/src/x_tests.rs t
   ready "$id"; J advance "$id" gate >/dev/null; factory/bin/gate "$id" >/dev/null
   out=$(J advance "$id" review)
-  check "tests file ignored, code and security run" "$out" "start reviewers: code, security" &&
+  check "tests file ignored, only code runs" "$out" "start reviewers: code"$'\n' &&
   check "ux carried" "$out" "skipped reviewer-ux" && check "ui carried again" "$out" "skipped reviewer-ui"
-  review "$id" 3 code CHANGES; review "$id" 3 security PASS
+  review "$id" 3 code CHANGES
   J advance "$id" build >/dev/null; build_commit "$id" apps/native/a.rs b
   ready "$id"; J advance "$id" gate >/dev/null; factory/bin/gate "$id" >/dev/null
   out=$(J advance "$id" review)
-  check "native change runs everyone" "$out" "start reviewers: code, ux, ui, security" &&
-  check "nothing skipped" "[$(echo "$out" | grep -c skipped)]" "[0]"
+  check "native change runs ux and ui again" "$out" "start reviewers: code, ux, ui"$'\n' &&
+  check "security still carried" "$out" "skipped reviewer-security"
+}
+
+t_high_risk_reruns_security() {
+  new_repo highrerun; ticket 01 One; commit_all
+  local id; id=$(to_build 01 high "security"); J resume "$id" >/dev/null
+  build_commit "$id" a.txt a; to_review "$id"
+  for l in $(field "$id" "' '.join(d['reviews'])"); do review "$id" 1 "$l" PASS; done
+  review "$id" 1 code CHANGES
+  J advance "$id" build >/dev/null; build_commit "$id" a.txt b
+  ready "$id"; J advance "$id" gate >/dev/null; factory/bin/gate "$id" >/dev/null
+  local out; out=$(J advance "$id" review)
+  check "code and security run at high" "$out" "start reviewers: code, security"
 }
 
 # ---- runner ----------------------------------------------------------------

@@ -112,10 +112,13 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
   paths in the main checkout with `{name}` for the worktree's folder, such as
   `"target/factory-jobs/{name}"` for Rust. The factory deletes them with the
   worktree. Leave it `[]` when builds don't keep a directory per worktree.
-- `review_skip`: leave it `{}`, or let a ux or ui PASS carry over to the next
-  round when that round changes none of the lens's files:
-  `{"ui": {"paths": ["src/components/*"], "except": ["*.test.tsx"]}}`. Code
-  and security reviews always run.
+- `rerun_every_round`: which lenses review every round, by risk (default
+  code always, security at high). From round 2 on every other lens that passed
+  carries its PASS forward; only the lenses that asked for CHANGES run again,
+  on the diff since they last looked.
+- `review_skip`: leave it `{}`, or name a lens's files so it runs again when a
+  later round touches them:
+  `{"ui": {"paths": ["src/components/*"], "except": ["*.test.tsx"]}}`.
 - `labels`: leave them. They are only the fallback; the factory reads the real
   strings from `docs/agents/triage-labels.md`.
 - Leave `concurrency`, `max_rounds`, `stages`, `builder`, `routing`,
