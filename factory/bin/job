@@ -1479,7 +1479,7 @@ def advance(job, stage):
         require(section(d / "build.md", "Self-review") is not None,
                 "build.md has no `## Self-review` section: the builder checks its own diff against the "
                 "spec and the smell list before READY (see its brief)")
-        if pre_review(job):
+        if pre_review(job) and job.get("pre_review_round") == job["round"]:
             review = section(d / "build.md", "Self-review") or ""
             require(re.search(r"^\s*[-*]?\s*Pre-review:", review, re.M),
                     f"build.md's `## Self-review` has no `Pre-review:` line: the builder runs "
@@ -3616,6 +3616,8 @@ def note_worker(job, role, dispatch, how):
     until the file it writes is newer than that."""
     job.setdefault("workers", {})[role] = {"dispatch": dispatch, "round": job["round"],
                                            "at": time.time(), "how": how}
+    if role == "builder" and pre_review(job):
+        job["pre_review_round"] = job["round"]  # the prompt named it: READY needs its Pre-review line
 
 
 def live_dispatch(job, dispatch):

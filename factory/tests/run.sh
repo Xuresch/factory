@@ -290,7 +290,10 @@ t_pre_review_before_ready() {
   printf 'STATUS: READY\n\n# Build\n\n## Self-review\nChecked.\n' > "factory/jobs/$id/build.md"
   check "refused" "$(J advance "$id" gate 2>&1)" "no \`Pre-review:\` line" || return 1
   printf 'STATUS: READY\n\n# Build\n\n## Self-review\nChecked.\n- Pre-review: 1 finding, fixed.\n' > "factory/jobs/$id/build.md"
-  check "accepted" "$(J advance "$id" gate 2>&1)" "gate"
+  check "accepted" "$(J advance "$id" gate 2>&1)" "gate" || return 1
+  ticket 03 Three; commit_all; local id3; id3=$(to_build 03 low none); build_commit "$id3" z.txt z
+  printf 'STATUS: READY\n\n# Build\n\n## Self-review\nChecked.\n' > "factory/jobs/$id3/build.md"
+  check "a builder never told isn't held to it" "$(J advance "$id3" gate 2>&1)" "gate" || return 1
   builder_cfg pre_review null; : > "$SPECS"
   ticket 02 Two; commit_all; local id2; id2=$(to_build 02 low none); J start "$id2" builder >/dev/null
   check "off: no pre-review" "$(grep -c 'Pre-review' "$SPECS")" "0"
