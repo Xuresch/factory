@@ -400,9 +400,52 @@ def list_issues(name):
     return out
 
 
+BLOCKED_SECTION_RE = re.compile(r"^#+[ \t]*Blocked by[ \t]*:?[ \t]*\n(.*?)(?=^#+[ \t]|\Z)", re.M | re.S | re.I)
+BLOCKED_LINE_RE = re.compile(r"^[ \t]*[*_]*Blocked by[*_]*:?[*_]*[ \t]+(.+)$", re.M | re.I)
+
+
+def body_blockers(body):
+    """Issue numbers a GitHub issue body says it waits on: a `## Blocked by`
+    section (/to-issues writes one: `#12`, `- [title](…/issues/12)`, or `None`)
+    or a `Blocked by: #12` line. Text in parentheses doesn't count."""
+    parts = [m.group(1) for m in BLOCKED_SECTION_RE.finditer(body or "")]
+    parts += [m.group(1) for m in BLOCKED_LINE_RE.finditer(body or "")]
+    found = []
+    for part in parts:
+        part = re.sub(r"\([^)]*\)", "", re.sub(r"\]\(([^)]*)\)", r"] \1", part))  # keep link targets
+        for n in re.findall(r"(?:#|/issues/)(\d+)\b", part):
+            if int(n) not in found:
+                found.append(int(n))
+    return found
+
+
+def gh_open_blockers(number, body):
+    """Open issues a GitHub issue is blocked by: GitHub's own dependencies
+    (`Blocked by` in the sidebar) and the ones its body names. Raises Refused
+    when GitHub can't be asked: a blocker must never be skipped silently."""
+    res = run(["gh", "api", f"repos/{{owner}}/{{repo}}/issues/{number}/dependencies/blocked_by"], check=False)
+    if res.returncode != 0:
+        raise Refused(f"couldn't read what #{number} is blocked by: {(res.stderr or res.stdout).strip()[:200]}")
+    try:
+        native = {i["number"]: i["state"].upper() for i in json.loads(res.stdout or "[]")}
+    except (ValueError, KeyError, TypeError) as e:
+        raise Refused(f"couldn't read what #{number} is blocked by: {e}")
+    out = [n for n, state in native.items() if state == "OPEN"]
+    for n in body_blockers(body):
+        if n in native or n == number:
+            continue
+        state = gh_json("issue", "view", str(n), "--json", "state").get("state", "").upper()
+        if state == "OPEN":
+            out.append(n)
+    return [f"#{n}" for n in sorted(out)]
+
+
 def open_blockers(issue):
-    """Local tickets from the same feature that this one waits on and that aren't done."""
-    if GITHUB or not issue.get("blocked_by"):
+    """What an issue waits on and isn't done: GitHub issues (dependencies and
+    the body's `Blocked by`), or local tickets from the same feature."""
+    if GITHUB:
+        return gh_open_blockers(int(issue["number"]), issue.get("body"))
+    if not issue.get("blocked_by"):
         return []
     feature = issue["number"].split("/")[0]
     return [f"{feature}/{nn}" for nn in issue["blocked_by"]
@@ -2626,6 +2669,13 @@ def cmd_create(number):
         die(f"issue #{number} is {issue['state'].lower()}")
     if LABELS["queue"] not in {l["name"] for l in issue["labels"]}:
         die(f"issue #{number} isn't labeled {LABELS['queue']}")
+    try:
+        blockers = open_blockers(issue)
+    except Refused as e:
+        die(str(e))
+    if blockers:
+        die(f"issue {number} is blocked by {', '.join(map(str, blockers))}: it waits until "
+            f"{'that one is' if len(blockers) == 1 else 'they are'} done")
     target = ticket_directive(issue, "Branch") or BASE
     require(re.fullmatch(r"[\w./-]+", target) and not target.startswith("factory/"),
             f"`Branch: {target}` isn't a usable branch name")
@@ -2948,7 +2998,11 @@ def cmd_queue(args=()):
         n = issue["number"]
         j = jobs.get(n)
         if not j:
-            blockers = open_blockers(fetch_issue(n)) if not GITHUB else []
+            try:
+                blockers = open_blockers(fetch_issue(n))
+            except Refused as e:
+                other_rows.append(("wait", n, "-", "-", str(e)))
+                continue
             if blockers:
                 other_rows.append(("wait", n, "-", "-", f"blocked by {', '.join(blockers)}"))
             else:

@@ -445,8 +445,11 @@ bare `factory/bin/job queue` stays inside it and says so in a `note` line, and
 context of how the run started, plain `factory/bin/job queue` is still right;
 never pass `--clear` or `--all` in a selected run, and never start an issue
 the queue didn't list as `new`. Selected issues that aren't queued show as `skip` with their
-label or Status; tell the user, don't start them. A selected issue blocked by
-another one waits until that one is merged, then comes out as `new`. Jobs
+label or Status; tell the user, don't start them. An issue blocked by another
+one (a GitHub dependency, a `## Blocked by` section or `Blocked by:` line in
+its body, or a local ticket's `Blocked by:`) shows as `wait` until that one is
+closed, then comes out as `new`; `job create` refuses it before. Never start
+a blocked issue by hand. Jobs
 outside the selection keep running and still hold their slots. Finish with
 `factory/bin/job summary` for the selected jobs.
 

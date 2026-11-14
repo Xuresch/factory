@@ -154,8 +154,17 @@ if cmd == ["api", "user"]:
     print("op")
 elif cmd == ["issue", "view"]:
     print(json.dumps(load(f"issue-{args[2]}.json")))
-elif cmd == ["issue", "list"]:
-    print("[]")
+elif cmd == ["issue", "list"]:  # open issues with the label, from issue-<n>.json
+    want = opt("--label")
+    found = [load(f.name) for f in sorted(d.glob("issue-*.json"))]
+    print(json.dumps([{"number": i["number"], "title": i["title"]} for i in found
+                      if i["state"] == "OPEN" and want in [l["name"] for l in i["labels"]]]))
+elif cmd[0] == "api" and cmd[1].endswith("/dependencies/blocked_by"):  # issue-<n>.json "blocked_by": [numbers]
+    n = cmd[1].split("/issues/")[1].split("/")[0]
+    if (d / "deps-fail").exists():
+        sys.exit("HTTP 502")
+    print(json.dumps([{"number": b, "state": load(f"issue-{b}.json")["state"].lower()}
+                      for b in (load(f"issue-{n}.json") or {}).get("blocked_by", [])]))
 elif cmd in (["issue", "comment"], ["issue", "edit"], ["pr", "comment"], ["pr", "close"]):
     pass
 elif cmd == ["issue", "close"]:
@@ -717,6 +726,27 @@ t_gh_feature_finish_pr_only() {
   check "pr left open" "$out" "is open; merge it on GitHub" &&
   check "not merged" "$(grep -c 'pr merge' "$GH_LOG")" "0" &&
   check "report" "$(head -1 factory/jobs/_features/feature-p.md)" "FINISH: PR OPEN"
+}
+
+gh_issue_set() {  # gh_issue_set <n> <python statement on i>: edit the fake's issue-<n>.json
+  python3 -c "import json; p='$GH/issue-$1.json'; i=json.load(open(p)); $2; json.dump(i, open(p, 'w'))"
+}
+
+t_gh_blocked_by_waits() {
+  new_gh_repo ghblocked
+  gh_issue 1 First; gh_issue 2 Second; gh_issue 3 Third $'Do it.\n\n## Blocked by\n\n- [First](https://github.com/o/r/issues/1)\n'
+  gh_issue 4 Fourth $'## Blocked by\n\nNone (can start immediately).\n'
+  gh_issue_set 2 'i["blocked_by"] = [1]'
+  local q; q=$(J queue)
+  check "native dependency waits" "$q" $'wait\t2\t-\t-\tblocked by #1' &&
+  check "body section waits" "$q" $'wait\t3\t-\t-\tblocked by #1' &&
+  check "None doesn't block" "$q" $'new\t4' &&
+  check "create refuses" "$(J create 2 2>&1)" "blocked by #1" || return 1
+  gh_issue_set 1 'i["state"] = "CLOSED"'
+  q=$(J queue)
+  check "free once closed" "$q" $'new\t2' && check "body one too" "$q" $'new\t3' || return 1
+  touch "$GH/deps-fail"
+  check "unreadable never counts as free" "$(J queue)" "couldn't read what #2 is blocked by"
 }
 
 t_gh_missing_feature_base() {
