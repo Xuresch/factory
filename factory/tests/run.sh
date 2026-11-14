@@ -55,7 +55,7 @@ EOF
 import json
 p = "factory/config.json"; c = json.load(open(p))
 c.setdefault("hold", {})["only_when_needed"] = False  # most tests want every high-risk spec held
-c.update(base_branch="master", concurrency=3, notify="", tracker="local", merge_method="merge", worktree_root=None, worktree_setup="",
+c.update(base_branch="master", concurrency=3, notify="", tracker="local", merge_method="merge", worktree_root=None, worktree_setup="", replace_builder_after_partials=2,
          worktree_cache_dirs=["target/factory-jobs/{name}", "target/factory-jobs/{name}-native"])
 json.dump(c, open(p, "w"), indent=2)
 EOF
