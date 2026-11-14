@@ -1121,11 +1121,22 @@ def set_builder(job, builder, why):
 
 
 def maybe_fall_back(job, changes):
-    """Codex builds by default; UI trouble hands the job to the fallback builder."""
+    """Codex builds by default. UI trouble hands the job to the fallback builder,
+    but only after the builder had `builder.ui_fixes_before_fallback` rounds
+    (default 2) to fix the UI reviewers' findings itself, or when the next
+    round is the last one the job has: the fallback gets that one."""
     cfg = CONFIG["builder"]
     triggers = [r for r in changes if r in cfg["fallback_on_changes_from"]]
-    if triggers and job["agents"]["builder"] != cfg["fallback"] and not job.get("builder_pinned"):
-        set_builder(job, cfg["fallback"], f"CHANGES from {', '.join(triggers)} in round {job['round']}")
+    if not triggers or job["agents"]["builder"] == cfg["fallback"] or job.get("builder_pinned"):
+        return
+    job["ui_changes"] = job.get("ui_changes", 0) + 1
+    allowed = cfg.get("ui_fixes_before_fallback", 2)
+    last = job["round"] + 1 >= job["round_limit"]
+    if job["ui_changes"] > allowed or last:
+        why = f"CHANGES from {', '.join(triggers)} in round {job['round']}"
+        why += (f" after {allowed} fix round(s)" if job["ui_changes"] > allowed
+                else ", and round " + str(job["round"] + 1) + " is the last one")
+        set_builder(job, cfg["fallback"], why)
 
 
 def sync_with_base(job):

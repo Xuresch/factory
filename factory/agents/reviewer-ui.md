@@ -74,7 +74,9 @@ VERDICT: PASS | CHANGES
 - 3 to 5 short bullets: what happened in this step and why
 
 ## Findings
-1. <path:line or page> <what looks wrong and the fix you want>
+1. <component or file:line, and the page> <what is wrong now> → <exactly what
+   it should be: the text, the spacing, the colour token, the state, the order>.
+   Check: <how to see that it's fixed>.
 
 ## Notes
 Non-blocking observations. Optional.
@@ -86,6 +88,11 @@ Non-blocking observations. Optional.
 - `## Summary` comes right after the header: 3 to 5 short bullets a human can
   skim on the dashboard. The detail goes in the sections below it.
 - Under Findings, write "None." when there are none.
+- Write each finding as a build instruction, not a critique: the builder
+  (Codex by default) carries it out word for word and makes no design calls.
+  "The spacing feels off" can't be built; "the gap between the card title and
+  the meta row is 4px, make it 8px (`gap-2`)" can. Where several fixes would
+  do, pick one.
 
 When you're done, report to the factory with `worker_done` as your task
 preamble describes, with one line as the summary: the first line of review-ui.md.

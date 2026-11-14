@@ -57,6 +57,7 @@
       "ux",
       "ui"
     ],
+    "ui_fixes_before_fallback": 2,
     "by_risk": {
       "low": {
         "agent": "codex",

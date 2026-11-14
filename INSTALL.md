@@ -186,6 +186,9 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
   in its own config at that moment. `builder.by_risk` picks the builder's model
   per risk; `model_presets` are short names for `job route-set`. Add each
   model you use to `prices_usd_per_mtok`, or its cost shows as unpriced.
+- `builder.ui_fixes_before_fallback` (default 2): how many rounds the default
+  builder gets to carry out the UX/UI reviewers' findings before the fallback
+  builder takes over. The last round a job has always goes to the fallback.
 - `min_risk_for_surface`: a floor under intake's risk per surface (default
   `security` → `medium`, so auth work never skips the spec writer).
 - Leave `concurrency`, `max_rounds`, `stages`, `builder`, `routing`,

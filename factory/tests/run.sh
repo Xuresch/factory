@@ -281,8 +281,36 @@ t_job_start_routes_agents() {
   check "dispatch recorded" "$(field "$id" "d['dispatch']['reviewer-code']")" "ctx_fake"
 }
 
+builder_cfg() {  # builder_cfg <key> <json value>: edit config.json builder.<key>
+  python3 - "$@" <<'EOF2'
+import json, sys; p = "factory/config.json"; c = json.load(open(p))
+c["builder"][sys.argv[1]] = json.loads(sys.argv[2]); json.dump(c, open(p, "w"), indent=2)
+EOF2
+}
+
+ui_round() {  # ui_round <job> <round>: a build, the gate, every review PASS but ux CHANGES, back to build
+  build_commit "$1" "y$2.txt" y; to_review "$1"
+  review "$1" "$2" code PASS; review "$1" "$2" ux CHANGES; review "$1" "$2" ui PASS
+  J advance "$1" build
+}
+
+t_codex_fixes_ui_first() {
+  new_repo uifixes; ticket 01 One; commit_all; set_config max_rounds 5; builder_cfg ui_fixes_before_fallback 2
+  local id; id=$(to_build 01 low ui)
+  check "round 1 CHANGES: codex keeps it" "$(ui_round "$id" 1; field "$id" "d['agents']['builder']['agent']")" "codex" &&
+  check "round 2 CHANGES: codex keeps it" "$(ui_round "$id" 2; field "$id" "d['agents']['builder']['agent']")" "codex" &&
+  check "round 3 CHANGES: claude takes over" "$(ui_round "$id" 3)" "builder is now claude/opus"
+}
+
+t_last_round_goes_to_fallback() {
+  new_repo uilast; ticket 01 One; commit_all; set_config max_rounds 3; builder_cfg ui_fixes_before_fallback 5
+  local id; id=$(to_build 01 low ui)
+  check "round 1: codex keeps it" "$(ui_round "$id" 1; field "$id" "d['agents']['builder']['agent']")" "codex" &&
+  check "round 3 is the last: claude gets it" "$(ui_round "$id" 2)" "is the last one"
+}
+
 t_ui_changes_switch_builder() {
-  new_repo fallback; ticket 01 One; commit_all
+  new_repo fallback; ticket 01 One; commit_all; builder_cfg ui_fixes_before_fallback 0
   local id; id=$(to_build 01 medium "ui, security"); J start "$id" builder >/dev/null
   build_commit "$id" y.txt y; to_review "$id"
   for r in code ui security; do review "$id" 1 "$r" PASS; done; review "$id" 1 ux CHANGES

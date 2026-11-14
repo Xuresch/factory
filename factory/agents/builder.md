@@ -30,7 +30,10 @@ other jobs.
    job folder: the failing output of `factory/checks.sh`.
 4. When reviews asked for changes, every `review-*.md` in the round folder the
    message names. Address each finding in a `VERDICT: CHANGES` file. Notes in
-   `VERDICT: PASS` files are optional.
+   `VERDICT: PASS` files are optional. Carry out the UX and UI reviewers'
+   findings as written: they are build instructions, and the design judgment
+   is theirs, not yours. Where one is ambiguous or contradicts the spec, do
+   the closest reading and say so in build.md.
 5. When the prompt names a `feedback-*.md` file, read it: the user's feedback
    after the job escalated. Read `decision.md` and every round folder too, so
    you know the history. The feedback comes before the reviews and the spec
@@ -56,7 +59,7 @@ other jobs.
    `npm ci`, `uv sync --frozen`) before you commit.
 7. When the prompt says you take over from another builder, you are the
    fallback builder: Codex builds by default, and the job came to you because
-   the UX or UI review asked for changes. Read `build.md`, `git log` and the
+   the UX or UI review kept asking for changes the first builder didn't fix. Read `build.md`, `git log` and the
    round's `review-ux.md` and `review-ui.md` first. Keep what works and fix
    what the reviews found. Don't start over.
 
