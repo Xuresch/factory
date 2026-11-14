@@ -23,19 +23,23 @@
   "stages": {
     "intake": {
       "agent": "claude",
-      "model": "opus"
+      "model": "opus",
+      "effort": "medium"
     },
     "spec": {
       "agent": "claude",
-      "model": "opus"
+      "model": "opus",
+      "effort": "high"
     },
     "approver": {
       "agent": "claude",
-      "model": "opus"
+      "model": "opus",
+      "effort": "high"
     },
     "retro": {
       "agent": "claude",
-      "model": "sonnet"
+      "model": "sonnet",
+      "effort": "medium"
     }
   },
   "builder": {
@@ -46,7 +50,8 @@
     },
     "fallback": {
       "agent": "claude",
-      "model": "opus"
+      "model": "opus",
+      "effort": "high"
     },
     "fallback_on_changes_from": [
       "ux",
@@ -74,19 +79,22 @@
     "low": {
       "code": {
         "agent": "claude",
-        "model": "sonnet"
+        "model": "sonnet",
+        "effort": "medium"
       }
     },
     "medium": {
       "code": {
         "agent": "claude",
-        "model": "opus"
+        "model": "opus",
+        "effort": "high"
       }
     },
     "high": {
       "code": {
         "agent": "claude",
-        "model": "opus"
+        "model": "opus",
+        "effort": "high"
       }
     }
   },
@@ -94,17 +102,20 @@
     "ui": {
       "ux": {
         "agent": "claude",
-        "model": "sonnet"
+        "model": "sonnet",
+        "effort": "medium"
       },
       "ui": {
         "agent": "claude",
-        "model": "sonnet"
+        "model": "sonnet",
+        "effort": "medium"
       }
     },
     "security": {
       "security": {
         "agent": "claude",
-        "model": "sonnet"
+        "model": "sonnet",
+        "effort": "high"
       }
     }
   },
@@ -116,7 +127,8 @@
     "when_builder_is": {
       "codex": {
         "agent": "claude",
-        "model": "opus"
+        "model": "opus",
+        "effort": "high"
       },
       "claude": {
         "agent": "codex",

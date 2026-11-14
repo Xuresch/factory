@@ -177,7 +177,11 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
 - `labels`: leave them. They are only the fallback; the factory reads the real
   strings from `docs/agents/triage-labels.md`.
 - Agents: every `{"agent": ...}` entry may name a `model` and an `effort`
-  (Orca passes both on). Without a model, Codex uses whatever is the default
+  (Orca passes both on). The Claude entries set `effort` on purpose: `high`
+  where a missed error is expensive (spec, code and security review, approver,
+  feature review, the Claude builder), `medium` for procedural work (intake,
+  retro, UX/UI review, low-risk code review). Without it a Claude worker takes
+  the model default (`medium` on Opus 5.5). Without a model, Codex uses whatever is the default
   in its own config at that moment. `builder.by_risk` picks the builder's model
   per risk; `model_presets` are short names for `job route-set`. Add each
   model you use to `prices_usd_per_mtok`, or its cost shows as unpriced.
