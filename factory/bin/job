@@ -1479,6 +1479,12 @@ def advance(job, stage):
         require(section(d / "build.md", "Self-review") is not None,
                 "build.md has no `## Self-review` section: the builder checks its own diff against the "
                 "spec and the smell list before READY (see its brief)")
+        if pre_review(job):
+            review = section(d / "build.md", "Self-review") or ""
+            require(re.search(r"^\s*[-*]?\s*Pre-review:", review, re.M),
+                    f"build.md's `## Self-review` has no `Pre-review:` line: the builder runs "
+                    f"`{pre_review(job)}` on its diff before READY and says what it found and fixed "
+                    f"(see its brief)")
         require(not git(job, "status", "--porcelain").stdout.strip(), "the worktree has uncommitted changes")
         require(int(git(job, "rev-list", "--count", f"{job['base_ref']}..HEAD").stdout) > 0,
                 f"{job['branch']} has no commits on top of {job['base_ref']}")
@@ -3511,7 +3517,18 @@ def job_header(job, role):
     where, branch = worker_place(job, role)
     return (f"Job: {job['id']}. Job folder: {job_dir(job['id'])}/. Main checkout: {REPO}. "
             f"Worktree: {where}. Branch: {branch}. Base: {jref(job)} (merges into {jbase(job)}). "
-            f"Tracker: {job.get('tracker', TRACKER)}. Issue: {job['issue']}.")
+            f"Tracker: {job.get('tracker', TRACKER)}. Issue: {job['issue']}."
+            + (f" Pre-review: `{pre_review(job)}`." if role == "builder" and pre_review(job) else ""))
+
+
+def pre_review(job):
+    """config.json builder.pre_review with {base} filled in: the review the builder
+    runs on its own diff before READY. None when it is off or the job is split
+    (slice builders don't run it; their report is assembled by the factory)."""
+    cmd = CONFIG["builder"].get("pre_review")
+    if not cmd or job.get("slices"):
+        return None
+    return cmd.replace("{base}", jref(job))
 
 
 def role_port(job, role):

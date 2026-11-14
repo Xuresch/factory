@@ -194,9 +194,23 @@ as a reviewer would, and fix what you find:
   code, mysterious names, speculative generality, and the rest). Keep it
   quick: the code reviewer does the full standards review.
 
+Then, when your prompt names a `Pre-review:` command (`codex review --base
+<base>`, say), run it in the worktree after your last commit and wait for it;
+it reads the whole branch and takes minutes. It is a second pair of eyes
+that doesn't know the spec: fix every finding that is a real bug in your
+change (a P0 or P1 above all), commit, and push. Skip a finding that is wrong,
+outside your diff, or contradicts the spec, and say why. Don't run it again
+after the fixes, and don't let it widen the scope. When the round only merged
+the base and changed nothing else, you may skip it.
+
 Record it in build.md under `## Self-review`, two to five lines: what you
-checked and what you changed because of it. The factory refuses READY
-without it.
+checked and what you changed because of it. With a pre-review, add one line
+that starts `Pre-review:`: how many findings, which you fixed, and which you
+skipped and why (`Pre-review: 2 findings; fixed the dropped error in
+sweep.ts, skipped the naming note (the spec names it)`), or `Pre-review:
+skipped, <why>` (the command failed, or a merge-only round). The factory
+refuses READY without the section, and without that line when there is a
+pre-review.
 
 ## Write build.md
 

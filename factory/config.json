@@ -58,6 +58,7 @@
       "ui"
     ],
     "ui_fixes_before_fallback": 2,
+    "pre_review": "codex review --base {base}",
     "by_risk": {
       "low": {
         "agent": "codex",

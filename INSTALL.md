@@ -189,6 +189,14 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
 - `builder.ui_fixes_before_fallback` (default 2): how many rounds the default
   builder gets to carry out the UX/UI reviewers' findings before the fallback
   builder takes over. The last round a job has always goes to the fallback.
+- `builder.pre_review` (default `codex review --base {base}`): a review the
+  builder runs on its own branch before READY, `{base}` being the job's base.
+  It catches plain bugs before the reviewers, so a code review that would ask
+  for changes doesn't cost a round. It doesn't replace the code review: it
+  knows neither the spec nor the repo's conventions. The builder fixes the
+  real findings and records them on a `Pre-review:` line under
+  `## Self-review`; the factory refuses READY without it. Split jobs skip it.
+  `null` turns it off, for a repo where it only adds noise.
 - `min_risk_for_surface`: a floor under intake's risk per surface (default
   `security` → `medium`, so auth work never skips the spec writer).
 - Leave `concurrency`, `max_rounds`, `stages`, `builder`, `routing`,

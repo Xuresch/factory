@@ -88,7 +88,7 @@ intake() {  # intake <job> <risk> <surfaces> [extra header lines]
 }
 
 ready() {  # ready <job>: a READY build.md with a self-review
-  printf 'STATUS: READY\n\n# Build\n\n## Summary\n- ok\n\n## Self-review\nChecked.\n' > "factory/jobs/$1/build.md"
+  printf 'STATUS: READY\n\n# Build\n\n## Summary\n- ok\n\n## Self-review\nChecked.\nPre-review: no findings.\n' > "factory/jobs/$1/build.md"
 }
 
 review() {  # review <job> <round> <lens> <PASS|CHANGES>
@@ -278,6 +278,22 @@ t_ready_needs_self_review() {
   local id; id=$(to_build 01 low none); build_commit "$id" y.txt y
   printf 'STATUS: READY\n\n# Build\n' > "factory/jobs/$id/build.md"
   check "refused" "$(J advance "$id" gate 2>&1)" "no \`## Self-review\`"
+}
+
+t_pre_review_before_ready() {
+  new_repo prereview; ticket 01 One; commit_all
+  local id; id=$(to_build 01 low none); J start "$id" builder >/dev/null
+  check "builder told to pre-review" "$(cat "$SPECS")" "Pre-review: \`codex review --base master\`" || return 1
+  J send "$id" builder 'round 1' >/dev/null
+  check "resume carries it" "$(tail -3 "$CALLS")" "Pre-review: \`codex review --base master\`" || return 1
+  build_commit "$id" y.txt y
+  printf 'STATUS: READY\n\n# Build\n\n## Self-review\nChecked.\n' > "factory/jobs/$id/build.md"
+  check "refused" "$(J advance "$id" gate 2>&1)" "no \`Pre-review:\` line" || return 1
+  printf 'STATUS: READY\n\n# Build\n\n## Self-review\nChecked.\n- Pre-review: 1 finding, fixed.\n' > "factory/jobs/$id/build.md"
+  check "accepted" "$(J advance "$id" gate 2>&1)" "gate"
+  builder_cfg pre_review null; : > "$SPECS"
+  ticket 02 Two; commit_all; local id2; id2=$(to_build 02 low none); J start "$id2" builder >/dev/null
+  check "off: no pre-review" "$(grep -c 'Pre-review' "$SPECS")" "0"
 }
 
 t_job_start_routes_agents() {
