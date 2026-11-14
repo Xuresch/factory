@@ -376,7 +376,10 @@ with `factory/bin/job start <id> retro`.
 done, run `factory/bin/job finish <branch>`. It syncs the branch with
 `base_branch` and runs the full checks, then asks for a feature review: run
 `factory/bin/job feature-review <branch>`, and when that worker reports, run
-`job finish <branch>` again, which merges it. If anything doesn't go through
+`job finish <branch>` again, which merges it. When the user wants to merge
+it themselves ("nur PR", "PR öffnen, nicht mergen"), run
+`job finish <branch> --pr` instead: the same steps, then it opens the pull
+request and leaves it open (GitHub only). If anything doesn't go through
 (a conflict, failing checks, a dirty checkout, a review with CHANGES), it says
 so and leaves the branch alone: tell the user and point them to
 `factory/jobs/_features/<branch>.md`.
@@ -459,7 +462,9 @@ new feature, ask.
   you may read a file in full when the answer is in it.
 - **What needs them**: run `factory/bin/job queue --all` (it shows every issue and keeps a running selection). For each `wait` line, say
   what the job is waiting for: the question in `decision.md` for `needs-human`,
-  the question in `intake.md` for `needs-info`.
+  the question in `intake.md` for `needs-info`. When `decision.md` has a
+  `## Proposed change` (a blocked builder's), show it and say that "ja" is
+  enough: on a yes, run the one-line feedback command printed under it.
 - **Resuming a paused job** ("spec passt", "weiter", "I edited the spec"):
   pass one line of what they accepted, in their words where they gave any
   ("spec ok, deleting expired drafts unattended is fine"):
@@ -487,7 +492,8 @@ new feature, ask.
 - **A feature branch** ("bündel das in feature/x", "erst in dev"): the target
   comes from a `**Branch:** <name>` line in the ticket or, for local tickets,
   in its feature's `spec.md`; add it there before the job starts. To merge a
-  finished branch: `factory/bin/job finish <branch>`.
+  finished branch: `factory/bin/job finish <branch>`; to only open its PR:
+  `job finish <branch> --pr`.
 - **Approving a `needs-human` job** ("merge 002", "approve it", "passt so"):
   `factory/bin/job approve <id>`. It merges the way an APPROVE does, with the
   sync and the merge gate; a conflict goes back to the builder. It refuses when

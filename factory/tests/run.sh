@@ -56,6 +56,7 @@ import json
 p = "factory/config.json"; c = json.load(open(p))
 c.setdefault("hold", {})["only_when_needed"] = False  # most tests want every high-risk spec held
 c.update(base_branch="master", concurrency=3, notify="", tracker="local", merge_method="merge", worktree_root=None, worktree_setup="", replace_builder_after_partials=2,
+         min_risk_for_surface={"security": "medium"},
          worktree_cache_dirs=["target/factory-jobs/{name}", "target/factory-jobs/{name}-native"])
 json.dump(c, open(p, "w"), indent=2)
 EOF
@@ -524,6 +525,42 @@ t_small_low_skips_spec_and_cheap_models() {
   check "security on sonnet below high" "$(field "$id2" "d['agents']['reviewers']['security']['model']")" "sonnet"
 }
 
+t_security_surface_raises_low_risk() {
+  new_repo riskfloor; ticket 01 Auth; commit_all
+  local id; id=$(J create f/01); intake "$id" low security
+  printf '\n## Acceptance criteria\n1. rejects: `true`\n' >> "factory/jobs/$id/intake.md"
+  factory/bin/route "$id" >/dev/null
+  local out; out=$(J advance "$id" spec)
+  check "risk raised" "$out" "risk raised low → medium" &&
+  check "spec not skipped" "$(field "$id" "d['stage']")" "spec" &&
+  check "medium risk" "$(field "$id" "d['intake']['risk']")" "medium"
+}
+
+t_sync_commits_leftover_work() {
+  new_repo dirtysync; ticket 01 One; commit_all
+  local id; id=$(to_build 01 low none)
+  echo left > ".worktrees/$id/left.txt"  # a blocked builder's uncommitted red tests
+  printf 'STATUS: BLOCKED\n\n## Summary\n- no\n\n## Blocked\nx\n' > "factory/jobs/$id/build.md"
+  J advance "$id" needs-human >/dev/null
+  echo m > m.txt && git add m.txt && git commit -qm "master moves"
+  echo "go on" | J feedback "$id" >/dev/null
+  local bs; bs=$(cat "factory/jobs/$id/round-2/base-sync.md")
+  check "synced" "$bs" "SYNC: MERGED" &&
+  check "says it committed" "$bs" "left.txt" &&
+  check "work kept" "$(git -C ".worktrees/$id" log --format=%s -3)" "keep uncommitted work"
+}
+
+t_blocked_builder_proposal() {
+  new_repo blocked; ticket 01 One; commit_all
+  local id; id=$(to_build 01 low none)
+  printf 'STATUS: BLOCKED\n\n## Summary\n- no\n\n## Blocked\nTests cannot pass.\n\n## Proposed change\nScope becomes tests plus the fix in a.ts.\n' \
+    > "factory/jobs/$id/build.md"
+  J advance "$id" needs-human >/dev/null
+  local dec; dec=$(cat "factory/jobs/$id/decision.md")
+  check "proposal shown" "$dec" "Scope becomes tests plus the fix in a.ts." &&
+  check "one-line approval" "$dec" "factory/bin/job feedback $id"
+}
+
 t_high_risk_security_on_opus() {
   new_repo riskup; ticket 01 Risky; commit_all
   local id; id=$(J create f/01); intake "$id" high security; factory/bin/route "$id" >/dev/null
@@ -641,6 +678,17 @@ t_gh_happy_path() {
   check "stage" "$(field "$id" "d['stage']")" "merged" &&
   check "branch deleted on origin" "[$(git -C "$GH/../origin.git" branch --list "factory/$id")]" "[]" &&
   check "one merge gate" "$(grep -c merge "$GATES_LOG")" "1"
+}
+
+t_gh_feature_finish_pr_only() {
+  new_gh_repo ghfinishpr
+  git branch feature/p master; git checkout -q feature/p && echo p > p.txt && git add p.txt && git commit -qm p && git checkout -q master
+  git push -q origin feature/p
+  set_config feature_review false
+  local out; out=$(J finish feature/p --pr 2>&1)
+  check "pr left open" "$out" "is open; merge it on GitHub" &&
+  check "not merged" "$(grep -c 'pr merge' "$GH_LOG")" "0" &&
+  check "report" "$(head -1 factory/jobs/_features/feature-p.md)" "FINISH: PR OPEN"
 }
 
 t_gh_missing_feature_base() {

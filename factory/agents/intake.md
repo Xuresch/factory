@@ -83,7 +83,16 @@ For ACCEPT, rate:
   money, auth, migrations, concurrency, or anything hard to undo).
 - **Surfaces**: `ui` if a user will see the change on a page or screen,
   `security` if it touches auth, permissions, user input reaching queries,
-  shells or HTML, secrets, or payments. Both, or `none`.
+  shells or HTML, secrets, or payments. Both, or `none`. A job with the
+  `security` surface is at least `medium` (the factory raises a lower rating):
+  a ticket that only adds tests around auth still needs the spec writer.
+- **Claims about the current code**: when the scope rests on how the code
+  behaves today, above all a test-only ticket ("add tests that it rejects X",
+  "doesn't accept Y"), check it before you accept: run the test's shape
+  against the current code, or read how the library behaves in the test
+  environment (a test mode, a mock, a disabled check). Never write that the
+  tests will pass without having checked. When they could only pass with a
+  production change, scope it as tests plus the smallest fix, and name the fix.
 
 ## Write intake.md
 

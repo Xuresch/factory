@@ -26,7 +26,8 @@ Stop and tell the user if any of these fail:
   Orca starts workers with (`~/.config/orca/codex-accounts/*/home/config.toml`,
   and `~/.codex/config.toml`): otherwise an update prompt at startup blocks
   every Codex worker until someone answers it. Update Codex deliberately
-  (`codex update` or `npm i -g @openai/codex`) between runs.
+  (`codex update` or `npm i -g @openai/codex`) between runs. `job claim`
+  warns about every Codex config that is missing the line.
 - Orca is installed and running, and the project is added to it
   (`<orca> repo list --json` lists its path; otherwise `<orca> repo add`).
   `<orca>` is `$ORCA_CLI_COMMAND` if set, else `orca-ide` on Linux, else `orca`.
@@ -185,6 +186,8 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
   in its own config at that moment. `builder.by_risk` picks the builder's model
   per risk; `model_presets` are short names for `job route-set`. Add each
   model you use to `prices_usd_per_mtok`, or its cost shows as unpriced.
+- `min_risk_for_surface`: a floor under intake's risk per surface (default
+  `security` → `medium`, so auth work never skips the spec writer).
 - Leave `concurrency`, `max_rounds`, `stages`, `builder`, `routing`,
   `surface_reviewers`, `cross_review` and `prices_usd_per_mtok` as they are
   unless the user asks.

@@ -41,7 +41,8 @@ Usage:
                                  stdin: one line of what they accepted (goes to accepted.md)
   job rewind <job> <stage>       back to intake, spec or build with your feedback (stdin)
   job route-set <job> k=v...     override for this job: builder=claude/opus, code=codex, ux=claude/sonnet
-  job finish <branch>            every ticket for a feature branch is done: sync, check, feature review, merge
+  job finish <branch> [--pr]     every ticket for a feature branch is done: sync, check, feature review, merge
+                                 (--pr: open the pull request and leave it open)
   job feature-review <branch>    start the reviewer of a whole feature branch (job finish says when)
   job feedback <job>             needs-human → build, with your feedback (stdin) as feedback-<k>.md
   job reject <job>               needs-info or needs-human → rejected, with your reason (stdin) as rejection.md
@@ -822,6 +823,24 @@ def codex_cost_usd(job):
 # ---- Sync: fields derived from files ---------------------------------------
 
 
+RISK_ORDER = ["low", "medium", "high"]
+
+
+def raise_risk(intake):
+    """A surface sets a floor under intake's risk (config.json
+    `min_risk_for_surface`, default security → medium): a job that touches
+    auth is never small and low-risk enough to skip the spec writer."""
+    floors = CONFIG.get("min_risk_for_surface", {"security": "medium"})
+    risk = intake.get("risk")
+    if risk not in RISK_ORDER:
+        return
+    for surface in intake["surfaces"]:
+        floor = floors.get(surface)
+        if floor in RISK_ORDER and RISK_ORDER.index(floor) > RISK_ORDER.index(risk):
+            intake["risk_raised"] = f"{risk} → {floor} (surface {surface}, config.json min_risk_for_surface)"
+            intake["risk"] = risk = floor
+
+
 def sync(job):
     d = job_dir(job["id"])
     intake = d / "intake.md"
@@ -836,6 +855,7 @@ def sync(job):
             "size": h.get("SIZE"),
             "split": h.get("SPLIT") == "yes",
         }
+        raise_risk(job["intake"])
     if job["round"]:
         rd = round_dir(job)
         gate = header(rd / "checks.md").get("GATE") if (rd / "checks.md").exists() else None
@@ -1116,15 +1136,29 @@ def sync_with_base(job):
     Writes round-<N>/base-sync.md; the builder reads it."""
     rd = round_dir(job)
     rd.mkdir(parents=True, exist_ok=True)
-    if git(job, "status", "--porcelain").stdout.strip():
-        (rd / "base-sync.md").write_text("SYNC: SKIPPED\n\nThe worktree has uncommitted changes.\n")
-        return
+    left = git(job, "status", "--porcelain").stdout.rstrip()
+    kept = ""
+    if left:
+        # A builder that stopped (BLOCKED, or cut off) can leave work uncommitted.
+        # Skipping the sync then hides a conflict until the merge: commit it.
+        git(job, "add", "-A")
+        res = git(job, "commit", "--no-verify", "-m",
+                  "factory: keep uncommitted work before syncing with the base",
+                  check=False)
+        if res.returncode != 0:
+            (rd / "base-sync.md").write_text(
+                f"SYNC: SKIPPED\n\nThe worktree has uncommitted changes the factory couldn't commit:\n\n"
+                f"```\n{left}\n{(res.stdout + res.stderr).strip()}\n```\n")
+            return
+        kept = (f"\nThe worktree had uncommitted changes; the factory committed them as "
+                f"{git(job, 'rev-parse', '--short', 'HEAD').stdout.strip()} before the sync:\n\n"
+                f"```\n{left}\n```\n\nKeep what belongs to the change, revert the rest.\n")
     if GITHUB:
         git(job, "fetch", "origin", jbase(job), check=False)
     ref = jref(job)
     before = git(job, "rev-parse", "HEAD").stdout.strip()
     ok, out, note = merge_base_into(job, ref, rd / "lockfile-regenerate.log")
-    note = f"\n{note}\n" if note else ""
+    note = (f"\n{note}\n" if note else "") + kept
     if not ok:
         (rd / "base-sync.md").write_text(
             f"SYNC: CONFLICT\n\n{job['branch']} conflicts with {ref}. Before anything else this round, "
@@ -1348,6 +1382,8 @@ def advance(job, stage):
             require(job["agents"], "route the job first: factory/bin/route " + job["id"])
             i = job["intake"]
             title += f" (risk {i['risk']}, surfaces: {', '.join(i['surfaces']) or 'none'})"
+            if i.get("risk_raised"):
+                print(f"{job['id']}: risk raised {i['risk_raised']}")
         if stage == "spec":  # the worktree first: if it fails, nothing was posted
             if GITHUB:
                 fetch_base(jbase(job))
@@ -1415,7 +1451,14 @@ def advance(job, stage):
                           + (section(d / "build.md", "Remaining") or "(no Remaining section)"))
         else:
             require(status == "STATUS: BLOCKED", f"build.md starts with {status!r}, not STATUS: BLOCKED")
-            escalate(job, "The builder is blocked:\n\n" + (section(d / "build.md", "Blocked") or "(no Blocked section)"))
+            why = "The builder is blocked:\n\n" + (section(d / "build.md", "Blocked") or "(no Blocked section)")
+            proposal = (section(d / "build.md", "Proposed change") or "").strip()
+            if proposal and proposal.lower().rstrip(".") != "none":
+                why += (f"\n\n## Proposed change\n{proposal}\n\nTo go with it, in one line: "
+                        f"`echo \"Approved: the builder's proposed change.\" | factory/bin/job feedback {job['id']}` "
+                        f"(the builder reads this decision.md with the feedback). Otherwise send your own "
+                        f"feedback, or `job reject {job['id']}`.")
+            escalate(job, why)
 
     elif old == "gate":
         checks = round_dir(job) / "checks.md"
@@ -2383,9 +2426,12 @@ def feature_hint(job):
                   f"run `factory/bin/job finish {jbase(job)}` to merge it into {BASE}")
 
 
-def cmd_finish(branch):
+def cmd_finish(branch, pr_only=False):
     """Merge a finished feature branch into base_branch: sync, full checks, merge.
-    Anything that doesn't go through cleanly is left for a human."""
+    With pr_only (`--pr`) the same steps, then the pull request stays open for a
+    human to merge. Anything that doesn't go through cleanly is left for a human."""
+    if pr_only and not GITHUB:
+        die("--pr opens a GitHub pull request; this repo uses local tickets")
     if branch == BASE:
         die(f"{branch} is base_branch; finish merges a feature branch into it")
     jobs, tickets = open_work_for(branch)
@@ -2450,6 +2496,13 @@ def cmd_finish(branch):
             number = prs[0]["number"] if prs else gh("pr", "create", "--base", BASE, "--head", branch,
                                                       "--title", f"Merge {branch}", "--body",
                                                       f"Every factory ticket for {branch} is done.").strip().rsplit("/", 1)[-1]
+            if pr_only:
+                url = f"#{number}"
+                report.write_text(f"FINISH: PR OPEN\n\n# {branch} → {BASE}\n\nSynced, checked"
+                                  + (", reviewed" if CONFIG.get("feature_review", True) else "")
+                                  + f"; pull request {url} opened at {now()}, not merged.\n")
+                print(f"{branch}: pull request {url} is open; merge it on GitHub")
+                return
             gh("pr", "merge", str(number), f"--{CONFIG['merge_method']}")
         else:
             merge_locally(branch, BASE, f"Merge {branch} into {BASE}", f"finish-{slug}")
@@ -2762,6 +2815,28 @@ def refresh_claim():
         write_claim(c)
 
 
+def update_prompt_warnings():
+    """Codex homes that ask about an update on startup: a worker launched into
+    that prompt waits for a keypress forever. One line per home, or []."""
+    if not any('"codex"' in json.dumps(v) for v in CONFIG.values() if isinstance(v, dict)):
+        return []
+    homes = [Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")]
+    homes += sorted((Path.home() / ".config" / "orca" / "codex-accounts").glob("*/home"))
+    out = []
+    for home in homes:
+        f = home / "config.toml"
+        if not home.exists():
+            continue
+        try:
+            text = f.read_text() if f.exists() else ""
+        except OSError:
+            continue
+        if not re.search(r"(?m)^\s*check_for_update_on_startup\s*=\s*false\b", text):
+            out.append(f"warning: {f} doesn't set `check_for_update_on_startup = false`: a Codex worker can "
+                       "hang on the update prompt (agent-update-prompt). Add the line (top level) before starting workers")
+    return out
+
+
 def cmd_claim(args):
     """Claim the run for this session, show who holds it, or release it."""
     run_id = None
@@ -2811,6 +2886,8 @@ def cmd_claim(args):
              "started": old.get("started") or now(), "seen": time.time()}
     write_claim(claim)
     print(f"claimed: {describe_claim(claim)}{took}")
+    for line in update_prompt_warnings():
+        print(line)
     if c and not mine and c.get("run") and not run_id:
         print(f"the last orchestrator's workers report to Orca run {c['run']}: bind this session to it with "
               f"`<orca> orchestration run-use --id {c['run']}`, then `job claim --run {c['run']}`")
@@ -3921,8 +3998,8 @@ def main(argv):
             cmd_rewind(resolve(args[0]), args[1], sys.stdin.read())
         elif cmd == "route-set" and len(args) >= 2:
             cmd_route_set(resolve(args[0]), args[1:])
-        elif cmd == "finish" and len(args) == 1:
-            cmd_finish(args[0])
+        elif cmd == "finish" and len([a for a in args if a != "--pr"]) == 1:
+            cmd_finish(next(a for a in args if a != "--pr"), pr_only="--pr" in args)
         elif cmd == "feature-review" and len(args) == 1:
             cmd_feature_review(args[0])
         elif cmd == "approve" and len(args) == 1:

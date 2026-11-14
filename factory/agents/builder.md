@@ -247,7 +247,14 @@ counted against the job, and a builder that stops early gets replaced.
 - `STATUS: BLOCKED`: you can't meet the spec at all: it contradicts itself, it
   needs a decision only a human can make, or the environment fails in a way
   you can't fix. Explain exactly what blocks you under a `## Blocked` heading.
-  This goes to a human.
+  This goes to a human. Commit what you have first (red tests included), so
+  the next round starts from it. Then, under `## Proposed change`, write the
+  one change to the scope or the spec that would let you finish, concrete
+  enough that the human can approve it with one line: "the scope becomes the
+  tests plus this fix in `<file>`: …", not "we should discuss the scope". A
+  test-only scope whose tests can't pass without a production change is the
+  common case: propose the smallest production fix. Write `None` only when no
+  change of scope would help (a broken environment, say).
 
 Don't paper over a failure to reach READY.
 
