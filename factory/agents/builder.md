@@ -194,14 +194,24 @@ as a reviewer would, and fix what you find:
   code, mysterious names, speculative generality, and the rest). Keep it
   quick: the code reviewer does the full standards review.
 
-Then, when your prompt names a `Pre-review:` command (`codex review --base
-<base>`, say), run it in the worktree after your last commit and wait for it;
-it reads the whole branch and takes minutes. It is a second pair of eyes
-that doesn't know the spec: fix every finding that is a real bug in your
-change (a P0 or P1 above all), commit, and push. Skip a finding that is wrong,
-outside your diff, or contradicts the spec, and say why. Don't run it again
-after the fixes, and don't let it widen the scope. When the round only merged
-the base and changed nothing else, you may skip it.
+Then, when your prompt names `Pre-review:` commands, run each one in the
+worktree after your last commit and wait for it. They are a second pair of
+eyes that doesn't know the spec. Don't run them again after the fixes, and
+don't let them widen the scope. When the round only merged the base and
+changed nothing else, you may skip them.
+
+- `codex review --base <base>` reads the whole branch and takes a minute or
+  more. Fix every finding that is a real bug in your change (a P0 or P1 above
+  all). Skip a finding that is wrong, outside your diff, or contradicts the
+  spec, and say why.
+- `fallow audit --base <base> --format json --quiet` (TypeScript and
+  JavaScript) takes seconds; exit 1 only means it has findings. Look only at
+  findings with `"introduced": true`: your change caused them. Remove dead
+  code and duplication you introduced. For complexity, simplify a function you
+  wrote when that stays inside the spec (extract a helper, return early);
+  otherwise name it and leave it. Inherited findings are not yours.
+
+Commit and push the fixes.
 
 Record it in build.md under `## Self-review`, two to five lines: what you
 checked and what you changed because of it. With a pre-review, add one line

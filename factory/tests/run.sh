@@ -299,6 +299,13 @@ t_pre_review_before_ready() {
   check "off: no pre-review" "$(grep -c 'Pre-review' "$SPECS")" "0"
 }
 
+t_pre_review_list() {
+  new_repo prereviewlist; ticket 01 One; commit_all
+  builder_cfg pre_review '["codex review --base {base}", "fallow audit --base {base}"]'
+  local id; id=$(to_build 01 low none); J start "$id" builder >/dev/null
+  check "every command" "$(cat "$SPECS")" "Pre-review: \`codex review --base master\` and \`fallow audit --base master\`."
+}
+
 t_job_start_routes_agents() {
   new_repo routing; ticket 01 One; commit_all
   local id; id=$(to_build 01 medium "ui, security"); J start "$id" builder >/dev/null

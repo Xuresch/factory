@@ -189,8 +189,13 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
 - `builder.ui_fixes_before_fallback` (default 2): how many rounds the default
   builder gets to carry out the UX/UI reviewers' findings before the fallback
   builder takes over. The last round a job has always goes to the fallback.
-- `builder.pre_review` (default `codex review --base {base}`): a review the
-  builder runs on its own branch before READY, `{base}` being the job's base.
+- `builder.pre_review` (default `["codex review --base {base}"]`): the
+  commands the builder runs on its own branch before READY, `{base}` being
+  the job's base. In a TypeScript or JavaScript repo with `fallow` installed,
+  add `"fallow audit --base {base} --format json --quiet"`: the builder then
+  cleans up the dead code, duplication and complexity its change introduced.
+  Fallow is advice here, not a gate; a repo that wants a hard rule puts a
+  `fallow` command in `checks.sh`.
   It catches plain bugs before the reviewers, so a code review that would ask
   for changes doesn't cost a round. It doesn't replace the code review: it
   knows neither the spec nor the repo's conventions. The builder fixes the
