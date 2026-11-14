@@ -134,15 +134,20 @@ factory/bin/dashboard
 ```
 
 Open <http://127.0.0.1:8000/dashboard.html>. It serves `factory/` and, read-only,
-local tickets in `.scratch/`, on this machine only. Each job is a card with its issue
-and PR, a row of gate and review chips per round, its risk, cost and
-time. Click a card to read every file the job wrote; each one opens with a
-short summary of what happened in that step. To see the example
+local tickets in `.scratch/`, on this machine only. The board shows, top to bottom:
+the jobs waiting on you, the running jobs with their place in the pipeline and how
+long they've been in their stage, and the finished jobs as a searchable list with one
+dot per round (red: gate failed, orange: review asked for changes, green: passed),
+grouped by day or by feature branch. Click a job to read every file it wrote; each one
+opens with a short summary of what happened in that step. To see the example
 jobs, copy `examples/jobs/` to `factory/jobs/` first.
 
-Cost is the API-equivalent price of each job's Claude workers, read from
-Claude Code's transcripts. Codex workers aren't counted. On a subscription plan
-it shows where the spend goes, not what you're billed.
+Costs shows the jobs started in the last 7, 30 or 90 days, or all of them: a bar per
+job split by role (per day or week once there are more than 60), the trend over the
+merged jobs, mean cost by risk and size, spend by role and model, and what the cache
+saved. Cost is the API-equivalent price of each job's Claude and Codex workers, read
+from their session files and priced with `prices_usd_per_mtok`. On a subscription
+plan it shows where the spend goes, not what you're billed.
 
 ## The example jobs
 

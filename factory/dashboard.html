@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Software Factory</title>
+
 <style>
   :root {
     --bg: #14151b;
@@ -50,26 +51,8 @@
   }
 
   /* Board */
-  .board {
-    display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 12px;
-    padding: 20px 32px 40px; align-items: start;
-  }
-  .col { min-width: 0; }
-  .col-head {
-    display: flex; align-items: center; gap: 8px; padding: 0 2px 10px;
-    border-bottom: 1px solid var(--line); margin-bottom: 12px; position: relative;
-  }
-  .col-head h2 { margin: 0; font-size: 13px; font-weight: 600; }
-  .col-head .who { font-size: 11px; color: var(--faint); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .col-head .count {
-    margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--muted);
-  }
-  .col:not(:last-child):not(:nth-last-child(2)) .col-head::after {
-    content: "›"; position: absolute; right: -10px; top: -2px; color: var(--faint); font-size: 16px;
-  }
-  .col.human .col-head { border-bottom-color: color-mix(in srgb, var(--human) 55%, transparent); }
-  .col.human h2 { color: var(--human); }
-  .col.merged-col h2 { color: var(--merged); }
+  .board { padding: 20px 32px 40px; }
+  .board[hidden] { display: none; }
   .empty { color: var(--faint); font-size: 12px; padding: 4px 2px; }
 
   /* Cards */
@@ -142,11 +125,11 @@
 
   /* Drawer */
   .scrim {
-    position: fixed; inset: 0; background: rgba(5, 6, 10, .55);
+    position: fixed; inset: 0; z-index: 30; background: rgba(5, 6, 10, .55);
     opacity: 0; pointer-events: none; transition: opacity .2s;
   }
   .drawer {
-    position: fixed; top: 0; right: 0; bottom: 0; width: min(920px, 100vw);
+    position: fixed; top: 0; right: 0; bottom: 0; z-index: 31; width: min(920px, 100vw);
     background: var(--panel); border-left: 1px solid var(--line);
     display: grid; grid-template-rows: auto 1fr; transform: translateX(100%);
     transition: transform .25s ease;
@@ -246,6 +229,7 @@
   .tile .k { color: var(--muted); font-size: 12px; }
   .tile .s { color: var(--faint); font-size: 11px; font-family: var(--mono); }
   .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(560px, 1fr)); gap: 0 28px; }
+  .grid2 > * { min-width: 0; }
   .costs-view table.costs th, .costs-view table.costs td { white-space: nowrap; }
   .md table.costs th[data-sort] { cursor: pointer; user-select: none; }
   .md table.costs th[data-sort].on { color: var(--active); }
@@ -261,14 +245,108 @@
     display: flex; gap: 20px; flex-wrap: wrap;
   }
 
+  /* Sections and the done list */
+  .sec-h { display: flex; align-items: baseline; gap: 10px; margin: 0 0 12px; }
+  .sec-h h2 { margin: 0; font-size: 13px; font-weight: 600; }
+  .sec-h .count { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .sec-h .tools { margin-left: auto; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .seg-btn { background: none; border: 1px solid var(--line); color: var(--muted); border-radius: 6px;
+    padding: 2px 9px; font-size: 12px; cursor: pointer; }
+  .seg-btn.on { color: var(--text); background: var(--card); border-color: var(--muted); }
+  .search { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; color: var(--text);
+    padding: 3px 9px; font: 12px var(--mono); width: 180px; }
+  .tag { font-family: var(--mono); font-size: 10.5px; color: var(--merged); background: color-mix(in srgb, var(--merged) 12%, transparent);
+    padding: 1px 6px; border-radius: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
+  .rdots { display: inline-flex; gap: 3px; align-items: center; }
+  .rd { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--faint); }
+  .rd.pass { background: var(--pass); } .rd.changes { background: var(--changes); } .rd.fail { background: var(--human); }
+  .rd.human { background: none; box-shadow: inset 0 0 0 2px var(--human); } .rd.live { background: var(--active); animation: pulse 1.6s infinite; }
+  .rd.muted { background: var(--faint); }
+  .risk-high { color: var(--human); } .risk-medium { color: var(--changes); } .risk-low { color: var(--muted); }
+  .day { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); margin: 14px 0 4px; }
+  .drow { display: grid; grid-template-columns: 8px 32px minmax(0, 1fr) auto auto 56px 62px 52px; gap: 10px; align-items: center;
+    padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .drow:hover { background: var(--card); }
+  .drow .dt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+  .drow:hover .dt { color: var(--text); }
+  .drow .n { text-align: right; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+  .drow > span:nth-child(6) { font-family: var(--mono); font-size: 11px; }
+  .sd { width: 8px; height: 8px; border-radius: 2px; background: var(--merged); }
+  .sd.rejected { background: var(--faint); }
+  .drow.rejected .dt { text-decoration: line-through; }
+  .more { background: none; border: 0; color: var(--active); font: 12px var(--mono); cursor: pointer; padding: 8px 10px; }
+  .calm { color: var(--faint); font-size: 13px; padding: 10px 0; }
+
+  /* Needs you, running */
+  .b-sec { margin-bottom: 34px; }
+  .attn { border: 1px solid color-mix(in srgb, var(--human) 45%, var(--line)); border-radius: 12px; padding: 14px 16px 6px;
+    background: color-mix(in srgb, var(--human) 5%, var(--bg)); }
+  .attn .sec-h h2 { color: var(--human); }
+  .attn.calm-box { border-color: var(--line); background: none; padding: 10px 16px; }
+  .attn-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
+  .prow { display: grid; grid-template-columns: minmax(220px, 1.2fr) minmax(360px, 2fr) minmax(170px, .8fr); gap: 20px; align-items: center;
+    background: var(--card); border: 1px solid color-mix(in srgb, var(--active) 30%, var(--line)); border-radius: 10px;
+    padding: 14px 16px; margin-bottom: 8px; cursor: pointer; }
+  .prow:hover { background: var(--card-hover); }
+  .segs { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
+  .seg { height: 6px; border-radius: 3px; background: var(--line); position: relative; }
+  .seg span { position: absolute; top: 9px; left: 0; font-size: 10px; color: var(--faint); font-family: var(--mono); }
+  .seg.done { background: color-mix(in srgb, var(--active) 45%, var(--line)); }
+  .seg.skip { background: repeating-linear-gradient(45deg, var(--line) 0 3px, transparent 3px 6px); }
+  .seg.cur { background: var(--active); animation: breathe 1.6s infinite; }
+  .seg.cur span { color: var(--active); font-weight: 600; }
+  .pnow { margin-top: 26px; font: 11.5px var(--mono); color: var(--muted); }
+  .pnow b { color: var(--text); font-weight: 600; }
+  .pside .meta { margin-top: 8px; }
+
+  /* Costs view */
+  .cv h2 { margin: 30px 0 4px; }
+  .cv .sub { color: var(--faint); font-size: 12px; margin: 0 0 12px; }
+  .tile.click { cursor: pointer; } .tile.click:hover { background: var(--card-hover); }
+  .tile .k2 { color: var(--text); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .up { color: var(--changes); } .down { color: var(--pass); }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+  .chart { position: relative; height: 240px; margin: 0 92px 0 44px; border-bottom: 1px solid var(--muted); }
+  .chart .gl { position: absolute; left: 0; right: 0; border-top: 1px solid var(--line); }
+  .chart .gl span { position: absolute; right: calc(100% + 8px); top: -8px; font: 10.5px var(--mono); color: var(--faint); }
+  .chart .med { position: absolute; left: 0; right: 0; border-top: 1px dashed var(--text); opacity: .55; z-index: 1; pointer-events: none; }
+  .chart .med span { position: absolute; left: calc(100% + 8px); top: -8px; font: 10.5px/1.3 var(--mono); color: var(--text); white-space: pre; }
+  .bars { position: absolute; inset: 0; display: flex; align-items: flex-end; gap: 4px; }
+  .bcol { flex: 1; height: 100%; display: flex; align-items: flex-end; cursor: pointer; position: relative; }
+  .bcol:hover .bstack { filter: brightness(1.25); }
+  .bstack { width: 100%; display: flex; flex-direction: column-reverse; gap: 2px; }
+  .bstack i { display: block; min-height: 0; }
+  .bstack i:last-child { border-radius: 4px 4px 0 0; }
+  .bx { position: absolute; top: calc(100% + 5px); left: 50%; transform: translateX(-50%); font: 10px var(--mono); color: var(--faint); }
+  .cv .grid2 { margin-top: 10px; }
+  .heat { border-collapse: separate; border-spacing: 3px; font-size: 12px; }
+  .heat th { font-weight: 500; color: var(--muted); padding: 4px 8px; text-align: left; border: 0; font-size: 11.5px; }
+  .heat td { border: 0; border-radius: 6px; padding: 10px 12px; min-width: 92px; font-family: var(--mono); font-size: 12px; }
+  .heat td small { display: block; color: var(--text); opacity: .75; font-size: 10.5px; }
+  .tag.notag { background: none; }
+  .rangebar { margin-bottom: 16px; }
+  .bx { white-space: nowrap; }
+  .cv .sub { color: var(--faint); font-size: 12px; margin: 0 0 12px; line-height: 1.5; }
+  .heat td.nil { color: var(--faint); background: none; }
+  .trend svg { width: 100%; height: auto; display: block; }
+  details.old { margin-top: 34px; border-top: 1px solid var(--line); padding-top: 14px; }
+  details.old summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  #tip { position: fixed; z-index: 50; pointer-events: none; background: #0d0e12; border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 10px; font: 11.5px/1.55 var(--mono); color: var(--text); white-space: pre; display: none; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+
   @media (max-width: 1100px) {
-    .board { grid-template-columns: repeat(4, minmax(0, 1fr)); row-gap: 28px; }
-    .col-head::after { display: none; }
+    .prow { grid-template-columns: 1fr; gap: 12px; }
+    .chart { margin-right: 0; }
+    .chart .med span { left: auto; right: 0; top: -30px; }
   }
   @media (max-width: 640px) {
     header { padding: 20px 16px 4px; }
     .banner { margin: 12px 16px 0; }
-    .board { grid-template-columns: 1fr; padding: 16px 16px 32px; }
+    .board { padding: 16px 16px 32px; }
+    .sec-h { flex-wrap: wrap; } .search { width: 100%; }
+    .drow { grid-template-columns: 8px 32px minmax(0, 1fr) auto 56px; }
+    .drow .tag, .drow > span:nth-child(6), .drow > span:nth-child(8) { display: none; }
     .costs-view { padding: 16px 16px 32px; }
     .grid2 { grid-template-columns: 1fr; }
     footer { padding: 0 16px 24px; }
@@ -317,19 +395,12 @@
   </aside>
 </div>
 
+<div id="tip"></div>
+
 <script>
 const POLL_MS = 2000
-const COLUMNS = [
-  { label: 'Intake', who: 'intake · claude', stages: ['intake', 'needs-info'] },
-  { label: 'Spec', who: 'spec-writer · claude', stages: ['spec'] },
-  { label: 'Build', who: 'builder · codex → claude on UI · gate', stages: ['build', 'gate'] },
-  { label: 'Review', who: 'routed reviewers', stages: ['review'] },
-  { label: 'Approve', who: 'approver · merge', stages: ['approve', 'merging'] },
-  { label: 'Needs human', who: 'you', stages: ['needs-human', 'paused'], cls: 'human' },
-  { label: 'Done', who: 'merged · rejected', stages: ['merged', 'rejected'], cls: 'merged-col' },
-]
-const STAGES = new Set(COLUMNS.flatMap((c) => c.stages))
 const LIVE = new Set(['intake', 'spec', 'build', 'gate', 'review', 'approve', 'merging'])
+const STAGES = new Set([...LIVE, 'needs-info', 'needs-human', 'paused', 'merged', 'rejected'])
 const SHORT = { code: 'code', ux: 'ux', ui: 'ui', security: 'sec' }
 
 const $ = (id) => document.getElementById(id)
@@ -456,29 +527,18 @@ async function render() {
   if (costsView) {
     const html = costsPage()
     if (html !== lastCosts) { lastCosts = html; $('costsview').innerHTML = html }
-  }
-  const problems = []
-  const cards = new Map(COLUMNS.map((c) => [c, []]))
-  for (const job of jobs) {
-    if (!STAGES.has(job.stage)) { problems.push(`Job ${job.id} has unknown stage "${job.stage}"`); continue }
-    const rounds = []
-    for (let n = 1; n <= job.round; n++) rounds.push(roundRow(job, n, await roundVerdicts(job, n)))
-    cards.get(COLUMNS.find((c) => c.stages.includes(job.stage))).push(card(job, rounds))
-  }
-  // Newest first within a column.
-  const html = COLUMNS.map((c) => `
-    <section class="col ${c.cls || ''}">
-      <div class="col-head">
-        <h2>${c.label}</h2><span class="who">${c.who}</span>
-        <span class="count">${cards.get(c).length || ''}</span>
-      </div>
-      ${cards.get(c).reverse().join('') || '<div class="empty">—</div>'}
-    </section>`).join('')
-  const banner = problems.map((p) => `<div class="banner">${esc(p)}</div>`).join('')
-  if (html + banner !== lastRender) {
-    lastRender = html + banner
-    $('board').innerHTML = html
-    $('banner').innerHTML = banner
+  } else {
+    const banner = jobs.filter((j) => !STAGES.has(j.stage))
+      .map((j) => `<div class="banner">${esc(`Job ${j.id} has unknown stage "${j.stage}"`)}</div>`).join('')
+    const html = await boardPage()
+    if (html + banner !== lastRender) {
+      // Keep the cursor in the search box across a re-render.
+      const focus = document.activeElement?.id === 'q' ? $('q').selectionStart : null
+      lastRender = html + banner
+      $('board').innerHTML = html
+      $('banner').innerHTML = banner
+      if (focus !== null && $('q')) { $('q').focus(); $('q').setSelectionRange(focus, focus) }
+    }
   }
   const running = jobs.filter((j) => LIVE.has(j.stage)).length
   const cost = jobs.reduce((sum, j) => sum + Number(j.cost_usd), 0)
@@ -668,7 +728,7 @@ function costTable(job) {
     <p class="note">API-equivalent at factory/config.json prices. A builder keeps one session across rounds, so its row covers every round. Input is uncached input plus cache writes.</p>`
 }
 
-// ---- Costs view ----------------------------------------------------------
+// ---- Costs tables (every job, under "All tables") -------------------------
 
 const WAIT = new Set(['needs-human', 'paused', 'needs-info'])
 const money = (n) => `$${Number(n || 0).toFixed(2)}`
@@ -712,7 +772,7 @@ function tokenTable(title, groups, total, label) {
     <th class="n">cost</th><th class="n">share</th></tr></thead><tbody>${body}</tbody></table></div>`
 }
 
-function costsPage() {
+function costsTables() {
   if (!jobs.length) return '<p class="note">No jobs yet.</p>'
   const rows = jobs.flatMap((j) => (j.cost_breakdown || []).map((r) => ({ ...r, job: j.id })))
   const total = jobs.reduce((s, j) => s + Number(j.cost_usd || 0), 0)
@@ -951,6 +1011,340 @@ function markdown(src) {
   }
   return html
 }
+
+// ---- Board: what needs you, what's running, then a compact history -------
+
+const ATTN = new Set(['needs-human', 'paused', 'needs-info'])
+const FINISHED = new Set(['merged', 'rejected'])
+const TRACK = [['intake', 'intake'], ['spec', 'spec'], ['build', 'build'], ['gate', 'gate'], ['review', 'review'], ['approve', 'approve'], ['merging', 'merge']]
+const ui = { filter: 'all', q: '', group: 'day', limit: 0, old: false, range: '30d', per: 'auto' }
+for (const k of ['range', 'per']) { const v = new URLSearchParams(location.search).get(k); if (v) ui[k] = v }
+
+const feature = (j) => (j.base && !/^(main|master)$/.test(j.base) ? j.base : null)
+const numOf = (j) => j.id.split('-')[0]
+
+function since(j) {
+  const h = j.history || []
+  const at = h.length ? Date.parse(h[h.length - 1].at) : Date.parse(j.started)
+  return mins(Date.now() - at)
+}
+
+function who(j) {
+  const b = j.agents?.builder
+  if (j.stage === 'build') return b ? `${b.agent || ''} ${b.model || b}`.trim() : 'builder'
+  if (j.stage === 'review') return Object.keys(j.agents?.reviewers || {}).join(' · ')
+  if (j.stage === 'gate') return 'checks.sh'
+  return { intake: 'intake', 'needs-info': 'author', spec: 'spec-writer', approve: 'approver', merging: 'merge' }[j.stage] || ''
+}
+
+// One dot per round, read from job.history: a round that led to another round either
+// failed the gate (no review in it) or got CHANGES from a reviewer.
+function roundDots(j) {
+  const h = j.history || []
+  const out = []
+  for (let n = 1; n <= j.round; n++) {
+    let cls, label
+    if (n < j.round) {
+      const reviewed = h.some((e) => e.round === n && e.stage === 'review')
+      cls = reviewed ? 'changes' : 'fail'; label = reviewed ? 'review asked for changes' : 'gate failed'
+    } else if (['merged', 'approve', 'merging'].includes(j.stage)) { cls = 'pass'; label = 'passed' }
+    else if (j.stage === 'needs-human' || j.stage === 'paused') { cls = 'human'; label = 'went to you' }
+    else if (j.stage === 'rejected') { cls = 'muted'; label = 'rejected' }
+    else { cls = 'live'; label = 'running' }
+    out.push(`<i class="rd ${cls}" data-tip="R${n}: ${label}"></i>`)
+  }
+  return `<span class="rdots">${out.join('')}</span>`
+}
+
+function dayKey(j) { return new Date(j.ended || j.started).toDateString() }
+function dayLabel(key) {
+  const d = new Date(key), today = new Date(); today.setHours(0, 0, 0, 0)
+  const diff = Math.round((today - d) / 864e5)
+  return diff === 0 ? 'Today' : diff === 1 ? 'Yesterday' : d.toLocaleDateString([], { weekday: 'short', day: '2-digit', month: '2-digit' })
+}
+
+function doneRow(j) {
+  const f = feature(j)
+  const risk = j.intake?.risk || ''
+  return `<div class="drow ${esc(j.stage)}" data-job="${esc(j.id)}" tabindex="0">
+    <span class="sd ${esc(j.stage)}" data-tip="${esc(j.stage)}"></span><span class="num">${esc(numOf(j))}</span>
+    <span class="dt" title="${esc(j.title)}">${esc(j.title)}</span>
+    ${f ? `<span class="tag" title="${esc(f)}">${esc(f.replace(/^feature\//, ''))}</span>` : '<span class="tag notag"></span>'}
+    ${roundDots(j)}<span class="risk-${esc(risk)}">${esc(risk)}</span>
+    <span class="n">${money(j.cost_usd)}</span><span class="n">${elapsed(j)}</span></div>`
+}
+
+function doneSection() {
+  const all = jobs.filter((j) => FINISHED.has(j.stage))
+  let list = all.filter((j) => ui.filter === 'all' || j.stage === ui.filter)
+  const q = ui.q.trim().toLowerCase()
+  if (q) list = list.filter((j) => `${j.id} ${j.title} ${j.base || ''} #${j.issue} #${j.pr}`.toLowerCase().includes(q))
+  list.sort((a, b) => String(b.ended || b.started).localeCompare(String(a.ended || a.started)))
+  const limit = ui.limit || 12
+  const shown = q ? list : list.slice(0, limit)
+  const groups = new Map()
+  for (const j of shown) {
+    const k = ui.group === 'feature' ? (feature(j) || 'main') : dayKey(j)
+    if (!groups.has(k)) groups.set(k, [])
+    groups.get(k).push(j)
+  }
+  const body = [...groups].map(([k, js]) => {
+    const label = ui.group === 'feature' ? k : dayLabel(k)
+    const cost = js.reduce((s, j) => s + Number(j.cost_usd || 0), 0)
+    return `<div class="day">${esc(label)} · ${js.length} · ${money(cost)}</div>${js.map(doneRow).join('')}`
+  }).join('')
+  const n = (s) => all.filter((j) => j.stage === s).length
+  const btn = (key, val, label) => `<button class="seg-btn ${ui[key] === val ? 'on' : ''}" data-ui="${key}" data-val="${val}">${label}</button>`
+  const tools = `<div class="tools">
+      <input class="search" id="q" placeholder="search title, #, feature" value="${esc(ui.q)}">
+      ${btn('filter', 'all', 'all')}${btn('filter', 'merged', `merged ${n('merged')}`)}${btn('filter', 'rejected', `rejected ${n('rejected')}`)}
+      <span style="width:8px"></span>${btn('group', 'day', 'by day')}${btn('group', 'feature', 'by feature')}</div>`
+  const rest = list.length - shown.length
+  const more = (rest > 0 ? `<button class="more" data-ui="limit" data-val="${limit + 50}">${rest > 50 ? `show 50 more of ${rest}` : `show ${rest} more`} →</button>` : '')
+    + (ui.limit ? `<button class="more" data-ui="limit" data-val="0">show fewer</button>` : '')
+  return `<div class="sec-h"><h2>Done</h2><span class="count">${all.length}</span>${tools}</div>
+    ${body || '<div class="calm">Nothing matches.</div>'}${more}`
+}
+
+async function currentRound(j) {
+  return j.round ? [roundRow(j, j.round, await roundVerdicts(j, j.round))] : []
+}
+
+async function boardPage() {
+  const attn = jobs.filter((j) => ATTN.has(j.stage))
+  const live = jobs.filter((j) => LIVE.has(j.stage))
+  const attnCards = await Promise.all(attn.map(async (j) => card(j, await currentRound(j))))
+  const attnHtml = attn.length
+    ? `<section class="b-sec attn"><div class="sec-h"><h2>Needs you</h2><span class="count">${attn.length}</span></div>
+        <div class="attn-grid">${attnCards.join('')}</div></section>`
+    : `<section class="b-sec attn calm-box"><span class="calm">✓ Nothing is waiting on you.</span></section>`
+  const rows = await Promise.all(live.map(async (j) => {
+    const cur = TRACK.findIndex(([s]) => s === j.stage)
+    const skipped = j.spec_skipped || (cur > 1 && (j.history || []).length && !(j.history || []).some((e) => e.stage === 'spec'))
+    const segs = TRACK.map(([s, l], i) =>
+      `<div class="seg ${i < cur ? 'done' : i === cur ? 'cur' : ''} ${s === 'spec' && skipped ? 'skip' : ''}"><span>${l}</span></div>`).join('')
+    const f = feature(j)
+    const risk = j.intake?.risk
+    return `<article class="prow" data-job="${esc(j.id)}" tabindex="0">
+      <div><div class="card-top"><span class="pulse"></span><span class="num">${esc(numOf(j))}</span>
+        ${f ? `<span class="tag">${esc(f.replace(/^feature\//, ''))}</span>` : ''}</div>
+        <p class="feature">${esc(j.title)}</p><div class="links">${links(j)}</div></div>
+      <div><div class="segs">${segs}</div>
+        <div class="pnow"><b>${esc(j.stage)}</b>${j.round ? ` · round ${j.round}` : ''} · for ${since(j)} · ${esc(who(j))}</div></div>
+      <div class="pside"><div class="rounds">${(await currentRound(j)).join('')}</div>
+        <div class="meta">${risk ? `<span class="risk-${esc(risk)}">${esc(risk)}</span>` : ''}<span>${money(j.cost_usd)}</span><span>${elapsed(j)} total</span></div></div>
+    </article>`
+  }))
+  const liveHtml = `<section class="b-sec"><div class="sec-h"><h2>Running</h2><span class="count">${live.length}</span></div>
+    ${rows.join('') || '<div class="calm">Nothing running. Start with /factory run.</div>'}</section>`
+  return attnHtml + liveHtml + `<section class="b-sec">${doneSection()}</section>`
+}
+
+// ---- Costs view ----------------------------------------------------------
+
+let PRICES = null
+fetchText('config.json').then((t) => { PRICES = JSON.parse(t).prices_usd_per_mtok || null; lastCosts = ''; render() }).catch(() => {})
+
+// Eight roles folded to six series; colors validated for the dark card surface.
+const ROLE_GROUPS = [['builder', 'builder'], ['spec-writer', 'spec'], ['intake', 'intake'], ['reviewer-code', 'code review'], ['approver', 'approver'], ['other', 'ux · ui · security']]
+const ROLE_COLORS = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#0ca30c']
+function roleGroup(role) {
+  const r = String(role).replace(/-s\d+$/, '')
+  return ROLE_GROUPS.some(([k]) => k === r) ? r : 'other'
+}
+function priceOf(model) {
+  if (!PRICES || !model) return null
+  return PRICES[model] || PRICES[Object.keys(PRICES).find((k) => k.includes(model) || model.includes(k))] || null
+}
+function cacheSaving(r) {
+  const p = priceOf(r.model)
+  if (!p) return 0
+  const read = p.cache_read ?? p.cached_input ?? p.input
+  return (Number(r.cached_tokens || 0) * (p.input - read)) / 1e6
+}
+const median = (xs) => {
+  const s = [...xs].sort((a, b) => a - b)
+  return s.length ? (s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2) : 0
+}
+function niceStep(x) {
+  const p = 10 ** Math.floor(Math.log10(x || 1))
+  return [1, 2, 2.5, 5, 10].map((m) => m * p).find((s) => s >= x) || p * 10
+}
+const heatBg = (v, max) => `color-mix(in srgb, #3987e5 ${Math.round(12 + 70 * (max ? v / max : 0))}%, var(--card))`
+
+const RANGES = { '7d': 7, '30d': 30, '90d': 90, all: 0 }
+const segBtn = (key, val, label) => `<button class="seg-btn ${ui[key] === val ? 'on' : ''}" data-ui="${key}" data-val="${val}">${label}</button>`
+
+function rangeJobs() {
+  const days = RANGES[ui.range]
+  const cut = days ? Date.now() - days * 864e5 : 0
+  return jobs.filter((j) => Date.parse(j.started || 0) >= cut)
+}
+
+function costsPage() {
+  const js = rangeJobs()
+  const bar = `<div class="sec-h rangebar"><span class="count">${js.length} of ${jobs.length} jobs</span><div class="tools">
+    ${segBtn('range', '7d', '7 days')}${segBtn('range', '30d', '30 days')}${segBtn('range', '90d', '90 days')}${segBtn('range', 'all', 'all')}
+    <span style="width:10px"></span>${segBtn('per', 'auto', 'auto')}${segBtn('per', 'job', 'per job')}${segBtn('per', 'day', 'per day')}${segBtn('per', 'week', 'per week')}</div></div>`
+  return `<div class="cv">${bar}${js.length ? costsFor(js) : '<p class="note">No jobs started in this range.</p>'}
+    <details class="old" ${ui.old ? 'open' : ''} data-old><summary>All tables (every job)</summary>${costsTables()}</details></div>`
+}
+
+// Same as the page above, for the jobs in the chosen range (the parameter shadows the global).
+function costsFor(jobs) {
+  const rows = jobs.flatMap((j) => (j.cost_breakdown || []).map((r) => ({ ...r, job: j.id })))
+  const total = jobs.reduce((s, j) => s + Number(j.cost_usd || 0), 0)
+  const agent = (a) => jobs.reduce((s, j) => s + Number((j.cost_by_agent || {})[a] || 0), 0)
+  const merged = jobs.filter((j) => j.stage === 'merged').sort((a, b) => String(a.ended).localeCompare(String(b.ended)))
+  const mc = merged.map((j) => Number(j.cost_usd || 0))
+  const half = Math.floor(mc.length / 2)
+  const avg = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0)
+  const trend = half ? Math.round(100 * (avg(mc.slice(half)) / avg(mc.slice(0, half)) - 1)) : 0
+  const rework = jobs.filter((j) => j.round > 1)
+  const reworkCost = rework.reduce((s, j) => s + Number(j.cost_usd || 0), 0)
+  const saving = rows.reduce((s, r) => s + cacheSaving(r), 0)
+  const inTok = rows.reduce((s, r) => s + Number(r.input_tokens || 0), 0)
+  const cTok = rows.reduce((s, r) => s + Number(r.cached_tokens || 0), 0)
+  const t = new Map(jobs.map((j) => [j.id, times(j)]))
+  const wait = jobs.reduce((s, j) => s + t.get(j.id).wait, 0)
+  const top = [...jobs].sort((a, b) => b.cost_usd - a.cost_usd)[0]
+  const tile = (v, k, sub = '', extra = '') => `<div class="tile ${extra}"><div class="v">${v}</div><div class="k">${k}</div>${sub ? `<div class="s">${sub}</div>` : ''}</div>`
+  const tiles = `<div class="tiles">
+    ${tile(money(total), 'total', `claude ${money(agent('claude'))} · codex ${money(agent('codex'))}`)}
+    ${tile(money(median(mc)), 'median per merged job', half ? `later half <span class="${trend > 0 ? 'up' : 'down'}">${trend > 0 ? '+' : ''}${trend}%</span> vs earlier` : '')}
+    ${tile(`${pct(reworkCost, total)}%`, 'spent on jobs with rework', `${rework.length} of ${jobs.length} jobs needed >1 round`)}
+    ${tile(PRICES ? `~${money(saving)}` : '–', 'saved by the cache', `${pct(cTok, cTok + inTok)}% of input tokens were cache reads`)}
+    ${tile(mins(wait), 'waited on you', `across ${jobs.filter((j) => t.get(j.id).wait).length} jobs`)}
+    <div class="tile click" data-job="${esc(top.id)}"><div class="v">${money(top.cost_usd)}</div><div class="k">most expensive job</div><div class="k2">${esc(numOf(top))} · ${esc(top.title)}</div></div>
+  </div>`
+
+  // Chart 1: stacked bars by role. One per job while that stays readable (<= 60),
+  // then one per day (<= 90 days) or per week; empty days and weeks keep their slot.
+  const ordered = [...jobs].sort((a, b) => String(a.started).localeCompare(String(b.started)))
+  const spanDays = ordered.length ? (Date.parse(ordered[ordered.length - 1].started) - Date.parse(ordered[0].started)) / 864e5 : 0
+  const per = ui.per !== 'auto' ? ui.per : ordered.length <= 60 ? 'job' : spanDays <= 90 ? 'day' : 'week'
+  const startOf = (iso) => {
+    const d = new Date(iso); d.setHours(0, 0, 0, 0)
+    if (per === 'week') d.setDate(d.getDate() - ((d.getDay() + 6) % 7))
+    return d
+  }
+  const buckets = new Map()
+  if (per === 'job') {
+    for (const j of ordered) buckets.set(j.id, { jobs: [j], label: numOf(j) })
+  } else if (ordered.length) {
+    const end = startOf(ordered[ordered.length - 1].started)
+    for (let d = startOf(ordered[0].started); d <= end; d.setDate(d.getDate() + (per === 'week' ? 7 : 1))) {
+      buckets.set(d.getTime(), { start: d.getTime(), jobs: [], label: d.toLocaleDateString([], { day: '2-digit', month: '2-digit' }) })
+    }
+    for (const j of ordered) buckets.get(startOf(j.started).getTime())?.jobs.push(j)
+  }
+  const list = [...buckets.values()].map((b) => {
+    const by = new Map(ROLE_GROUPS.map(([k]) => [k, 0]))
+    for (const j of b.jobs) for (const r of j.cost_breakdown || []) by.set(roleGroup(r.role), by.get(roleGroup(r.role)) + Number(r.cost_usd || 0))
+    return { ...b, by, total: b.jobs.reduce((s, j) => s + Number(j.cost_usd || 0), 0) }
+  })
+  const maxC = Math.max(...list.map((b) => b.total), 0.01)
+  const step = niceStep(maxC / 4)
+  const ceil = Math.ceil(maxC / step) * step
+  const grid = []
+  for (let v = step; v <= ceil + 1e-9; v += step) grid.push(`<div class="gl" style="bottom:${(100 * v) / ceil}%"><span>$${v % 1 ? v.toFixed(1) : v}</span></div>`)
+  const med = median(list.filter((b) => b.jobs.length).map((b) => b.total))
+  const every = Math.ceil(list.length / 20)
+  const unit = { job: 'job', day: 'day', week: 'week' }[per]
+  const bars = list.map((b, i) => {
+    const roles = ROLE_GROUPS.filter(([k]) => b.by.get(k) > 0.005).map(([k, l]) => `  ${l.padEnd(19)}${money(b.by.get(k))}`).join('\n')
+    const j = b.jobs[0]
+    // The newest day or week is still filling up: say so, and draw it lighter.
+    const sofar = b.start !== undefined && i === list.length - 1 && Date.now() - b.start < (per === 'week' ? 7 : 1) * 864e5
+    const tip = per === 'job'
+      ? `${numOf(j)} · ${j.title}\n${money(j.cost_usd)} · ${j.round} round${j.round > 1 ? 's' : ''} · ${j.stage}\n${roles}`
+      : `${per === 'week' ? 'week of ' : ''}${b.label}${sofar ? ' (so far)' : ''} · ${b.jobs.length} job${b.jobs.length === 1 ? '' : 's'} · ${money(b.total)}\n${roles}`
+    const segs = ROLE_GROUPS.map(([k], n) => b.by.get(k) > 0 ? `<i style="flex-grow:${b.by.get(k)};background:${ROLE_COLORS[n]}"></i>` : '').join('')
+    const open = b.jobs.length === 1 ? `data-job="${esc(j.id)}"` : ''
+    return `<div class="bcol" ${open} data-tip="${esc(tip)}"><div class="bstack" style="height:${(100 * b.total) / ceil}%${sofar ? ';opacity:.55' : ''}">${segs}</div>${i % every ? '' : `<span class="bx">${esc(b.label)}</span>`}</div>`
+  }).join('')
+  const gap = list.length > 80 ? 1 : list.length > 40 ? 2 : 4
+  const legend = `<div class="legend">${ROLE_GROUPS.map(([, l], i) => `<span><i style="background:${ROLE_COLORS[i]}"></i>${l}</span>`).join('')}</div>`
+  const chart1 = `<h2>Cost per ${unit}</h2><p class="sub">${per === 'job'
+      ? 'Each bar is one job, oldest left, split by role. Hover for the breakdown, click to open the job.'
+      : `Each bar is one ${unit}, summed over the jobs started in it, split by role. Over 60 jobs the chart groups by ${unit} on its own; the buttons above override it.`}</p>
+    ${legend}<div class="chart">${grid.join('')}<div class="med" style="bottom:${(100 * med) / ceil}%"><span>median\n${money(med)}/${unit}</span></div><div class="bars" style="gap:${gap}px">${bars}</div></div>
+    <div style="height:26px"></div>`
+
+  // Chart 2: merged jobs in order, with a rolling mean whose window grows with the count.
+  const W = 640, H = 190, P = 30
+  const jStep = niceStep(Math.max(...mc, 0.01) / 3)
+  const jCeil = Math.ceil(Math.max(...mc, 0.01) / jStep) * jStep
+  const win = Math.max(5, Math.round(mc.length / 15))
+  const rad = mc.length > 80 ? 2.5 : mc.length > 40 ? 3.5 : 4.5
+  const xs = (i) => P + (mc.length > 1 ? (i * (W - 2 * P)) / (mc.length - 1) : (W - 2 * P) / 2)
+  const ys = (v) => H - P + 6 - ((H - 2 * P) * v) / jCeil
+  const roll = mc.map((_, i) => avg(mc.slice(Math.max(0, i - win + 1), i + 1)))
+  const path = roll.map((v, i) => `${i ? 'L' : 'M'}${xs(i).toFixed(1)},${ys(v).toFixed(1)}`).join('')
+  const dots = merged.map((j, i) => `<circle cx="${xs(i)}" cy="${ys(mc[i])}" r="${rad}" fill="var(--muted)" stroke="var(--bg)" stroke-width="${rad > 3 ? 2 : 1}"
+      data-job="${esc(j.id)}" data-tip="${esc(`${numOf(j)} · ${j.title}\n${money(mc[i])} · rolling mean ${money(roll[i])}`)}" style="cursor:pointer"/>`).join('')
+  const step2 = jStep, ceil2 = jCeil
+  const chart2 = `<div class="trend"><h2>Is it getting cheaper?</h2><p class="sub">Merged jobs in the order they finished; the line is the mean of the last ${win}.</p>
+    <svg viewBox="0 0 ${W} ${H}">${[step2, step2 * 2, step2 * 3].filter((v) => v <= ceil2).map((v) => `<line x1="${P}" x2="${W - P}" y1="${ys(v)}" y2="${ys(v)}" stroke="var(--line)"/><text x="${P - 6}" y="${ys(v) + 4}" fill="var(--faint)" font-size="10" text-anchor="end" font-family="monospace">$${v}</text>`).join('')}<line x1="${P}" x2="${W - P}" y1="${ys(0)}" y2="${ys(0)}" stroke="var(--muted)"/>
+      <path d="${path}" fill="none" stroke="#3987e5" stroke-width="2"/>${dots}
+      <text x="${W - P}" y="${ys(roll[roll.length - 1] || 0) - 8}" fill="var(--text)" font-size="11" text-anchor="end" font-family="monospace">${money(roll[roll.length - 1])}</text></svg></div>`
+
+  // Risk × size matrix.
+  const RISK = ['high', 'medium', 'low'], SIZE = ['small', 'medium', 'large']
+  const cell = (r, s) => jobs.filter((j) => (j.intake || {}).risk === r && (j.intake || {}).size === s)
+  const maxAvg = Math.max(...RISK.flatMap((r) => SIZE.map((s) => avg(cell(r, s).map((j) => Number(j.cost_usd || 0))))))
+  const matrix = `<div><h2>Risk × size</h2><p class="sub">Mean cost per job; darker is more expensive.</p><table class="heat"><tr><th></th>${SIZE.map((s) => `<th>${s}</th>`).join('')}</tr>
+    ${RISK.map((r) => `<tr><th class="risk-${r}">${r}</th>${SIZE.map((s) => {
+      const c = cell(r, s), a = avg(c.map((j) => Number(j.cost_usd || 0)))
+      return c.length ? `<td style="background:${heatBg(a, maxAvg)}" data-tip="${esc(`${r} risk · ${s}\n${c.length} jobs · total ${money(a * c.length)}\nmean rounds ${avg(c.map((j) => j.round)).toFixed(1)}`)}">${money(a)}<small>${c.length} job${c.length > 1 ? 's' : ''}</small></td>` : '<td class="nil">–</td>'
+    }).join('')}</tr>`).join('')}</table></div>`
+
+  // Role × model heatmap.
+  const models = [...new Set(rows.map((r) => `${r.agent} · ${shortModel(r.model)}`))]
+  const rm = new Map()
+  for (const r of rows) { const k = `${roleGroup(r.role)}|${r.agent} · ${shortModel(r.model)}`; rm.set(k, (rm.get(k) || 0) + Number(r.cost_usd || 0)) }
+  const maxRm = Math.max(...rm.values(), 0)
+  const roleModel = `<div><h2>Role × model</h2><p class="sub">Where the money goes, summed over all jobs.</p><table class="heat"><tr><th></th>${models.map((m) => `<th>${esc(m)}</th>`).join('')}</tr>
+    ${ROLE_GROUPS.map(([k, l]) => `<tr><th>${l}</th>${models.map((m) => {
+      const v = rm.get(`${k}|${m}`) || 0
+      return v ? `<td style="background:${heatBg(v, maxRm)}" data-tip="${esc(`${l} on ${m}\n${money(v)} · ${pct(v, total)}% of all`)}">${money(v)}<small>${pct(v, total)}%</small></td>` : '<td class="nil">–</td>'
+    }).join('')}</tr>`).join('')}</table></div>`
+
+  // Cache per model.
+  const cm = group(rows, (r) => `${r.agent} · ${shortModel(r.model)}`)
+  const cacheBody = cm.map((g) => {
+    const s = rows.filter((r) => `${r.agent} · ${shortModel(r.model)}` === g.key).reduce((a, r) => a + cacheSaving(r), 0)
+    return `<tr><td>${esc(g.key)}</td><td class="n">${tokens(g.input)}</td><td class="n">${tokens(g.cached)}</td><td class="n">${tokens(g.output)}</td>
+      <td class="n">${bar(pct(g.cached, g.cached + g.input))}</td><td class="n">${money(g.cost)}</td><td class="n">${PRICES ? `~${money(s)}` : '–'}</td></tr>`
+  }).join('')
+  const cache = `<h2>Cache</h2><p class="sub">What each model read from the cache, and roughly what it would have cost at the full input price.</p>
+    <table class="costs"><thead><tr><th>agent · model</th><th class="n">input</th><th class="n">cached</th><th class="n">output</th><th class="n">cache share</th><th class="n">cost</th><th class="n">saved</th></tr></thead><tbody>${cacheBody}</tbody></table>`
+
+  return `${tiles}${chart1}<div class="grid2">${chart2}${matrix}</div><div class="grid2">${roleModel}<div>${cache}</div></div>`
+}
+
+// ---- Board and costs controls, tooltips ---------------------------------
+
+document.addEventListener('click', (e) => {
+  const u = e.target.closest('[data-ui]')
+  if (u) {
+    const k = u.dataset.ui
+    ui[k] = k === 'limit' ? Number(u.dataset.val) : u.dataset.val
+    return render()
+  }
+})
+document.addEventListener('toggle', (e) => { if (e.target.matches?.('[data-old]')) ui.old = e.target.open }, true)
+document.addEventListener('input', (e) => { if (e.target.id === 'q') { ui.q = e.target.value; ui.limit = 0; render() } })
+const tip = $('tip')
+document.addEventListener('mousemove', (e) => {
+  const el = e.target.closest?.('[data-tip]')
+  if (!el) { tip.style.display = 'none'; return }
+  tip.textContent = el.dataset.tip
+  tip.style.display = 'block'
+  const x = Math.min(e.clientX + 14, innerWidth - tip.offsetWidth - 8)
+  const y = e.clientY + 16 + tip.offsetHeight > innerHeight ? e.clientY - tip.offsetHeight - 10 : e.clientY + 16
+  tip.style.left = `${x}px`; tip.style.top = `${y}px`
+})
 
 window.addEventListener('hashchange', () => render())
 poll()
