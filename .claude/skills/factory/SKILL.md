@@ -204,6 +204,11 @@ Each line is `<job>: <verb>: <what>`:
   nudge for a file it didn't write, a refusal it must fix).
 - `wait: <who> ...`: a worker is still on it, or a human or the issue's author
   has to act. Nothing to do; end your turn.
+- `wait: overlaps <job> (<file>)`: this job's spec names a file another
+  running job has changed, so its builder doesn't start yet (`job start
+  <id> builder` refuses with the same reason). It clears by itself once that
+  job merges or leaves build..merging: run `job next` again after the other
+  job moves. Don't work around it; config.json `overlap_wait` turns it off.
 - `wait: merge in progress since HH:MM (pid N)`: a `job merge` holds the job
   (its merge gate takes minutes). `job next`, `job queue` (a `wait` row) and
   `job summary` don't wait for it; other commands on that job say so and wait.
@@ -239,7 +244,7 @@ decision:
 **spec.** `factory/bin/job start <id> spec`. When it returns,
 `factory/bin/job advance <id> build` and go to **build**.
 
-**build.** Round 1: `factory/bin/job start <id> builder`. Later rounds:
+**build.** Round 1: `factory/bin/job start <id> builder` (unless `job next` says `wait: overlaps`). Later rounds:
 `factory/bin/job send <id> builder "<what this round is for>"`: the gate's
 `round-<N-1>/checks.md`, the reviews in `round-<N-1>/`, `feedback-<k>.md`, or
 `round-<N>/merge-back.md`. Every round, the first one and a resumed one too,
