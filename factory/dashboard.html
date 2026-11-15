@@ -510,6 +510,8 @@ async function loadJobs() {
     .map((a) => decodeURIComponent(a.getAttribute('href')))
     .filter((h) => h.endsWith('/'))
     .map((h) => h.slice(0, -1))
+    // _features/ and other _-prefixed folders hold factory state, not jobs
+    .filter((id) => !id.startsWith('_'))
     .sort()
   return Promise.all(ids.map(async (id) => JSON.parse(await fetchText(`jobs/${id}/job.json`))))
 }
