@@ -1367,7 +1367,8 @@ async function loadPlan() {
   try {
     const res = await fetch('/_subscriptions.json', { cache: 'no-store' })
     plan.data = res.ok ? await res.json() : null
-    plan.err = res.ok ? null : res.status === 404 ? 'missing' : `HTTP ${res.status}: ${await res.text()}`
+    plan.err = !res.ok ? (res.status === 404 ? 'old-server' : `HTTP ${res.status}: ${await res.text()}`)
+      : plan.data.configured === false ? 'missing' : null
   } catch (err) { plan.data = null; plan.err = err.message }
 }
 
@@ -1376,10 +1377,15 @@ const agentCost = (j, a) => Number(j.cost_by_agent ? j.cost_by_agent[a] || 0 : a
 const monthOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
 
 function planPage() {
+  if (plan.err === 'old-server') {
+    return `<h2>Subscription</h2><p class="note">The server behind this page doesn't serve this view yet: it was started
+      before the dashboard got it, or it isn't <code>factory/bin/dashboard</code>. Stop it (Ctrl+C) and start it again:</p>
+      <pre><code>factory/bin/dashboard ${esc(location.port || '8000')}</code></pre>
+      <p class="note">Board and Costs work either way; reload this page after the restart.</p>`
+  }
   if (plan.err === 'missing') {
     return `<h2>Subscription</h2><p class="note">Compare what the factory would have cost on the API with what you pay.
-      Create <code>~/.config/factory/subscriptions.json</code>, list every repo the factory runs in, and start the
-      dashboard with <code>factory/bin/dashboard</code> (plain <code>python3 -m http.server</code> can't read other repos):</p>
+      Create <code>${esc(plan.data.config)}</code> and list your plans and every repo the factory runs in, for example:</p>
       <pre><code>${esc(JSON.stringify({ subscriptions: [{ name: 'Claude Max 5x', agent: 'claude', usd_per_month: 100 },
         { name: 'ChatGPT Pro', agent: 'codex', usd_per_month: 200 }], projects: ['~/code/app', '~/code/api'] }, null, 2))}</code></pre>`
   }
