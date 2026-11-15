@@ -44,7 +44,10 @@ Usage:
   job finish <branch> [--pr]     every ticket for a feature branch is done: sync, check, feature review, merge
                                  (--pr: open the pull request and leave it open)
   job feature-review <branch>    start the reviewer of a whole feature branch (job finish says when)
-  job feedback <job>             needs-human → build, with your feedback (stdin) as feedback-<k>.md
+  job feedback <job> [--rule]    needs-human → build, with your feedback (stdin) as feedback-<k>.md
+                                 (--rule: it changes a product rule other tickets of the feature may
+                                 rely on; its first line also goes under `## Rule changes` in
+                                 factory/jobs/_features/<branch>-rules.md for the feature review)
   job reject <job>               needs-info or needs-human → rejected, with your reason (stdin) as rejection.md
   job agents <job> <json>        record the routed agent set (called by factory/bin/route)
   job start <job> <role> [text]  start <role>'s Orca worker: agent, model, worktree, brief and
@@ -2510,13 +2513,21 @@ def cmd_finish(branch, pr_only=False):
         run(["git", "fetch", "origin"])
     where = branch_worktree(branch)
     temp = None
-    if where is None:
+    kept = worktree_base() / f"_finish-{slug}"
+    # An earlier run's kept worktree has the branch checked out: it is still ours to update.
+    if where is None or Path(where).resolve() == kept.resolve():
         # Kept until the merge: the feature reviewer works in it.
-        temp = str(worktree_base() / f"_finish-{slug}")
+        temp = str(kept)
         if not Path(temp).exists():
             run(["git", "worktree", "add", temp, branch])
         if GITHUB:
-            run(["git", "merge", "--ff-only", f"origin/{branch}"], cwd=temp, check=False)
+            # Not --ff-only: a kept worktree holds the base merge of an earlier run, so a
+            # fast-forward fails and the checks and the review would judge a stale tip.
+            pulled = run(["git", "merge", "--no-edit", f"origin/{branch}"], cwd=temp, check=False)
+            if pulled.returncode != 0:
+                run(["git", "merge", "--abort"], cwd=temp, check=False)
+                stop("CONFLICT", f"The finish worktree {temp} conflicts with origin/{branch}:"
+                                 f"\n\n```\n{pulled.stdout.strip()}\n```")
         where = temp
     elif run(["git", "status", "--porcelain"], cwd=where).stdout.strip():
         stop("DIRTY", f"{branch} is checked out in {where} with uncommitted changes.")
@@ -2596,7 +2607,8 @@ def cmd_feature_review(branch):
     spec = (f"Feature branch: {branch}. Merges into: {BASE}. Main checkout: {REPO}. "
             f"Worktree: {state['worktree']}. Tip: {state['tip']}. Base: {ref_of(BASE)}. "
             f"Jobs folder: {JOBS}/. Write: {report_dir / (slug + '-review.md')}.\n\n"
-            f"Your brief is {brief}. Read it in full and follow it exactly. When you're done, "
+            + (f"Rule changes: {rule_changes_file(branch)}.\n\n" if rule_changes_file(branch).exists() else "")
+            + f"Your brief is {brief}. Read it in full and follow it exactly. When you're done, "
             "report with worker_done; its summary is the one line your brief names.")
     cmd = [orca_cli(), "orchestration", "worker-start", "--agent", entry["agent"]]
     if entry.get("model"):
@@ -3417,10 +3429,33 @@ def cmd_approve(job):
     cmd_merge(job)
 
 
-def cmd_feedback(job, text):
+def rule_changes_file(branch):
+    """The feature's rule changes. Not _features/<slug>.md: job finish rewrites that
+    whole file with its FINISH report."""
+    return JOBS / "_features" / f"{re.sub(r'[^\w-]', '-', branch)}-rules.md"
+
+
+def record_rule_change(job, text):
+    """`feedback --rule`: the feedback changes a product rule that other tickets of the
+    feature may rely on, so the feature reviewer checks its consequences across the branch."""
+    if jbase(job) == BASE:
+        print(f"{job['id']}: targets {BASE}, not a feature branch: no rule change recorded")
+        return
+    path = rule_changes_file(jbase(job))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    head = path.read_text() if path.exists() else f"# {jbase(job)}\n\n## Rule changes\n"
+    line = f"- {now()[:10]} {job['id']}: {text.strip().splitlines()[0].strip()}\n"
+    path.write_text(head.rstrip("\n") + "\n" + line)
+    print(f"{job['id']}: rule change recorded in {path.relative_to(REPO)}; the feature review checks it")
+
+
+def cmd_feedback(job, text, rule=False):
     if job["stage"] == "paused":  # redo the step it paused after
         after = job["paused"]["after"]
-        return cmd_rewind(job, {"budget": "build", "dependencies": "spec"}.get(after, after), text)
+        cmd_rewind(job, {"budget": "build", "dependencies": "spec"}.get(after, after), text)
+        if rule:
+            record_rule_change(job, text)
+        return
     if job["stage"] != "needs-human":
         die(f"{job['id']} is in {job['stage']}, not needs-human")
     if not text.strip():
@@ -3432,6 +3467,8 @@ def cmd_feedback(job, text):
     reopened = reopen_slices(job, f"feedback-{k}.md")
     save(job)
     print(f"{job['id']}: feedback-{k}.md, round {job['round']}")
+    if rule:
+        record_rule_change(job, text)
     if reopened:
         print(f"slices {', '.join(str(s['n']) for s in reopened)} aren't merged: start them as in a first build, "
               f"not one builder (each fresh builder-s<k> gets feedback-{k}.md)\n{slices_status(job)}")
@@ -4090,8 +4127,8 @@ def main(argv):
             cmd_feature_review(args[0])
         elif cmd == "approve" and len(args) == 1:
             cmd_approve(resolve(args[0]))
-        elif cmd == "feedback" and len(args) == 1:
-            cmd_feedback(resolve(args[0]), sys.stdin.read())
+        elif cmd == "feedback" and len([a for a in args if a != "--rule"]) == 1:
+            cmd_feedback(resolve(next(a for a in args if a != "--rule")), sys.stdin.read(), rule="--rule" in args)
         elif cmd == "reject" and len(args) == 1:
             cmd_reject(resolve(args[0]), sys.stdin.read())
         elif cmd == "agents" and len(args) == 2:

@@ -87,10 +87,16 @@ through the scripts. `factory/jobs/` is gitignored runtime state.
 <repo>/factory/jobs/<job-id>/round-<N>/merge-ci.md      the PR's CI on the head `job merge` merged
 <repo>/factory/jobs/<job-id>/decision.md                APPROVE or ESCALATE
 <repo>/factory/jobs/<job-id>/feedback-<k>.md            the user's feedback on an escalated job
+<repo>/factory/jobs/_features/<branch>-rules.md   rule changes on a feature branch (`job feedback --rule`)
 <repo>/factory/jobs/_orchestrator.json         which session orchestrates the run (`job claim`)
 <repo>/factory/jobs/_run.json                  the run's selection (`job queue <sel>`)
 <repo>/.worktrees/<job-id>/                    the job's worktree, on factory/<job-id>
 ```
+
+Run every `factory/bin/job` and `factory/bin/gate` command on its own, one
+per Bash call, and read all of its output. Never cut it (`| tail`, `| head`,
+`| grep`) and never chain it (`&&`, `;`) with another command: a refusal or a
+hint the script prints is the step, and a chain or a tail loses it.
 
 Read `job.json` with `cat` when you need a field. Read agents' files only by
 their first line (`head -1`); the agents put the detail there for the next
@@ -340,8 +346,9 @@ finished:
   (regenerating lockfiles when only they conflict), runs the gate again, on
   GitHub pushes and waits for the PR's CI on that head, and merges (the PR, or
   locally), ending in `merged`. The CI wait can take up to `ci_wait_minutes`
-  (default 30): run `job merge` as a background command and act on its output
-  when it exits. While it waits, the other jobs go on, `job next` says `wait`
+  (default 30): run `job merge` as a background command. When it exits, read
+  its full output, then always run `factory/bin/job next <id>` before you do
+  anything else with that job. While it waits, the other jobs go on, `job next` says `wait`
   for this one and a second `job merge` refuses; if it was cut off, the job is
   still `merging` and `job next` says to run it again. A conflict, a failing gate or a failing CI check after
   the sync is the builder's to fix: it sends the job back to **build** for
@@ -515,6 +522,15 @@ new feature, ask.
   `The user gave feedback: read feedback-<k>.md and address it, push, and update build.md for round <N>.`
   and continue like any job. If it also lists slices to start, the split never
   finished: go to **build, split into slices** instead.
+
+  When the feedback changes a product rule that other tickets of the same
+  feature branch may depend on (a limit, a format, a wording, who may do
+  what), add `--rule`: `factory/bin/job feedback <n> --rule <<'EOF'`. Put the
+  rule in the first line: it is also listed under `## Rule changes` in
+  `factory/jobs/_features/<branch>-rules.md`, and the feature review checks
+  its consequences across the whole branch before `job finish` merges it. Ask
+  the user when you aren't sure it is a rule change. A job on the base branch
+  has no feature review; `--rule` then records nothing.
 - **Rejecting or benching a job**, waiting or running (not while it merges):
   stop its workers first if it is running (the `orchestration` guide's
   recovery reference), then pass their reason verbatim on stdin:

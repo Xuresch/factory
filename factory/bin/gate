@@ -2,7 +2,7 @@
 """The deterministic gate: does the job's branch pass the repo's checks?
 
 Usage:
-  gate <job-id>            write round-N/checks.md; exit 0 on PASS, 1 on FAIL
+  gate <job-id>            write round-N/checks.md; exit 0 on PASS, 1 on FAIL (job in stage gate)
   gate <job-id> --merge    same, as round-N/merge-checks.md (job merge runs it)
   gate --hook              builder SubagentStop hook: run the checks once, exit 2 on failure
 
@@ -222,6 +222,11 @@ def gate(job_id, merge):
     worktree = job["worktree"]
     if job["round"] < 1:
         die(f"{job_id} hasn't started a build round")
+    # A round gate outside `gate` writes a checks.md nothing reads, or overwrites the one
+    # a review already judged. `job merge` runs the merge gate itself, in `merging`.
+    if not merge and job["stage"] != "gate":
+        die(f"{job_id} is in {job['stage']}, not gate: the round gate runs after "
+            f"`factory/bin/job advance {job_id} gate`; `job next {job_id}` says what to do now")
     round_dir = FACTORY / "jobs" / job_id / f"round-{job['round']}"
     # Local trackers have no remote: the job records which base ref it forked from.
     base_ref = job.get("base_ref", f"origin/{CONFIG['base_branch']}")

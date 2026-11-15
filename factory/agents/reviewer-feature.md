@@ -23,6 +23,11 @@ exactly that one file. You never edit code or any other file.
    code is what you judge.
 4. The change: `git log --oneline <base>..HEAD` and `git diff <base>...HEAD`
    in the worktree. Read changed files in full where the diff isn't enough.
+5. The rule changes, when your prompt names a `Rule changes:` file: each line
+   under `## Rule changes` is a human's feedback on one job that changed a
+   product rule (a limit, a format, who may do what). The job's
+   `feedback-<k>.md` has the full text. The other tickets were built against
+   the old rule.
 
 Read `~/.agents/skills/code-review/SKILL.md` and use its two axes on the
 whole diff, yourself, one after the other; don't spawn sub-agents.
@@ -39,6 +44,11 @@ whole diff, yourself, one after the other; don't spawn sub-agents.
   show up here first).
 - **Docs**: the docs and roadmap describe the finished feature, not the
   state after one ticket.
+- **Rule changes**: for each listed rule change, search the whole branch
+  for everything that still states or enforces the old rule: messages, hint
+  and help texts, validations, defaults, tests, docs, and the code of the
+  other tickets. One place that still follows the old rule is a finding. In
+  `## Spec`, say for each rule change what you checked and what you found.
 
 The checks already passed; don't re-run the full suite. Run a command only to
 confirm a specific finding, never one that rewrites files.
@@ -52,7 +62,8 @@ VERDICT: PASS | CHANGES
 - 3 to 5 short bullets
 
 ## Spec
-Does the feature as a whole do what its description asks? Per requirement.
+Does the feature as a whole do what its description asks? Per requirement,
+then per rule change, if any.
 
 ## Standards
 The repo's standards and the smells, across the tickets.

@@ -550,6 +550,39 @@ t_feature_finish_conflict() {
   check "master untouched" "$(cat x.txt)" "z"
 }
 
+t_feedback_rule_change() {
+  new_repo feedbackrule; mkdir -p .scratch/feat/issues
+  printf '# Feat\n\n**Branch:** feature/r\n' > .scratch/feat/spec.md
+  printf '# 01: C\n\n**Status:** ready-for-agent\n\nc\n' > .scratch/feat/issues/01-c.md; commit_all
+  local id; id=$(J create feat/01)
+  intake "$id" low none; factory/bin/route "$id" >/dev/null; J advance "$id" spec >/dev/null
+  echo s > "factory/jobs/$id/spec.md"; J advance "$id" build >/dev/null
+  printf 'STATUS: BLOCKED\n\n## Summary\n- no\n\n## Blocked\nx\n' > "factory/jobs/$id/build.md"
+  J advance "$id" needs-human >/dev/null
+  local out; out=$(printf 'Names may be 40 characters, not 20.\nThe rest as before.\n' | J feedback "$id" --rule)
+  local rules=factory/jobs/_features/feature-r-rules.md
+  check "feedback still goes to the builder" "$out" "$id: feedback-1.md, round 2" &&
+  check "says it recorded the rule" "$out" "rule change recorded in $rules" &&
+  check "section" "$(cat "$rules")" "## Rule changes" &&
+  check "dated line, id, first line only" "$(cat "$rules")" "- $(date -u +%F) $id: Names may be 40 characters, not 20." &&
+  check "not the rest" "[$(grep -c 'The rest' "$rules")]" "[0]" &&
+  check "not in the finish report" "[$(ls factory/jobs/_features)]" "[feature-r-rules.md]" || return 1
+  printf 'STATUS: BLOCKED\n\n## Summary\n- no\n\n## Blocked\nx\n' > "factory/jobs/$id/build.md"
+  J advance "$id" needs-human >/dev/null
+  echo 'Only admins may rename.' | J feedback "$id" --rule >/dev/null
+  check "appended" "$(grep -c "^- .* $id: " "$rules")" "2" || return 1
+  # The feature reviewer's prompt names the file (finish wrote the state it starts from).
+  printf '{"worktree": "%s", "tip": "abc"}' "$PWD" > factory/jobs/_features/feature-r.json
+  J feature-review feature/r >/dev/null
+  check "reviewer told" "$(cat "$SPECS")" "Rule changes: $PWD/$rules." || return 1
+  # On the base branch there is no feature review: nothing to record.
+  ticket 02 Two; commit_all
+  local id2; id2=$(to_build 02 low none)
+  printf 'STATUS: BLOCKED\n\n## Summary\n- no\n\n## Blocked\nx\n' > "factory/jobs/$id2/build.md"
+  J advance "$id2" needs-human >/dev/null
+  check "base branch: nothing recorded" "$(echo 'x' | J feedback "$id2" --rule)" "targets master, not a feature branch"
+}
+
 t_builder_kept_open_then_released() {
   new_repo keepopen; ticket 01 One; commit_all
   local id; id=$(to_build 01 low none); J start "$id" builder >/dev/null
@@ -752,6 +785,42 @@ t_gh_feature_finish_pr_only() {
   check "pr left open" "$out" "is open; merge it on GitHub" &&
   check "not merged" "$(grep -c 'pr merge' "$GH_LOG")" "0" &&
   check "report" "$(head -1 factory/jobs/_features/feature-p.md)" "FINISH: PR OPEN"
+}
+
+t_gh_finish_pulls_origin_after_local_merge() {
+  new_gh_repo ghfinishpull
+  git branch feature/q master; git checkout -q feature/q && echo q > q.txt && git add q.txt && git commit -qm q && git checkout -q master
+  git push -q origin feature/q
+  "$GH/land" m.txt m >/dev/null; git pull -q origin master  # the base moves: finish merges it in
+  check "first finish asks for review" "$(J finish feature/q)" "start the feature review" || return 1
+  local wt=.worktrees/_finish-feature-q
+  check "kept worktree holds the local base merge" "$(git -C "$wt" log -1 --format=%s)" "Merge" || return 1
+  # A fix lands on origin/feature/q after that run: a fast-forward of the worktree can't take it.
+  local c="$TMP_ROOT/ghfinishpull/fix"; git clone -q "$GH/../origin.git" "$c"
+  (cd "$c" && git config user.email t@t && git config user.name t && git checkout -q feature/q &&
+   echo fix > fix.txt && git add fix.txt && git commit -qm fix && git push -q origin feature/q)
+  local fix; fix=$(git -C "$c" rev-parse HEAD)
+  check "asks for review again" "$(J finish feature/q)" "start the feature review" &&
+  check "worktree has the fix" "$(cat "$wt/fix.txt")" "fix" &&
+  local tip; tip=$(python3 -c "import json; print(json.load(open('factory/jobs/_features/feature-q.json'))['tip'])") &&
+  check "the checked tip contains it" "$(git -C "$wt" merge-base --is-ancestor "$fix" "$tip" && echo yes)" "yes" &&
+  check "checked again" "$(python3 -c "import json; print(json.load(open('factory/jobs/_features/feature-q.json'))['checked'])")" "$tip"
+}
+
+t_gh_finish_origin_conflict() {
+  new_gh_repo ghfinishpullc
+  git branch feature/k master; git checkout -q feature/k && echo k > k.txt && git add k.txt && git commit -qm k && git checkout -q master
+  git push -q origin feature/k
+  check "first finish asks for review" "$(J finish feature/k)" "start the feature review" || return 1
+  local wt=.worktrees/_finish-feature-k
+  (cd "$wt" && echo mine > k.txt && git commit -qam mine)  # a local commit in the kept worktree
+  local c="$TMP_ROOT/ghfinishpullc/fix"; git clone -q "$GH/../origin.git" "$c"
+  (cd "$c" && git config user.email t@t && git config user.name t && git checkout -q feature/k &&
+   echo theirs > k.txt && git commit -qam theirs && git push -q origin feature/k)
+  local out; out=$(J finish feature/k 2>&1)
+  check "conflict left to a human" "$out" "conflict, needs a human" &&
+  check "report" "$(cat factory/jobs/_features/feature-k.md)" "conflicts with origin/feature/k" &&
+  check "merge aborted" "[$(git -C "$wt" status --porcelain)]" "[]"
 }
 
 gh_issue_set() {  # gh_issue_set <n> <python statement on i>: edit the fake's issue-<n>.json
@@ -1217,9 +1286,27 @@ t_high_risk_holds_only_when_needed() {
   check "next names it" "$(J next "$id2")" "wait"
 }
 
+t_gate_refuses_outside_gate_stage() {
+  new_repo gatestage; ticket 01 One; commit_all
+  local id; id=$(to_build 01 low none); build_commit "$id" y.txt y
+  local out; out=$(factory/bin/gate "$id" 2>&1); local code=$?
+  check "refuses in build" "$out" "$id is in build, not gate" &&
+  check "says how" "$out" "job advance $id gate" &&
+  check "exit 2" "$code" "2" &&
+  check "no checks.md" "[$(ls "factory/jobs/$id/round-1/" | grep -c checks)]" "[0]" || return 1
+  ready "$id"; J advance "$id" gate >/dev/null
+  check "runs in gate" "$(factory/bin/gate "$id")" "GATE: PASS" || return 1
+  J advance "$id" review >/dev/null
+  check "refuses in review" "$(factory/bin/gate "$id" 2>&1)" "is in review, not gate" || return 1
+  review "$id" 1 code PASS; J advance "$id" approve >/dev/null
+  printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"
+  check "job merge's --merge gate still runs" "$(J merge "$id")" "merged factory/$id into master" &&
+  check "merge checks written" "$(head -1 "factory/jobs/$id/round-1/merge-checks.md")" "GATE: PASS"
+}
+
 t_gate_failures_readable() {
   new_repo gatefail; ticket 01 One; commit_all
-  local id; id=$(to_build 01 low none)
+  local id; id=$(to_build 01 low none); build_commit "$id" y.txt y; ready "$id"; J advance "$id" gate >/dev/null
   cat > factory/checks.sh <<'EOF'
 #!/usr/bin/env bash
 for i in $(seq 1 30); do echo "noise line $i"; done
@@ -1250,6 +1337,7 @@ EOF
 t_gates_take_turns() {
   new_repo gatelock; ticket 01 One; ticket 02 Two; commit_all
   local a b; a=$(to_build 01 low none); b=$(to_build 02 low none)
+  for j in "$a" "$b"; do build_commit "$j" y.txt y; ready "$j"; J advance "$j" gate >/dev/null; done
   export TURNS="$TMP_ROOT/gatelock/turns.log"
   printf '#!/usr/bin/env bash\necho "start $(date +%%s.%%N)" >> "$TURNS"\nsleep 2\necho "end $(date +%%s.%%N)" >> "$TURNS"\n' > factory/checks.sh
   factory/bin/gate "$a" > "$TMP_ROOT/gatelock/a.out" 2>&1 &
