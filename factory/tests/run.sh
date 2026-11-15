@@ -1401,6 +1401,32 @@ EOF
   check "failure logged" "$(head -1 "factory/jobs/$id2/worktree-setup.log")" "exit 3"
 }
 
+t_dashboard_subscriptions() {
+  new_repo dashsubs; commit_all
+  local other="$TMP_ROOT/dashsubs/other"
+  mkdir -p "$other/factory/jobs/001-x" factory/jobs/001-a factory/jobs/_features
+  echo '{"id":"001-a","stage":"merged","started":"2026-11-01T00:00:00Z","cost_usd":2,"cost_by_agent":{"claude":1.5,"codex":0.5},"history":[1]}' > factory/jobs/001-a/job.json
+  echo '{"id":"001-x","stage":"build","started":"2026-11-02T00:00:00Z","cost_usd":1}' > "$other/factory/jobs/001-x/job.json"
+  echo '{"checked":"abc"}' > factory/jobs/_features/f.json
+  export XDG_CONFIG_HOME="$TMP_ROOT/dashsubs/config"
+  local q='import importlib.machinery as m, importlib.util as u, json
+l = m.SourceFileLoader("d", "factory/bin/dashboard"); d = u.module_from_spec(u.spec_from_loader("d", l)); l.exec_module(d)
+print(json.dumps(d.subscriptions()))'
+  check "no config: nothing to serve" "$(python3 -c "$q")" "null" || return 1
+  mkdir -p "$XDG_CONFIG_HOME/factory"
+  printf '{"subscriptions":[{"agent":"claude","usd_per_month":100}],"projects":["%s","%s","%s/gone"]}' \
+    "$other" "$PWD" "$TMP_ROOT" > "$XDG_CONFIG_HOME/factory/subscriptions.json"
+  local out; out=$(python3 -c "$q")
+  local names; names=$(python3 -c "import json,sys; print(','.join(p['name'] for p in json.loads(sys.argv[1])['projects']))" "$out")
+  check "this repo first, listed repos once each" "$names" "repo,other,gone" &&
+  check "subscriptions passed through" "$out" '"usd_per_month": 100' &&
+  check "jobs of every repo, cost fields only" "$out" '"id": "001-x", "stage": "build", "started": "2026-11-02T00:00:00Z", "ended": null, "cost_usd": 1, "cost_by_agent": null' &&
+  check "no history sent" "[$(grep -c history <<< "$out")]" "[0]" &&
+  check "_features is not a job" "[$(grep -c '"checked"' <<< "$out")]" "[0]" &&
+  check "a listed repo without a factory is flagged" "$out" '"name": "gone", "jobs": [], "missing": true'
+  unset XDG_CONFIG_HOME
+}
+
 t_high_risk_holds_only_when_needed() {
   new_repo holdneeded; ticket 01 One; ticket 02 Two; commit_all
   python3 -c "import json; p='factory/config.json'; c=json.load(open(p)); c['hold']['only_when_needed']=True; json.dump(c, open(p,'w'))"

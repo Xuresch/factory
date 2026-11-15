@@ -149,6 +149,11 @@ saved. Cost is the API-equivalent price of each job's Claude and Codex workers, 
 from their session files and priced with `prices_usd_per_mtok`. On a subscription
 plan it shows where the spend goes, not what you're billed.
 
+Subscription puts that against what you pay, month by month, over every repo the
+factory runs in: list your plans and repos in `~/.config/factory/subscriptions.json`
+and start the dashboard with `factory/bin/dashboard`. The format is in that script's
+docstring, and the view shows an example while the file is missing.
+
 ## The example jobs
 
 They come from a test run of the earlier Claude-only version on a small

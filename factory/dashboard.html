@@ -302,6 +302,8 @@
   /* Costs view */
   .cv h2 { margin: 30px 0 4px; }
   .cv .sub { color: var(--faint); font-size: 12px; margin: 0 0 12px; }
+  .bcol .fee { position: absolute; left: -2px; right: -2px; border-top: 2px solid var(--text); pointer-events: none; }
+  .legend i.fee-key { height: 0; border-top: 2px solid var(--text); border-radius: 0; vertical-align: 3px; }
   .tile.click { cursor: pointer; } .tile.click:hover { background: var(--card-hover); }
   .tile .k2 { color: var(--text); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .up { color: var(--changes); } .down { color: var(--pass); }
@@ -366,12 +368,13 @@
 <body>
 <header>
   <h1>Software factory</h1>
-  <nav class="views"><a href="#board" id="v-board">Board</a><a href="#costs" id="v-costs">Costs</a></nav>
+  <nav class="views"><a href="#board" id="v-board">Board</a><a href="#costs" id="v-costs">Costs</a><a href="#plan" id="v-plan">Subscription</a></nav>
   <div class="status" id="status">connecting…</div>
 </header>
 <div id="banner"></div>
 <main class="board" id="board"></main>
 <main class="costs-view md" id="costsview" hidden></main>
+<main class="costs-view md" id="planview" hidden></main>
 <footer>
   <span>/factory run</span>
   <span>/factory run 11-14</span>
@@ -519,14 +522,18 @@ function card(job, rounds) {
 }
 
 async function render() {
-  const costsView = location.hash === '#costs'
-  $('board').hidden = costsView
-  $('costsview').hidden = !costsView
-  $('v-board').className = costsView ? '' : 'on'
-  $('v-costs').className = costsView ? 'on' : ''
-  if (costsView) {
+  const view = { '#costs': 'costs', '#plan': 'plan' }[location.hash] || 'board'
+  $('board').hidden = view !== 'board'
+  $('costsview').hidden = view !== 'costs'
+  $('planview').hidden = view !== 'plan'
+  for (const v of ['board', 'costs', 'plan']) $(`v-${v}`).className = v === view ? 'on' : ''
+  if (view === 'costs') {
     const html = costsPage()
     if (html !== lastCosts) { lastCosts = html; $('costsview').innerHTML = html }
+  } else if (view === 'plan') {
+    await loadPlan()
+    const html = planPage()
+    if (html !== lastPlan) { lastPlan = html; $('planview').innerHTML = html }
   } else {
     const banner = jobs.filter((j) => !STAGES.has(j.stage))
       .map((j) => `<div class="banner">${esc(`Job ${j.id} has unknown stage "${j.stage}"`)}</div>`).join('')
@@ -1345,6 +1352,119 @@ document.addEventListener('mousemove', (e) => {
   const y = e.clientY + 16 + tip.offsetHeight > innerHeight ? e.clientY - tip.offsetHeight - 10 : e.clientY + 16
   tip.style.left = `${x}px`; tip.style.top = `${y}px`
 })
+
+// ---- Subscription view ---------------------------------------------------
+// What the factory's jobs in every repo would have cost on the API, month by month,
+// against what the subscriptions cost. factory/bin/dashboard serves the data.
+
+let lastPlan = ''
+const plan = { at: 0, data: null, err: null }
+const AGENTS = [['claude', '#3987e5'], ['codex', '#d95926']]
+
+async function loadPlan() {
+  if (Date.now() - plan.at < 30000) return // it reads every repo's jobs; twice a minute is plenty
+  plan.at = Date.now()
+  try {
+    const res = await fetch('/_subscriptions.json', { cache: 'no-store' })
+    plan.data = res.ok ? await res.json() : null
+    plan.err = res.ok ? null : res.status === 404 ? 'missing' : `HTTP ${res.status}: ${await res.text()}`
+  } catch (err) { plan.data = null; plan.err = err.message }
+}
+
+// Older jobs have no cost_by_agent: all their cost was Claude's.
+const agentCost = (j, a) => Number(j.cost_by_agent ? j.cost_by_agent[a] || 0 : a === 'claude' ? j.cost_usd || 0 : 0)
+const monthOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+
+function planPage() {
+  if (plan.err === 'missing') {
+    return `<h2>Subscription</h2><p class="note">Compare what the factory would have cost on the API with what you pay.
+      Create <code>~/.config/factory/subscriptions.json</code>, list every repo the factory runs in, and start the
+      dashboard with <code>factory/bin/dashboard</code> (plain <code>python3 -m http.server</code> can't read other repos):</p>
+      <pre><code>${esc(JSON.stringify({ subscriptions: [{ name: 'Claude Max 5x', agent: 'claude', usd_per_month: 100 },
+        { name: 'ChatGPT Pro', agent: 'codex', usd_per_month: 200 }], projects: ['~/code/app', '~/code/api'] }, null, 2))}</code></pre>`
+  }
+  if (plan.err) return `<p class="note">Can't load the subscription data: ${esc(plan.err)}</p>`
+  if (!plan.data) return '<p class="note">Loading…</p>'
+  const { subscriptions: subs, projects } = plan.data
+  const all = projects.flatMap((p) => p.jobs.map((j) => ({ ...j, project: p.name }))).filter((j) => j.started)
+  if (!all.length) return '<p class="note">No jobs yet in the listed repos.</p>'
+
+  // Months from the first job to now; this month's fee counts pro rata.
+  const now = new Date()
+  const first = new Date(Math.min(...all.map((j) => Date.parse(j.started))))
+  const months = []
+  for (let d = new Date(first.getFullYear(), first.getMonth(), 1); d <= now; d = new Date(d.getFullYear(), d.getMonth() + 1, 1)) {
+    const end = new Date(d.getFullYear(), d.getMonth() + 1, 1)
+    const share = end > now ? (now - d) / (end - d) : 1
+    const key = monthOf(d)
+    const jobs = all.filter((j) => monthOf(new Date(j.started)) === key)
+    const row = { key, label: d.toLocaleDateString([], { month: 'short', year: 'numeric' }), share, jobs: jobs.length, api: {}, fee: {} }
+    for (const [a] of AGENTS) {
+      row.api[a] = jobs.reduce((s, j) => s + agentCost(j, a), 0)
+      row.fee[a] = share * subs.filter((s) => s.agent === a && (!s.since || s.since <= key))
+        .reduce((t, s) => t + Number(s.usd_per_month || 0), 0)
+    }
+    row.apiT = row.api.claude + row.api.codex
+    row.feeT = row.fee.claude + row.fee.codex
+    months.push(row)
+  }
+  const sum = (f) => months.reduce((s, m) => s + f(m), 0)
+  const api = Object.fromEntries(AGENTS.map(([a]) => [a, sum((m) => m.api[a])]))
+  const fee = Object.fromEntries(AGENTS.map(([a]) => [a, sum((m) => m.fee[a])]))
+  const apiT = api.claude + api.codex, feeT = fee.claude + fee.codex
+  const cur = months[months.length - 1]
+  const times = (x, y) => (y ? `×${(x / y).toFixed(1)}` : '–')
+  const saved = (x, y) => `<span class="${x - y >= 0 ? 'down' : 'up'}">${x - y >= 0 ? '' : '−'}${money(Math.abs(x - y))}</span>`
+  const tile = (v, k, sub) => `<div class="tile"><div class="v">${v}</div><div class="k">${k}</div><div class="s">${sub}</div></div>`
+  const tiles = `<div class="tiles">
+    ${tile(saved(apiT, feeT), `saved since ${esc(months[0].label)}`, `${money(apiT)} API-equivalent for ${money(feeT)} in fees · ${times(apiT, feeT)}`)}
+    ${tile(saved(cur.apiT, cur.feeT), 'this month so far', `${money(cur.apiT)} for ${money(cur.feeT)} (${Math.round(cur.share * 100)}% of the month) · ${times(cur.apiT, cur.feeT)}`)}
+    ${AGENTS.map(([a]) => tile(times(api[a], fee[a]), `${a}: value per dollar paid`, `${money(api[a])} for ${money(fee[a])}${fee[a] ? '' : ' · no subscription listed'}`)).join('')}
+  </div>`
+
+  // One bar per month, split by agent, with the month's fee as a line across it.
+  const ceilV = Math.max(...months.map((m) => Math.max(m.apiT, m.feeT)), 1)
+  const step = niceStep(ceilV / 4), top = Math.ceil(ceilV / step) * step
+  const grid = []
+  for (let v = step; v <= top + 1e-9; v += step) grid.push(`<div class="gl" style="bottom:${(100 * v) / top}%"><span>$${v}</span></div>`)
+  const bars = months.map((m) => {
+    const tip = `${m.label}${m.share < 1 ? ' (so far)' : ''} · ${m.jobs} jobs\n`
+      + AGENTS.map(([a]) => `  ${a.padEnd(8)}${money(m.api[a]).padStart(9)} API · ${money(m.fee[a])} fee`).join('\n')
+      + `\n  saved   ${(m.apiT >= m.feeT ? '' : '−') + money(Math.abs(m.apiT - m.feeT))}`
+    const segs = AGENTS.map(([a, c]) => (m.api[a] > 0 ? `<i style="flex-grow:${m.api[a]};background:${c}"></i>` : '')).join('')
+    return `<div class="bcol" data-tip="${esc(tip)}" style="max-width:120px">
+      <div class="bstack" style="height:${(100 * m.apiT) / top}%${m.share < 1 ? ';opacity:.6' : ''}">${segs}</div>
+      <div class="fee" style="bottom:${(100 * m.feeT) / top}%"></div><span class="bx">${esc(m.label)}</span></div>`
+  }).join('')
+  const legend = `<div class="legend">${AGENTS.map(([a, c]) => `<span><i style="background:${c}"></i>${a} API-equivalent</span>`).join('')}
+    <span><i class="fee-key"></i>subscription fees</span></div>`
+  const chart = `<h2>Per month</h2><p class="sub">Bars: what the month's jobs would have cost on the API. Line: what the subscriptions cost that month. Above the line is money saved.</p>
+    ${legend}<div class="chart">${grid.join('')}<div class="bars" style="justify-content:center">${bars}</div></div><div style="height:26px"></div>`
+
+  const monthRows = [...months].reverse().map((m) => `<tr><td>${esc(m.label)}${m.share < 1 ? ' <span class="note">so far</span>' : ''}</td>
+    <td class="n">${m.jobs}</td>${AGENTS.map(([a]) => `<td class="n">${money(m.api[a])}</td><td class="n">${money(m.fee[a])}</td>`).join('')}
+    <td class="n">${saved(m.apiT, m.feeT)}</td><td class="n">${times(m.apiT, m.feeT)}</td></tr>`).join('')
+  const monthTable = `<h2>Months</h2><table class="costs"><thead><tr><th>month</th><th class="n">jobs</th>
+    <th class="n">claude API</th><th class="n">claude fee</th><th class="n">codex API</th><th class="n">codex fee</th>
+    <th class="n">saved</th><th class="n">value</th></tr></thead><tbody>${monthRows}</tbody>
+    <tfoot><tr><td>total</td><td class="n">${all.length}</td>${AGENTS.map(([a]) => `<td class="n">${money(api[a])}</td><td class="n">${money(fee[a])}</td>`).join('')}
+    <td class="n">${saved(apiT, feeT)}</td><td class="n">${times(apiT, feeT)}</td></tr></tfoot></table>`
+
+  const projRows = projects.map((p) => {
+    const c = p.jobs.reduce((s, j) => s + agentCost(j, 'claude'), 0), x = p.jobs.reduce((s, j) => s + agentCost(j, 'codex'), 0)
+    return { p, c, x, t: c + x }
+  }).sort((a, b) => b.t - a.t).map(({ p, c, x, t }) => `<tr><td>${esc(p.name)}${p.missing ? ' <span class="note">not found</span>' : ''}</td>
+    <td class="n">${p.jobs.length}</td><td class="n">${money(c)}</td><td class="n">${money(x)}</td><td class="n">${money(t)}</td>
+    <td class="n">${bar(pct(t, apiT))}</td></tr>`).join('')
+  const projTable = `<h2>Repos</h2><table class="costs"><thead><tr><th>repo</th><th class="n">jobs</th><th class="n">claude</th>
+    <th class="n">codex</th><th class="n">API-equivalent</th><th class="n">share</th></tr></thead><tbody>${projRows}</tbody></table>`
+
+  const subList = subs.map((s) => `${esc(s.name || s.agent)} ${money(s.usd_per_month)}/month${s.since ? ` since ${esc(s.since)}` : ''}`).join(' · ') || 'none listed'
+  return `<div class="cv">${tiles}${chart}<div class="grid2"><div>${monthTable}</div><div>${projTable}</div></div>
+    <p class="note">Subscriptions: ${subList}, from <code>${esc(plan.data.config)}</code>. API-equivalent at each repo's
+      factory/config.json prices. Only the factory's jobs count: what you do with the same subscriptions outside the
+      factory is extra value on top. This month's fees count pro rata.</p></div>`
+}
 
 window.addEventListener('hashchange', () => render())
 poll()
