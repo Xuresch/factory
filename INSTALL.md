@@ -129,6 +129,15 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
   of that risk pauses after the spec only when the spec's `## Needs a human`
   lists something for the human to check or do; set it `false` to hold every
   one. A ticket that says `**Factory:** hold after spec` always pauses.
+- `overlap_wait` (default `true`): a job's first builder doesn't start while
+  another running job (build to merging) has changed a file its `spec.md`
+  names, committed on that job's branch or not yet committed in its worktree.
+  `job next` says `wait: overlaps <job> (<file>)` and `job start <job>
+  builder` refuses; the wait clears once that job merges or leaves those
+  stages. Paths count when they are backticked or read as repo paths: files
+  and directories that exist (not a top-level directory) or new files with a
+  directory and an extension; `## Out of scope` is left out. Set it `false`
+  to let jobs build on the same files at once.
 - `gate_parallel`: how many gates (round and merge) run `checks.sh` at once
   on this machine for this repo; default 1, `0` for no limit. Raise it only
   when two `checks.sh` runs can't fight over ports, a database, a shared cache

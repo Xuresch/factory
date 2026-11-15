@@ -1579,6 +1579,48 @@ t_first_build_and_resume_sync_with_base() {
   check "resumed worktree has the base's work" "$(cat ".worktrees/$id2/m2.txt")" "m2"
 }
 
+overlap_setup() {  # overlap_setup <name>: jobs A (builds src/a.ts) and B (its spec names src/a.ts); sets A, B
+  new_repo "$1"; mkdir -p src; echo a > src/a.ts; echo b > src/b.ts; ticket 01 One; ticket 02 Two; commit_all
+  A=$(to_build 01 low none) || return 1
+  build_commit "$A" src/a.ts a2
+  B=$(to_build 02 low none) || return 1
+  printf '# Spec\n\n## Context\nThe parser lives in `src/a.ts:12`, see also the docs and/or README.\n' > "factory/jobs/$B/spec.md"
+}
+
+t_overlap_waits() {
+  local A B; overlap_setup overlap-wait || return 1
+  check "next waits" "$(J next "$B")" "$B: wait: overlaps $A (src/a.ts)" &&
+  check "start refuses" "$(J start "$B" builder 2>&1)" "wait: overlaps $A (src/a.ts)" &&
+  check "no worker started for B" "[$(grep "$B builder" "$CALLS" 2>/dev/null)]" "[]" &&
+  check "A, which has changes, never waits on B" "$(J next "$A")" "$A: start: factory/bin/job start $A builder" &&
+  set_config overlap_wait false &&
+  check "knob off: next starts" "$(J next "$B")" "$B: start: factory/bin/job start $B builder" &&
+  check "knob off: start works" "$(J start "$B" builder)" "started builder"
+}
+
+t_overlap_none_starts() {
+  new_repo overlap-none; mkdir -p src; echo a > src/a.ts; echo b > src/b.ts; ticket 01 One; ticket 02 Two; commit_all
+  local A B; A=$(to_build 01 low none) && B=$(to_build 02 low none) || return 1
+  check "neither has changes: no wait either way" "$(J next "$A"; J next "$B")" "$B: start:" || return 1
+  build_commit "$A" src/a.ts a2
+  printf '# Spec\n\n## Context\nChange **src/b.ts** and add `src/new/c.ts`.\n\n## Out of scope\nDon'"'"'t touch `src/a.ts`.\n' > "factory/jobs/$B/spec.md"
+  check "no overlap: next starts" "$(J next "$B")" "$B: start: factory/bin/job start $B builder" || return 1
+  echo b2 > ".worktrees/$A/src/b.ts"
+  check "uncommitted change counts" "$(J next "$B")" "$B: wait: overlaps $A (src/b.ts)" &&
+  check "top-level directory is too broad" "$(printf '# Spec\nAll of `src/`.\n' > "factory/jobs/$B/spec.md"; J next "$B")" "$B: start:"
+}
+
+t_overlap_clears_when_merged() {
+  local A B; overlap_setup overlap-merged || return 1
+  check "waits while A builds" "$(J next "$B")" "wait: overlaps $A" || return 1
+  to_review "$A"; review "$A" 1 code PASS
+  check "still waits in review" "$(J next "$B")" "wait: overlaps $A" || return 1
+  J advance "$A" approve >/dev/null; printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$A/decision.md"
+  check "A merges" "$(J merge "$A")" "merged factory/$A" &&
+  check "B starts after A merged" "$(J next "$B")" "$B: start: factory/bin/job start $B builder" &&
+  check "start works" "$(J start "$B" builder)" "started builder"
+}
+
 # ---- runner ----------------------------------------------------------------
 
 all_tests=$(declare -F | awk '{print $3}' | grep '^t_')

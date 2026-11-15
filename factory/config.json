@@ -11,6 +11,7 @@
     "only_when_needed": true
   },
   "max_parallel_builders": 3,
+  "overlap_wait": true,
   "base_branch": "main",
   "merge_method": "merge",
   "labels": {

@@ -51,7 +51,9 @@ Usage:
   job reject <job>               needs-info or needs-human → rejected, with your reason (stdin) as rejection.md
   job agents <job> <json>        record the routed agent set (called by factory/bin/route)
   job start <job> <role> [text]  start <role>'s Orca worker: agent, model, worktree, brief and
-                                 header from job.json; [text] (or - for stdin) is what this step is for
+                                 header from job.json; [text] (or - for stdin) is what this step is for.
+                                 A builder refuses while another running job changed a file this
+                                 job's spec.md names (config.json overlap_wait)
   job send <job> <role> <text>   message <role>'s recorded worker (later rounds, continues, refusals);
                                  when Orca answers with a follow-up dispatch (the worker had finished
                                  or died), that one becomes <role>'s dispatch and `job next` waits on it
@@ -3578,8 +3580,113 @@ def role_port(job, role):
     return {"builder": base, "reviewer-ux": base + 1, "reviewer-ui": base + 2}.get(role)
 
 
+# ---- Overlap wait ------------------------------------------------------------
+#
+# Two jobs building on the same file at once collide, and one loses a round to
+# it. So a job's builder doesn't start while another running job has changed a
+# file this job's spec.md names: `job next` says `wait: overlaps <job> (<file>)`
+# and `job start <job> builder` refuses. It compares against the files the
+# other job actually changed (committed on its branch since its base, and
+# uncommitted in its worktrees), not that job's spec, so a spec that names more
+# than it touches makes no one wait. The wait applies only while this job has
+# no changes of its own; a job that waits has none, so no one waits on it, and
+# two jobs can't wait on each other. config.json `overlap_wait: false` turns it off.
+
+OVERLAP_STAGES = {"build", "gate", "review", "approve", "merging"}
+
+
+def repo_path(token, root):
+    """A spec token as a repo-relative path (a directory ends in /), or None.
+    Counts: a file or directory that exists under root, or a new file the spec
+    plans, a path with a directory and an extension. A top-level directory
+    (`src/`) is too broad to wait on."""
+    t = token.strip("*_\"'()[]{}<>,;!?")
+    t = re.sub(r"(?::\d+(?:[-:]\d+)*|#L\d+\S*)$", "", t).rstrip(".:,;")
+    t = t.removeprefix("./")
+    if not re.fullmatch(r"[\w.@+/-]+", t) or t.startswith(("/", "-", "..")) or "//" in t:
+        return None
+    is_dir, t = t.endswith("/"), t.rstrip("/")
+    if t in {"", "."}:
+        return None
+    on_disk = root / t
+    if is_dir or on_disk.is_dir():
+        return t + "/" if "/" in t else None
+    if on_disk.is_file():
+        return t
+    if "/" in t and re.search(r"\.[A-Za-z]\w*$", t.rsplit("/", 1)[1]):
+        return t
+    return None
+
+
+def spec_paths(job):
+    """The repo paths this job's spec.md names: backticked tokens and bare words
+    that read as paths (see repo_path). What `## Out of scope` names is left
+    out: the builder must not touch it."""
+    f = job_dir(job["id"]) / "spec.md"
+    if not f.exists():
+        return []
+    text = re.sub(r"^## Out of scope[ \t]*\n.*?(?=^## |\Z)", "", f.read_text(), flags=re.M | re.S)
+    root = Path(job["worktree"]) if Path(job["worktree"]).exists() else REPO
+    found = []
+    for ticked, bare in re.findall(r"`([^`\n]+)`|(\S+)", text):
+        for token in ticked.split() if ticked else [bare]:
+            p = repo_path(token, root)
+            if p and p not in found:
+                found.append(p)
+    return found
+
+
+def changed_files(where, base):
+    """Files changed in the worktree at <where>: committed since <base>, and not committed yet."""
+    names = set()
+    for cmd in (["diff", "--name-only", f"{base}...HEAD"], ["diff", "--name-only", "HEAD"],
+                ["ls-files", "--others", "--exclude-standard"]):
+        res = run(["git", "-c", "core.quotepath=off", *cmd], cwd=where, check=False)
+        if res.returncode == 0:
+            names.update(l for l in res.stdout.splitlines() if l)
+    return names
+
+
+def peer_jobs():
+    """Every job, read without taking its lock: a `job merge` holds its job for minutes."""
+    if not JOBS.exists():
+        return []
+    return [json.loads((p / "job.json").read_text()) for p in sorted(JOBS.iterdir()) if (p / "job.json").exists()]
+
+
+def overlap(job):
+    """(other job id, file) when another running job changed a file this job's
+    spec names and this job hasn't changed anything yet; else None."""
+    if not CONFIG.get("overlap_wait", True) or not Path(job["worktree"]).exists():
+        return None
+    mine = spec_paths(job)
+    if not mine or changed_files(job["worktree"], jref(job)):
+        return None
+    for other in peer_jobs():
+        if other["id"] == job["id"] or other["stage"] not in OVERLAP_STAGES:
+            continue
+        places = [other["worktree"]] + [slice_worktree(other, s["n"]) for s in other.get("slices") or []]
+        for where in places:
+            if not Path(where).exists():
+                continue
+            for f in sorted(changed_files(where, jref(other))):
+                if any(owns_overlap(f, p) for p in mine):
+                    return other["id"], f
+    return None
+
+
+def overlap_wait(job):
+    """`overlaps <job> (<file>)`, the reason this job's builder waits, or None."""
+    hit = overlap(job)
+    return f"overlaps {hit[0]} ({hit[1]})" if hit else None
+
+
 def cmd_start(job, role, extra):
     entry = role_entry(job, role)
+    wait = overlap_wait(job) if role == "builder" and job["stage"] == "build" else None
+    if wait:
+        die(f"{job['id']}: wait: {wait}; the builder starts once that job merges or leaves "
+            f"build..merging (`{JOB} next {job['id']}` says when; config.json overlap_wait turns this off)")
     lens = role.removeprefix("reviewer-")
     if job["stage"] == "review" and lens in (job.get("skipped_reviews") or {}):
         die(f"{role} is skipped in round {job['round']} ({job['skipped_reviews'][lens]}); "
@@ -3841,6 +3948,9 @@ def builder_step(job, msg):
         return ("send", f"{JOB} send {job['id']} builder {shlex.quote(msg or 'Build round ' + str(job['round']) + '.')}")
     if job["round"] > 1 or (job.get("workers") or {}).get("builder"):
         msg = f"You take over from another builder: read build.md and git log first. {msg}".strip()
+    wait = overlap_wait(job)
+    if wait:
+        return ("wait", wait)
     return ("start", f"{JOB} start {job['id']} builder" + (f" {shlex.quote(msg)}" if msg else ""))
 
 
