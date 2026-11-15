@@ -15,7 +15,8 @@ What it does:
   `<!-- project: ... -->` ... `<!-- /project -->` blocks put back into the
   template's slots of the same kind (matched by the text after `project:`).
   A block with no matching slot is kept at the end of the file, and said so.
-- factory/config.json: keys the template added are added; your values stay.
+- factory/config.json: keys the template added are added, also inside nested
+  objects (`labels.factory` into your `labels`); your values stay.
 - Never touched: factory/checks.sh, factory/env.sh, factory/jobs/, and
   anything outside factory/ and .claude/skills/factory/.
 

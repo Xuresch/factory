@@ -19,7 +19,8 @@
     "needs_info": "needs-info",
     "needs_human": "ready-for-human",
     "returned": "needs-triage",
-    "wontfix": "wontfix"
+    "wontfix": "wontfix",
+    "factory": null
   },
   "stages": {
     "intake": {

@@ -185,7 +185,17 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
   **Notifications** below). Leave `["desktop"]` unless they want more; ask
   whether they want push on their phone.
 - `labels`: leave them. They are only the fallback; the factory reads the real
-  strings from `docs/agents/triage-labels.md`.
+  strings from `docs/agents/triage-labels.md`. The exception is
+  `labels.factory` (default `null`, off): when the user also works on
+  `ready-for-agent` tickets by hand or with ordinary agents, set it to a label
+  such as `"factory"`, and the factory takes only issues carrying both
+  `ready-for-agent` and that label; `job queue` lists the others as `skip`
+  (`no factory label: left to people`) and `job create` refuses them. The
+  factory never adds or removes it, except on the follow-up tickets it files
+  itself, which get it. A row `| factory | <label> |` in
+  `docs/agents/triage-labels.md` sets it too. On a local tracker a ticket
+  carries it in a `**Labels:** factory` line (a comma-separated list) next to
+  its Status.
 - Agents: every `{"agent": ...}` entry may name a `model` and an `effort`
   (Orca passes both on). The Claude entries set `effort` on purpose: `high`
   where a missed error is expensive (spec, code and security review, approver,
@@ -290,6 +300,8 @@ gh label create needs-info --force --color FBCA04 --description "Waiting on the 
 gh label create ready-for-human --force --color D93F0B --description "Needs a human: decision, review or implementation"
 gh label create needs-triage --force --color EDEDED --description "A maintainer needs to evaluate this"
 gh label create wontfix --force --color FFFFFF --description "Will not be actioned"
+# only with labels.factory set (see Configure):
+gh label create factory --force --color 0E8A16 --description "ready-for-agent work the software factory may take"
 gh label create bug --force --color D73A4A --description "Something is broken"
 gh label create enhancement --force --color A2EEEF --description "New feature or improvement"
 ```

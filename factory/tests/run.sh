@@ -156,11 +156,17 @@ if cmd == ["api", "user"]:
     print("op")
 elif cmd == ["issue", "view"]:
     print(json.dumps(load(f"issue-{args[2]}.json")))
-elif cmd == ["issue", "list"]:  # open issues with the label, from issue-<n>.json
-    want = opt("--label")
+elif cmd == ["issue", "list"]:  # open issues with every --label given (AND), from issue-<n>.json
+    want = [args[k + 1] for k, a in enumerate(args) if a == "--label"]
     found = [load(f.name) for f in sorted(d.glob("issue-*.json"))]
     print(json.dumps([{"number": i["number"], "title": i["title"]} for i in found
-                      if i["state"] == "OPEN" and want in [l["name"] for l in i["labels"]]]))
+                      if i["state"] == "OPEN" and all(w in [l["name"] for l in i["labels"]] for w in want)]))
+elif cmd == ["issue", "create"]:  # a new issue-<n>.json with every --label given
+    n = max([int(f.stem.split("-")[1]) for f in d.glob("issue-*.json")], default=0) + 1
+    save(f"issue-{n}.json", {"number": n, "title": opt("--title"), "body": opt("--body"), "author": {"login": "op"},
+                             "labels": [{"name": args[k + 1]} for k, a in enumerate(args) if a == "--label"],
+                             "state": "OPEN", "url": f"https://github.com/o/r/issues/{n}", "comments": []})
+    print(f"https://github.com/o/r/issues/{n}")
 elif cmd[0] == "api" and cmd[1].endswith("/dependencies/blocked_by"):  # issue-<n>.json "blocked_by": [numbers]
     n = cmd[1].split("/issues/")[1].split("/")[0]
     if (d / "deps-fail").exists():
@@ -174,7 +180,13 @@ elif cmd[0] == "api" and any(a.startswith("repos/{owner}/{repo}/") for a in args
     items = (load("pr-comments.json") or {}).get("/".join(path[3::2]), [])
     pages = [items[i:i + 2] for i in range(0, len(items), 2)] or [[]]
     print("".join(json.dumps(p) for p in (pages if "--paginate" in args else pages[:1])))
-elif cmd in (["issue", "comment"], ["issue", "edit"], ["pr", "comment"], ["pr", "close"]):
+elif cmd == ["issue", "edit"]:  # --add-label / --remove-label (comma-separated) change issue-<n>.json
+    i = load(f"issue-{args[2]}.json")
+    drop = (opt("--remove-label") or "").split(",") + (opt("--add-label") or "").split(",")
+    i["labels"] = [l for l in i["labels"] if l["name"] not in drop]
+    i["labels"] += [{"name": x} for x in (opt("--add-label") or "").split(",") if x]
+    save(f"issue-{args[2]}.json", i)
+elif cmd in (["issue", "comment"], ["pr", "comment"], ["pr", "close"]):
     pass
 elif cmd == ["issue", "close"]:
     i = load(f"issue-{args[2]}.json"); i["state"] = "CLOSED"; save(f"issue-{args[2]}.json", i)
@@ -1775,6 +1787,136 @@ t_overlap_clears_when_merged() {
   check "A merges" "$(J merge "$A")" "merged factory/$A" &&
   check "B starts after A merged" "$(J next "$B")" "$B: start: factory/bin/job start $B builder" &&
   check "start works" "$(J start "$B" builder)" "started builder"
+}
+
+# ---- labels.factory: only issues handed to the factory run --------------------
+
+FACTORY_LABELS='{"queue": "ready-for-agent", "needs_info": "needs-info", "needs_human": "ready-for-human", "returned": "needs-triage", "wontfix": "wontfix", "factory": "factory"}'
+
+needs_info() {  # needs_info <job>: intake asks a question; the job waits for the author
+  printf 'DECISION: NEEDS-INFO\nRISK: low\nSURFACES: none\nRESCOPED: no\nSIZE: small\nSPLIT: no\n\n## Summary\n- unclear\n\n## Questions\n1. Which page?\n\n## Follow-ups\nNone.\n' \
+    > "factory/jobs/$1/intake.md"
+  J advance "$1" needs-info >/dev/null
+}
+
+add_follow_up() {  # add_follow_up <job>: intake.md lists one follow-up
+  python3 - "factory/jobs/$1/intake.md" <<'PY'
+import sys; p = sys.argv[1]; s = open(p).read()
+open(p, "w").write(s.replace("## Follow-ups\nNone.", "## Follow-ups\n- Do the other half: it was too big."))
+PY
+}
+
+t_factory_label_off_by_default() {
+  new_repo factorylabeloff; ticket 01 One; ticket 02 Two '**Labels:** factory'; commit_all
+  check "template default is off" "$(python3 -c "import json; print(json.load(open('factory/config.json'))['labels']['factory'])")" "None" &&
+  check "every queued ticket is new" "$(J queue | awk '$1=="new"{print $2}' | xargs)" "f/01 f/02" &&
+  check "no skip row" "[$(J queue | grep -c skip)]" "[0]" &&
+  check "tracker prints no factory label" "[$(J tracker | grep -c 'label factory')]" "[0]" &&
+  check "create takes an unlabeled ticket" "$(J create f/01)" "001"
+}
+
+t_factory_label_local() {
+  new_repo factorylabel
+  ticket 01 Mine '**Labels:** factory'; ticket 02 Theirs; ticket 03 Both '**Labels:** ui, `factory`'
+  set_config labels "$FACTORY_LABELS"; commit_all
+  local q; q=$(J queue)
+  check "labeled tickets are new" "$(echo "$q" | awk '$1=="new"{print $2}' | xargs)" "f/01 f/03" &&
+  check "unlabeled one skipped with the reason" "$q" $'skip\tf/02\t-\t-\tno factory label: left to people' &&
+  check "selection says so too" "$(J queue f/02)" $'skip\tf/02\t-\t-\tno factory label: left to people' &&
+  J queue --clear >/dev/null &&
+  check "create refuses" "$(J create f/02 2>&1)" "isn't labeled factory: the factory only takes issues labeled both ready-for-agent and factory" &&
+  check "and says how to hand it over" "$(J create f/02 2>&1)" "a \`**Labels:** factory\` line in the ticket" &&
+  check "tracker prints it" "$(J tracker)" "label factory factory" || return 1
+  # f/01 runs through, leaving and re-entering the queue twice; the factory label stays put.
+  local id; id=$(J create f/01) || return 1
+  needs_info "$id"
+  check "waits as needs-info" "$(status_of 01)" "needs-info" &&
+  check "still listed while waiting" "$(J queue)" $'wait\tf/01\t'"$id"$'\tneeds-info\twaiting for the author' || return 1
+  echo "On the start page." | J reply f/01 >/dev/null
+  check "answer resumes it" "$(J queue)" $'resume\tf/01\t'"$id"$'\tneeds-info\tauthor replied' || return 1
+  J advance "$id" intake >/dev/null
+  check "back in the queue" "$(status_of 01)" "ready-for-agent" || return 1
+  intake "$id" low none; factory/bin/route "$id" >/dev/null && J advance "$id" spec >/dev/null
+  echo "# Spec" > "factory/jobs/$id/spec.md"; J advance "$id" build >/dev/null
+  build_commit "$id" y.txt y; to_review "$id"; review "$id" 1 code PASS; J advance "$id" approve >/dev/null
+  printf 'ESCALATE\n\n## Why\n- Unsure.\n' > "factory/jobs/$id/decision.md"; J advance "$id" needs-human >/dev/null
+  check "waits for a human" "$(status_of 01)" "ready-for-human" &&
+  check "listed while it waits" "$(J queue)" $'wait\tf/01\t'"$id"$'\tneeds-human' || return 1
+  echo "Rename it." | J feedback "$id" >/dev/null
+  check "feedback puts it back" "$(status_of 01)" "ready-for-agent" &&
+  check "and it runs" "$(J queue)" $'resume\tf/01\t'"$id"$'\tbuild' || return 1
+  build_commit "$id" y.txt y2; to_review "$id"; review "$id" 2 code PASS; J advance "$id" approve >/dev/null
+  printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"
+  check "merged" "$(J merge "$id")" "merged factory/$id into master" &&
+  check "done" "$(status_of 01)" "done" &&
+  check "factory label never touched" "$(grep -c '^\*\*Labels:\*\* factory$' .scratch/f/issues/01-t.md)" "1"
+}
+
+t_factory_label_from_triage_doc() {
+  new_repo factorylabeldoc; ticket 01 Mine '**Labels:** agent-ok'; ticket 02 Theirs '**Labels:** factory'
+  mkdir -p docs/agents
+  printf '| Role | Label |\n|---|---|\n| `ready-for-agent` | `ready-for-agent` |\n| `factory` | `agent-ok` |\n' > docs/agents/triage-labels.md
+  commit_all
+  local q; q=$(J queue)
+  check "mapped label counts" "$q" $'new\tf/01' &&
+  check "the config's name doesn't" "$q" $'skip\tf/02\t-\t-\tno agent-ok label: left to people'
+}
+
+t_factory_label_follow_ups() {
+  new_repo factorylabelfollow; ticket 01 One '**Labels:** factory'
+  set_config labels "$FACTORY_LABELS"; commit_all
+  local id; id=$(J create f/01); intake "$id" low none; add_follow_up "$id"
+  factory/bin/route "$id" >/dev/null; J advance "$id" spec >/dev/null
+  local t; t=$(cat .scratch/f/issues/02-*.md)
+  check "needs triage" "$t" "**Status:** needs-triage" &&
+  check "handed to the factory" "$t" "**Labels:** factory" || return 1
+  sed -i 's/needs-triage/ready-for-agent/' .scratch/f/issues/02-*.md
+  check "triaged, it comes back to the factory" "$(J queue)" $'new\tf/02' || return 1
+  sed -i '/^\*\*Labels:\*\*/d' .scratch/f/issues/01-t.md  # a person takes f/01 back
+  check "a job whose label is gone stops" "$(J queue)" $'skip\tf/01\t'"$id"$'\tspec\tissue is closed or no longer labeled both ready-for-agent and factory'
+}
+
+gh_labels_of() { python3 -c "import json; print(sorted(l['name'] for l in json.load(open('$GH/issue-$1.json'))['labels']))"; }
+
+t_gh_factory_label() {
+  new_gh_repo ghfactorylabel; set_config labels "$FACTORY_LABELS"
+  gh_issue 1 Mine; gh_issue_set 1 'i["labels"].append({"name": "factory"})'
+  gh_issue 2 Theirs
+  local q; q=$(J queue)
+  check "asks GitHub for both labels" "$(grep 'issue list' "$GH_LOG" | head -1)" "--label ready-for-agent --label factory" &&
+  check "labeled one is new" "$q" $'new\t1' &&
+  check "other skipped" "$q" $'skip\t2\t-\t-\tno factory label: left to people' &&
+  check "create refuses" "$(J create 2 2>&1)" "issue #2 isn't labeled factory" || return 1
+  local id; id=$(J create 1) || return 1
+  needs_info "$id"
+  check "waiting label swapped, factory kept" "$(gh_labels_of 1)" "['factory', 'needs-info']" &&
+  check "listed while waiting" "$(J queue)" $'wait\t1\t'"$id"$'\tneeds-info' || return 1
+  J advance "$id" intake >/dev/null; intake "$id" low none; add_follow_up "$id"
+  factory/bin/route "$id" >/dev/null; J advance "$id" spec >/dev/null
+  check "follow-up filed with the factory label" "$(grep 'issue create' "$GH_LOG")" "--label needs-triage --label factory" &&
+  check "follow-up carries both" "$(gh_labels_of 3)" "['factory', 'needs-triage']" &&
+  check "back in the queue" "$(gh_labels_of 1)" "['factory', 'ready-for-agent']" || return 1
+  echo "# Spec" > "factory/jobs/$id/spec.md"; J advance "$id" build >/dev/null
+  build_commit "$id" y.txt y
+  (cd ".worktrees/$id" && git push -q -u origin "factory/$id" 2>/dev/null &&
+   gh pr create --draft --base master --head "factory/$id" --title t --body b >/dev/null)
+  to_review "$id"; review "$id" 1 code PASS; J advance "$id" approve >/dev/null
+  printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"
+  check "merged" "$(J merge "$id" 2>&1)" "merged PR #7" &&
+  check "the factory never edits its label" "[$(grep 'issue edit' "$GH_LOG" | grep -c 'factory')]" "[0]"
+}
+
+t_update_adds_nested_config_key() {
+  new_repo updatecfg
+  python3 - <<'PY'
+import json; p = "factory/config.json"; c = json.load(open(p))
+del c["labels"]["factory"]; c["labels"]["queue"] = "agent-go"; json.dump(c, open(p, "w"), indent=2)
+PY
+  commit_all
+  local out; out=$(factory/bin/update "$FACTORY_SRC/.." --force 2>&1)
+  check "says it added the key" "$out" "labels.factory" &&
+  check "added as off" "$(python3 -c "import json; print(json.load(open('factory/config.json'))['labels'])")" "'factory': None" &&
+  check "own value kept" "$(python3 -c "import json; print(json.load(open('factory/config.json'))['labels']['queue'])")" "agent-go"
 }
 
 # ---- runner ----------------------------------------------------------------

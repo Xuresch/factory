@@ -18,7 +18,7 @@ skim a job on the dashboard and read the detail only where it matters.
 
 | Piece | File | Job |
 |---|---|---|
-| Queue | GitHub issues labeled `ready-for-agent` | What to build. Anyone can file an issue; only people with triage or write access can label it. |
+| Queue | GitHub issues labeled `ready-for-agent` (and `factory`, when `labels.factory` is set) | What to build. Anyone can file an issue; only people with triage or write access can label it. |
 | Orchestrator | `.claude/skills/factory/SKILL.md` | The Claude Code session that runs `/factory` in an Orca terminal. Starts jobs, starts every agent as an Orca worker, calls the scripts. Writes nothing itself. |
 | Agents | `factory/agents/*.md` | One brief per role, for Claude Code or Codex. Each reads files, writes exactly one file, and reports one line with `worker_done`. |
 | State | `factory/jobs/<job-id>/` | `job.json` plus every agent's file. Gitignored, local to the machine running the factory. |
@@ -128,7 +128,8 @@ break this.
 
 ## Guardrails
 
-- Only issues labeled `ready-for-agent` run. Labels need triage or write access, so the
+- Only issues labeled `ready-for-agent` (and the factory label, when
+  `labels.factory` is set) run. Labels need triage or write access, so the
   label is the trust boundary.
 - Issue text reaches agents as quoted data in `issue.md`, with comments only
   from the issue's author and the factory's operator. It is never part of a
@@ -171,6 +172,17 @@ with `/triage` from mattpocock/skills. Waiting jobs trade it for `needs-info` or
 `ready-for-human`, intake sends an issue it turns away back to `needs-triage`,
 and a job a human rejects gets `wontfix`. The issue stays open; closing it is
 the human's call.
+
+**The factory label is an opt-in.** `ready-for-agent` means "ready for an
+agent", not "for this factory": people also pick such tickets up by hand or
+with ordinary agents. With `labels.factory` set (say `factory`), the factory
+only takes issues carrying both labels, so a ticket is handed over on
+purpose, and `job queue` shows the rest as `skip ... left to people`. The
+factory label isn't a lifecycle state: the factory never adds or removes it
+on an issue it works on, so a job keeps it while it waits as `needs-info` or
+`ready-for-human` and comes back with it. The follow-ups the factory files
+itself carry it, so once triaged they come back to the factory. Unset (the
+default), every `ready-for-agent` issue is the factory's, as before.
 
 **Cost counts both.** Claude workers are read from Claude Code's transcripts, Codex workers from the session files of every Codex home, including the accounts Orca launches them with. Both are priced with `prices_usd_per_mtok`, and the dashboard breaks each job down by role, agent and model.
 

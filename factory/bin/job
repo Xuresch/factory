@@ -180,9 +180,11 @@ def detect_tracker():
 
 
 def triage_labels():
-    """config.json `labels`, overridden by the repo's docs/agents/triage-labels.md."""
+    """config.json `labels`, overridden by the repo's docs/agents/triage-labels.md.
+    `factory` is the opt-in label: unset (null), every queue issue is the
+    factory's; set, only queue issues that also carry it are."""
     roles = {"needs-triage": "returned", "needs-info": "needs_info", "ready-for-agent": "queue",
-             "ready-for-human": "needs_human", "wontfix": "wontfix"}
+             "ready-for-human": "needs_human", "wontfix": "wontfix", "factory": "factory"}
     labels = dict(CONFIG["labels"])
     doc = DOCS / "triage-labels.md"
     if doc.exists():
@@ -195,6 +197,7 @@ def triage_labels():
 
 TRACKER = detect_tracker()
 LABELS = triage_labels()
+FACTORY_LABEL = LABELS.get("factory") or None  # None: every queue issue is the factory's
 GITHUB = TRACKER == "github"
 BASE_REF = f"origin/{BASE}" if GITHUB else BASE
 
@@ -299,11 +302,20 @@ def ticket_path(key):
 # `Status: x` or, as /to-tickets writes it, `**Status:** x`.
 STATUS_RE = re.compile(r"^(\**Status:\**[ \t]*)(.*?)[ \t]*$", re.M)
 BLOCKED_RE = re.compile(r"^\**Blocked by:\**(.*)$", re.M)
+TICKET_LABELS_RE = re.compile(r"^\**Labels:\**[ \t]*(.*?)[ \t]*$", re.M)
 
 
 def ticket_status(text):
     m = STATUS_RE.search(text)
     return m.group(2) if m else None
+
+
+def ticket_labels(text):
+    """`**Labels:** factory, ui` → ["factory", "ui"]: labels a local ticket
+    carries besides its Status (the factory label, say)."""
+    m = TICKET_LABELS_RE.search(text)
+    labels = [l.strip().strip("`").strip() for l in m.group(1).split(",")] if m else []
+    return [l for l in labels if l]
 
 
 def ticket_blockers(text):
@@ -347,7 +359,7 @@ def local_issue(key):
     return {
         "number": key, "title": title.group(1).strip() if title else path.stem,
         "body": body.strip(), "author": {"login": LOCAL_AUTHOR},
-        "labels": [{"name": status}] if status else [],
+        "labels": ([{"name": status}] if status else []) + [{"name": l} for l in ticket_labels(text) if l != status],
         "state": "CLOSED" if status in {"done", LABELS["wontfix"]} else "OPEN",
         "url": str(path.relative_to(REPO)), "comments": ticket_comments(text),
         "blocked_by": ticket_blockers(text),
@@ -397,14 +409,16 @@ def fetch_issue(number):
                    "number,title,body,author,labels,state,url,comments")
 
 
-def list_issues(name):
-    """Open issues carrying a label (GitHub) or a Status (local), oldest first."""
+def list_issues(name, also=None):
+    """Open issues carrying a label (GitHub) or a Status (local), oldest first;
+    with `also`, only those that carry that label too (locally: in `Labels:`)."""
     if GITHUB:
-        return gh_json("issue", "list", "--label", name, "--state", "open",
+        return gh_json("issue", "list", "--label", name, *(["--label", also] if also else []), "--state", "open",
                        "--limit", "200", "--json", "number,title")
     out = []
     for path in sorted(SCRATCH.glob("*/issues/*.md")):
-        if ticket_status(path.read_text()) == name:
+        text = path.read_text()
+        if ticket_status(text) == name and (not also or also in ticket_labels(text)):
             key = issue_key(str(path))
             out.append({"number": key, "title": local_issue(key)["title"]})
     return out
@@ -1949,7 +1963,9 @@ def follow_ups(intake):
 
 
 def create_follow_ups(job):
-    """File each follow-up once, as needs-triage: a human triages it like any ticket."""
+    """File each follow-up once, as needs-triage: a human triages it like any
+    ticket. With labels.factory set it carries that label too, so it comes
+    back to the factory once triage makes it ready-for-agent."""
     d = job_dir(job["id"])
     done = {f["title"] for f in job.get("follow_ups") or []}
     created = []
@@ -1960,7 +1976,8 @@ def create_follow_ups(job):
         why = why[:1].upper() + why[1:]
         body = f"{origin}\n\n{why}".strip()
         if GITHUB:
-            url = gh("issue", "create", "--label", LABELS["returned"], "--title", title,
+            url = gh("issue", "create", "--label", LABELS["returned"],
+                     *(["--label", FACTORY_LABEL] if FACTORY_LABEL else []), "--title", title,
                      "--body", f"{body}\n\nFollow-up of #{job['issue']}.").strip()
             ref = url.rsplit("/", 1)[-1]
         else:
@@ -1969,7 +1986,8 @@ def create_follow_ups(job):
             nn = f"{max(numbers, default=0) + 1:02d}"
             path = folder / f"{nn}-{slugify(title)}.md"
             path.write_text(f"# {nn}: {title}\n\n{body}\n\n**Blocked by:** None\n\n"
-                            f"**Status:** {LABELS['returned']}\n")
+                            + (f"**Labels:** {FACTORY_LABEL}\n\n" if FACTORY_LABEL else "")
+                            + f"**Status:** {LABELS['returned']}\n")
             ref = f"{folder.parent.name}/{nn}"
         job.setdefault("follow_ups", []).append({"title": title, "issue": ref})
         created.append(f"{ref}: {title}")
@@ -2884,6 +2902,11 @@ def cmd_create(number):
         die(f"issue #{number} is {issue['state'].lower()}")
     if LABELS["queue"] not in {l["name"] for l in issue["labels"]}:
         die(f"issue #{number} isn't labeled {LABELS['queue']}")
+    if FACTORY_LABEL and FACTORY_LABEL not in {l["name"] for l in issue["labels"]}:
+        die(f"issue #{number} isn't labeled {FACTORY_LABEL}: the factory only takes issues labeled both "
+            f"{LABELS['queue']} and {FACTORY_LABEL} (config.json labels.factory); without it the issue is "
+            f"left to people. To hand it over, add the {FACTORY_LABEL} label"
+            + ("" if GITHUB else f" (a `**Labels:** {FACTORY_LABEL}` line in the ticket)"))
     try:
         blockers = open_blockers(issue)
     except Refused as e:
@@ -3199,16 +3222,21 @@ def cmd_queue(args=()):
     for j in jobs.values():
         if j["stage"] not in TERMINAL and not busy(j) and is_merged(j):
             save(advance(sync(j), "merged"))
-    issues = list_issues(LABELS["queue"])
+    issues = list_issues(LABELS["queue"], FACTORY_LABEL)
     if only is not None:
         issues = [i for i in issues if i["number"] in only]
-    # Waiting jobs trade the queue label for their waiting label.
+    # Waiting jobs trade the queue label for their waiting label (the factory label stays).
     queued = {i["number"] for i in issues}
     for waiting in (LABELS["needs_info"], LABELS["needs_human"]):
-        issues += [i for i in list_issues(waiting) if i["number"] in jobs and i["number"] not in queued
+        issues += [i for i in list_issues(waiting, FACTORY_LABEL) if i["number"] in jobs and i["number"] not in queued
                    and (only is None or i["number"] in only)]
     open_numbers = {i["number"] for i in issues}
     running_rows, replied_rows, new_rows, other_rows = [], [], [], []
+    if FACTORY_LABEL:  # queued, but not handed to the factory: people work on it
+        for i in list_issues(LABELS["queue"]):
+            n = i["number"]
+            if n not in queued and n not in jobs and (only is None or n in only):
+                other_rows.append(("skip", n, "-", "-", f"no {FACTORY_LABEL} label: left to people"))
     for issue in sorted(issues, key=lambda i: i["number"]):
         n = issue["number"]
         j = jobs.get(n)
@@ -3249,7 +3277,8 @@ def cmd_queue(args=()):
         if only is not None and n not in open_numbers and j["stage"] in TERMINAL:
             other_rows.append(("skip", n, j["id"], j["stage"], j["stage"]))
         elif n not in open_numbers and j["stage"] not in TERMINAL | WAITING:
-            other_rows.append(("skip", n, j["id"], j["stage"], f"issue is closed or no longer labeled {LABELS['queue']}"))
+            other_rows.append(("skip", n, j["id"], j["stage"], f"issue is closed or no longer labeled "
+                               + (f"both {LABELS['queue']} and {FACTORY_LABEL}" if FACTORY_LABEL else LABELS["queue"])))
     # Jobs already in a running stage hold a slot whether or not an agent is on them.
     slots = CONCURRENCY - len(running(jobs.values()))
     rows = list(running_rows)
@@ -3567,7 +3596,8 @@ def cmd_tracker():
     print(f"tracker {TRACKER} ({'GitHub issues and PRs' if GITHUB else 'local tickets in .scratch/, merged locally'})")
     print(f"base {BASE_REF}")
     for key, value in LABELS.items():
-        print(f"label {key} {value}")
+        if value:  # an unset factory label: every queue issue runs
+            print(f"label {key} {value}")
 
 
 def cmd_continue(job):

@@ -180,7 +180,9 @@ keep it cheap.
 - Intake runs on Fable once per issue. Depending on your plan, Fable can bill
   to usage credits rather than your plan's included usage.
 - Only issues labeled `ready-for-agent` run, and only people with triage or write
-  access can add labels. Issue text reaches the agents as quoted data, never
+  access can add labels. If you also work on `ready-for-agent` tickets by hand,
+  set `labels.factory` in `config.json` (say to `factory`): then the factory
+  takes only issues that carry that label too. Issue text reaches the agents as quoted data, never
   as their instructions.
 - The factory pushes only `factory/*` branches, merges only through
   `gh pr merge`, and never deploys.

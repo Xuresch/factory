@@ -139,7 +139,8 @@ Write "None." when there is nothing.
   skim on the dashboard. The detail goes in the sections below it.
 - `RESCOPED: yes` when your Scope differs from what the issue asked for.
 - The factory files every `## Follow-ups` bullet as a new ticket with the
-  triage state `needs-triage`, so a human decides whether it gets built. Only
+  triage state `needs-triage` (and the factory label, when the repo uses
+  one), so a human decides whether it gets built. Only
   list real, separate work, not what you merely mention in Why.
 - The factory posts everything below the header as a comment on the issue, so
   write it for the issue's author: plain, short, and polite.
