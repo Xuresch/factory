@@ -55,6 +55,7 @@ EOF
 import json
 p = "factory/config.json"; c = json.load(open(p))
 c.setdefault("hold", {})["only_when_needed"] = False  # most tests want every high-risk spec held
+c.setdefault("labels", {})["factory"] = None  # an installation's opt-in label; the label tests set it
 c.update(base_branch="master", concurrency=3, notify="", tracker="local", merge_method="merge", worktree_root=None, worktree_setup="", replace_builder_after_partials=2,
          min_risk_for_surface={"security": "medium"},
          worktree_cache_dirs=["target/factory-jobs/{name}", "target/factory-jobs/{name}-native"])
@@ -1915,7 +1916,9 @@ PY
   commit_all
   local out; out=$(factory/bin/update "$FACTORY_SRC/.." --force 2>&1)
   check "says it added the key" "$out" "labels.factory" &&
-  check "added as off" "$(python3 -c "import json; print(json.load(open('factory/config.json'))['labels'])")" "'factory': None" &&
+  # The template's value: null in the template, an installation's own when its tests run.
+  local want; want=$(python3 -c "import json; print(repr(json.load(open('$FACTORY_SRC/config.json'))['labels'].get('factory')))")
+  check "added with the template's value" "$(python3 -c "import json; print(json.load(open('factory/config.json'))['labels'])")" "'factory': $want" &&
   check "own value kept" "$(python3 -c "import json; print(json.load(open('factory/config.json'))['labels']['queue'])")" "agent-go"
 }
 
