@@ -234,6 +234,27 @@ feature branch that collects several tickets. When the last ticket for a
 branch is done, `job finish <branch>` syncs it with `base_branch`, runs the
 full checks and merges it; a conflict or a failure is left for a human.
 
+**A feature is reviewed as a whole, early and at the PR.** The per-ticket
+reviews never see how the tickets fit together, so `job finish` starts a
+feature reviewer on the whole branch before it merges. Left to the end, that
+review found integration problems too late: one feature grew from 4 tickets
+to 11, each finding a ticket of its own through the whole pipeline. With
+`feature_review_every: N`, `job merge` also starts a mid-feature review after
+every N-th merge into the branch while tickets are still open. Its findings
+don't become tickets: they go to `_features/<branch>-integration.md`, which
+the intake, spec and builder prompts of every later job on the branch point
+to, so the open tickets absorb them. New tickets come only from the final
+review, when nothing of the feature is open; it also checks that the
+integration findings were dealt with. With `--pr` the PR stays open, and
+comments on it (bots and humans; one was tokens in the logs) used to go
+nowhere. Run `job finish <branch> --pr` again once reviewers commented: it
+collects the PR's review, inline and conversation comments (all pages) into
+`_features/<branch>-pr-comments.md`, and while any comment is untriaged it
+starts no merge and doesn't report the PR as clean but asks for the feature
+review again. The reviewer triages each comment as done, ticket or rejected,
+with a reason; the factory keeps the triage by comment id, so a later re-run
+asks only about new comments.
+
 **Builders stay open, everything else closes.** Orca releases a worker's
 terminal soon after `worker_done`. `job start` keeps the builder open
 (`keep_open_roles`), so every round of a job reaches the same agent with its
