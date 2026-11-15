@@ -215,6 +215,7 @@
   "orchestrator_stale_minutes": 120,
   "retro_after_merge": "friction",
   "feature_review": true,
+  "feature_review_every": 0,
   "keep_open_roles": [
     "builder"
   ],

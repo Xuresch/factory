@@ -189,6 +189,13 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
 - `builder.ui_fixes_before_fallback` (default 2): how many rounds the default
   builder gets to carry out the UX/UI reviewers' findings before the fallback
   builder takes over. The last round a job has always goes to the fallback.
+- `feature_review` (default `true`): `job finish` has a reviewer read the
+  whole feature branch before it merges. `feature_review_every` (default `0`,
+  off): after every N-th job merged into a feature branch while it still has
+  open tickets, `job merge` starts a mid-feature review; its findings go to
+  `factory/jobs/_features/<branch>-integration.md` for the later jobs of that
+  feature, not into tickets. Try `2` or `3` for features of five tickets or
+  more.
 - `builder.pre_review` (default `["codex review --base {base}"]`): the
   commands the builder runs on its own branch before READY, `{base}` being
   the job's base. In a TypeScript or JavaScript repo with `fallow` installed,

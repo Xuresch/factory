@@ -87,6 +87,9 @@ through the scripts. `factory/jobs/` is gitignored runtime state.
 <repo>/factory/jobs/<job-id>/round-<N>/merge-ci.md      the PR's CI on the head `job merge` merged
 <repo>/factory/jobs/<job-id>/decision.md                APPROVE or ESCALATE
 <repo>/factory/jobs/<job-id>/feedback-<k>.md            the user's feedback on an escalated job
+<repo>/factory/jobs/_features/<branch>-review.md        the feature review (`job finish`)
+<repo>/factory/jobs/_features/<branch>-pr-comments.md   the open PR's comments (`job finish --pr`, re-run)
+<repo>/factory/jobs/_features/<branch>-integration.md   mid-feature findings for the later jobs
 <repo>/factory/jobs/_orchestrator.json         which session orchestrates the run (`job claim`)
 <repo>/factory/jobs/_run.json                  the run's selection (`job queue <sel>`)
 <repo>/.worktrees/<job-id>/                    the job's worktree, on factory/<job-id>
@@ -383,6 +386,33 @@ request and leaves it open (GitHub only). If anything doesn't go through
 (a conflict, failing checks, a dirty checkout, a review with CHANGES), it says
 so and leaves the branch alone: tell the user and point them to
 `factory/jobs/_features/<branch>.md`.
+
+Comments on that pull request (Codex and other bots, humans) don't reach
+the factory by themselves. After the PR is open and reviewers had time to
+comment (when the user says so, or when you come back to the feature later),
+run `factory/bin/job finish <branch> --pr` again. On a PR that already
+exists it collects every review, inline and conversation comment into
+`factory/jobs/_features/<branch>-pr-comments.md`. When any of them isn't
+triaged yet it prints `untriaged comment(s)` and doesn't report the PR as
+open and clean: run `factory/bin/job feature-review <branch>` again (the
+reviewer triages each comment as done, ticket or rejected, with a reason),
+and when it reports, run `job finish <branch> --pr` once more. A comment
+triaged as ticket makes the review CHANGES, which goes to the user like any
+other. Only `PR OPEN` with every comment triaged is done; tell the user what
+the triage decided (its `## PR comments` section). The same check runs
+before `job finish <branch>` merges an existing PR.
+
+**Mid-feature reviews.** With `feature_review_every: N` in `config.json`
+(default 0, off), `job merge` starts a mid-feature review itself after every
+N-th job merged into a feature branch while the feature still has open
+tickets, and says so (`mid-feature review started`). Don't wait for it, and
+don't turn its findings into tickets: it writes
+`factory/jobs/_features/<branch>-integration.md`, and the intake, spec and
+builder of every later job on that branch get a line pointing to it. Only
+if `job merge` says it didn't start, run
+`factory/bin/job feature-review <branch> --mid`. When it reports, tell the
+user its first line. New tickets come only from the final review, when no
+ticket of the feature is open.
 
 On `merged` the script posts a summary on the issue (what changed, why it was
 approved, what a human accepted, follow-ups, and any problems on the way) and

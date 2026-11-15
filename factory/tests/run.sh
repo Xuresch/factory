@@ -129,8 +129,10 @@ check() {  # check <description> <actual> <expected substring>
 # fake `gh` on PATH. The fake keeps its state as JSON next to itself: issue-<n>.json
 # (what `gh issue view` prints), pr.json (one PR: `pr create` writes it, `pr view`
 # prints it with headRefOid read from origin unless pr.json pins one, `pr merge`
-# records mergedHead) and merge-fail.json ({"count": n, "stderr": s, "run": cmd}:
-# the next n `pr merge` calls run cmd, then fail with s).
+# records mergedHead), merge-fail.json ({"count": n, "stderr": s, "run": cmd}:
+# the next n `pr merge` calls run cmd, then fail with s) and pr-comments.json
+# (what `gh api [--paginate] repos/{owner}/{repo}/<pulls|issues>/<n>/<comments|reviews>`
+# lists, two per page; see pr_comment).
 # Every call is logged to $GH_LOG; checks.sh logs each gate mode to $GATES_LOG.
 
 new_gh_repo() {  # new_gh_repo <name>: like new_repo, then GitHub mode; commits and pushes master
@@ -165,6 +167,13 @@ elif cmd[0] == "api" and cmd[1].endswith("/dependencies/blocked_by"):  # issue-<
         sys.exit("HTTP 502")
     print(json.dumps([{"number": b, "state": load(f"issue-{b}.json")["state"].lower()}
                       for b in (load(f"issue-{n}.json") or {}).get("blocked_by", [])]))
+elif cmd[0] == "api" and any(a.startswith("repos/{owner}/{repo}/") for a in args):
+    # PR comments from pr-comments.json {"pulls/comments": [...], "issues/comments": [...], "pulls/reviews": [...]},
+    # two per page: --paginate prints the pages back to back, without it only the first one comes.
+    path = next(a for a in args if a.startswith("repos/")).split("/")
+    items = (load("pr-comments.json") or {}).get("/".join(path[3::2]), [])
+    pages = [items[i:i + 2] for i in range(0, len(items), 2)] or [[]]
+    print("".join(json.dumps(p) for p in (pages if "--paginate" in args else pages[:1])))
 elif cmd in (["issue", "comment"], ["issue", "edit"], ["pr", "comment"], ["pr", "close"]):
     pass
 elif cmd == ["issue", "close"]:
@@ -752,6 +761,127 @@ t_gh_feature_finish_pr_only() {
   check "pr left open" "$out" "is open; merge it on GitHub" &&
   check "not merged" "$(grep -c 'pr merge' "$GH_LOG")" "0" &&
   check "report" "$(head -1 factory/jobs/_features/feature-p.md)" "FINISH: PR OPEN"
+}
+
+pr_comment() {  # pr_comment <pulls/comments|issues/comments|pulls/reviews> <id> <author> <body> [path line]
+  python3 - "$GH/pr-comments.json" "$@" <<'EOF'
+import json, os, sys
+p, kind, id_, author, body, *where = sys.argv[1:]
+d = json.load(open(p)) if os.path.exists(p) else {}
+c = {"id": int(id_), "user": {"login": author}, "body": body, "created_at": f"2026-11-15T10:00:{int(id_) % 60:02d}Z",
+     "html_url": f"https://github.com/o/r/pull/7#c{id_}"}
+if where:
+    c.update(path=where[0], line=int(where[1]))
+if kind == "pulls/reviews":
+    c.update(state="COMMENTED", submitted_at=c.pop("created_at"))
+d.setdefault(kind, []).append(c); json.dump(d, open(p, "w"))
+EOF
+}
+
+t_gh_feature_pr_comments() {
+  new_gh_repo ghprcomments
+  git branch feature/p master; git checkout -q feature/p && echo p > p.txt && git add p.txt && git commit -qm p && git checkout -q master
+  git push -q origin feature/p
+  local f=factory/jobs/_features
+  check "asks for review" "$(J finish feature/p --pr)" "then run \`job finish feature/p --pr\` again" || return 1
+  J feature-review feature/p >/dev/null
+  printf 'VERDICT: PASS\n\n## Findings\nNone.\n' > $f/feature-p-review.md
+  local out; out=$(J finish feature/p --pr 2>&1)
+  check "pr opened" "$out" "is open; merge it on GitHub" &&
+  check "says to run it again" "$out" "run \`job finish feature/p --pr\` again" &&
+  check "a new PR has no comments to read" "[$(grep -c "^api --paginate" "$GH_LOG")]" "[0]" || return 1
+  for n in 11 12 13; do pr_comment pulls/comments $n codex-bot "Inline $n" src/a.py $n; done
+  pr_comment issues/comments 21 alice "Tokens end up in the logs."
+  pr_comment pulls/reviews 31 bob "Please split this."
+  pr_comment pulls/reviews 32 carol ""
+  out=$(J finish feature/p --pr 2>&1)
+  local listing; listing=$(cat $f/feature-p-pr-comments.md)
+  check "untriaged comments stop it" "$out" "5 untriaged comment(s)" &&
+  check "asks for the review again" "$out" "job feature-review feature/p" &&
+  check "not reported clean" "$(head -1 $f/feature-p.md)" "FINISH: PR COMMENTS" &&
+  check "paginated" "$(grep -c 'api --paginate repos/{owner}/{repo}/pulls/7/comments' "$GH_LOG")" "1" &&
+  check "every page read" "$listing" "## inline-13 (untriaged)" &&
+  check "file and line" "$listing" "- Where: src/a.py:12" &&
+  check "author" "$listing" "- Author: alice" &&
+  check "body" "$listing" "> Tokens end up in the logs." &&
+  check "url" "$listing" "https://github.com/o/r/pull/7#c21" &&
+  check "review body" "$listing" "## review-31 (untriaged)" &&
+  check "empty review left out" "[$(grep -c review-32 <<< "$listing")]" "[0]" &&
+  check "old review gone" "$(test -f $f/feature-p-review.md && echo yes || echo no)" "no" || return 1
+  J feature-review feature/p >/dev/null
+  check "reviewer gets the comments" "$(tail -3 "$SPECS")" "PR comments: $PWD/$f/feature-p-pr-comments.md" || return 1
+  printf 'VERDICT: PASS\n\n## Summary\n- ok\n\n## PR comments\n- inline-11: done, handled in a.py\n- `inline-12`: **rejected**: style only\n- inline-13: done, same fix\n- comment-21: done, the logger masks tokens\n- review-31: rejected\n\n## Findings\nNone.\n' > $f/feature-p-review.md
+  out=$(J finish feature/p --pr 2>&1)
+  check "a comment without a reason is untriaged" "$out" "left PR comments untriaged: review-31" || return 1
+  sed -i 's/^- review-31: rejected$/- review-31: rejected — the split is the next feature/' $f/feature-p-review.md
+  out=$(J finish feature/p --pr 2>&1)
+  check "all triaged: open" "$out" "its 5 comment(s) are triaged" &&
+  check "reported open" "$(head -1 $f/feature-p.md)" "FINISH: PR OPEN" &&
+  check "triage shown" "$(cat $f/feature-p-pr-comments.md)" "## inline-12 (triaged, rejected: style only)" || return 1
+  pr_comment issues/comments 22 alice "One more thing."
+  out=$(J finish feature/p --pr 2>&1)
+  check "only the new one" "$out" "1 untriaged comment(s)" &&
+  check "earlier triage kept" "$(cat $f/feature-p-pr-comments.md)" "## comment-21 (triaged, done: the logger masks tokens)" &&
+  check "never merged" "[$(grep -c 'pr merge' "$GH_LOG")]" "[0]"
+}
+
+merge_feature_job() {  # merge_feature_job <ticket>: run a local ticket through to merged; prints the merge output
+  local id; id=$(J create "$1") || return 1
+  intake "$id" low none; factory/bin/route "$id" >/dev/null; J advance "$id" spec >/dev/null
+  echo s > "factory/jobs/$id/spec.md"; J advance "$id" build >/dev/null
+  build_commit "$id" "${1//\//-}.txt" c; to_review "$id"; review "$id" 1 code PASS; J advance "$id" approve >/dev/null
+  printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"
+  J merge "$id"
+}
+
+t_feature_mid_review() {
+  new_repo midreview; mkdir -p .scratch/feat/issues
+  printf '# Feat\n\n**Branch:** feature/m\n' > .scratch/feat/spec.md
+  for n in 01 02 03; do printf '# %s: T\n\n**Status:** ready-for-agent\n\nc\n' $n > .scratch/feat/issues/$n-t.md; done
+  ticket 09 Plain; commit_all
+  set_config feature_review_every 2
+  local f=factory/jobs/_features out
+  out=$(merge_feature_job feat/01)
+  check "first merge: no review yet" "[$(grep -c 'mid-feature' <<< "$out")]" "[0]" || return 1
+  out=$(merge_feature_job feat/02)
+  check "second merge starts it" "$out" "feature/m: 2 jobs merged since the last feature review" &&
+  check "started" "$out" "mid-feature review started" &&
+  check "mid mode" "$(tail -3 "$SPECS")" "Mode: mid-feature (tickets still open: feat/03" &&
+  check "writes the integration file" "$(tail -3 "$SPECS")" "Write: $PWD/$f/feature-m-integration.md" &&
+  check "detached worktree on the branch" "$(git -C .worktrees/_midreview-feature-m rev-parse HEAD)" "$(git rev-parse feature/m)" &&
+  check "counted" "$(python3 -c "import json; print(json.load(open('$f/feature-m-mid.json'))['merged'])")" "2" || return 1
+  local plain; plain=$(J create f/09); J start "$plain" intake >/dev/null
+  check "no notes before the file exists" "[$(tail -3 "$SPECS" | grep -c 'Integration notes')]" "[0]" || return 1
+  printf 'VERDICT: CHANGES\n\n## Findings\n1. a.txt:1 use one name\n' > $f/feature-m-integration.md
+  local id; id=$(J create feat/03); J start "$id" intake >/dev/null
+  check "intake points to it" "$(tail -3 "$SPECS")" "Integration notes: $PWD/$f/feature-m-integration.md" || return 1
+  J start "$plain" intake >/dev/null
+  check "a job on the base doesn't" "[$(tail -3 "$SPECS" | grep -c 'Integration notes')]" "[0]" || return 1
+  intake "$id" medium none; factory/bin/route "$id" >/dev/null; J advance "$id" spec >/dev/null; J start "$id" spec >/dev/null
+  check "spec points to it" "$(tail -3 "$SPECS")" "Integration notes:" || return 1
+  echo s > "factory/jobs/$id/spec.md"; J advance "$id" build >/dev/null; J start "$id" builder >/dev/null
+  check "builder points to it" "$(tail -3 "$SPECS")" "Integration notes:" || return 1
+  set_config feature_review_every 1
+  build_commit "$id" c3.txt c; to_review "$id"; review "$id" 1 code PASS; J advance "$id" approve >/dev/null
+  printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"
+  out=$(J merge "$id")
+  check "last ticket: finish instead" "$out" "every ticket for feature/m is done" &&
+  check "no mid review then" "[$(grep -c 'mid-feature' <<< "$out")]" "[0]" || return 1
+  J finish feature/m >/dev/null; J feature-review feature/m >/dev/null
+  check "final review reads the notes" "$(tail -3 "$SPECS")" "Integration notes from the mid-feature reviews: $PWD/$f/feature-m-integration.md" &&
+  check "final mode" "$(tail -3 "$SPECS")" "Mode: final" || return 1
+  printf 'VERDICT: PASS\n\n## Findings\nNone.\n' > $f/feature-m-review.md
+  check "merged" "$(J finish feature/m)" "feature/m: merged into master" &&
+  check "mid worktree gone" "$(test -d .worktrees/_midreview-feature-m && echo yes || echo no)" "no"
+}
+
+t_feature_mid_review_off() {
+  new_repo midreviewoff; mkdir -p .scratch/feat/issues
+  printf '# Feat\n\n**Branch:** feature/o\n' > .scratch/feat/spec.md
+  for n in 01 02; do printf '# %s: T\n\n**Status:** ready-for-agent\n\nc\n' $n > .scratch/feat/issues/$n-t.md; done
+  commit_all
+  check "default off" "[$(merge_feature_job feat/01 | grep -c 'mid-feature')]" "[0]" &&
+  check "no state" "[$(ls factory/jobs/_features 2>/dev/null)]" "[]"
 }
 
 gh_issue_set() {  # gh_issue_set <n> <python statement on i>: edit the fake's issue-<n>.json

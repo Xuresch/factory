@@ -42,8 +42,13 @@ Usage:
   job rewind <job> <stage>       back to intake, spec or build with your feedback (stdin)
   job route-set <job> k=v...     override for this job: builder=claude/opus, code=codex, ux=claude/sonnet
   job finish <branch> [--pr]     every ticket for a feature branch is done: sync, check, feature review, merge
-                                 (--pr: open the pull request and leave it open)
+                                 (--pr: open the pull request and leave it open). Run again on an open
+                                 PR: its comments go to _features/<branch>-pr-comments.md, and any not
+                                 triaged yet send it back to the feature review instead of PR OPEN
   job feature-review <branch>    start the reviewer of a whole feature branch (job finish says when)
+  job feature-review <branch> --mid  a mid-feature review while tickets are open (job merge starts it
+                                 every feature_review_every merges): findings go to
+                                 _features/<branch>-integration.md for the later jobs, not to tickets
   job feedback <job>             needs-human → build, with your feedback (stdin) as feedback-<k>.md
   job reject <job>               needs-info or needs-human → rejected, with your reason (stdin) as rejection.md
   job agents <job> <json>        record the routed agent set (called by factory/bin/route)
@@ -2486,6 +2491,70 @@ def feature_hint(job):
                   f"run `factory/bin/job finish {jbase(job)}` to merge it into {BASE}")
 
 
+def gh_api_list(path):
+    """Every item of a GitHub REST list, all pages: `gh api --paginate` prints
+    one JSON array per page, back to back."""
+    out, items, i = gh("api", "--paginate", path).strip(), [], 0
+    decoder = json.JSONDecoder()
+    while i < len(out):
+        value, i = decoder.raw_decode(out, i)
+        items += value if isinstance(value, list) else [value]
+        while i < len(out) and out[i].isspace():
+            i += 1
+    return items
+
+
+def pr_comments(number):
+    """What people and bots said on pull request <number>, oldest first: inline
+    review comments, conversation comments and the bodies of reviews. Each is
+    {"id", "author", "where", "body", "url", "at"}; the id names the kind."""
+    repo, found = "repos/{owner}/{repo}", []
+    for c in gh_api_list(f"{repo}/pulls/{number}/comments"):
+        line = c.get("line") or c.get("original_line")
+        found.append({"id": f"inline-{c['id']}", "where": f"{c.get('path')}:{line}" if line else c.get("path"),
+                      "at": c.get("created_at"), **_said(c)})
+    for c in gh_api_list(f"{repo}/issues/{number}/comments"):
+        found.append({"id": f"comment-{c['id']}", "where": None, "at": c.get("created_at"), **_said(c)})
+    for r in gh_api_list(f"{repo}/pulls/{number}/reviews"):
+        if (r.get("body") or "").strip():  # an approval without words says nothing to triage
+            found.append({"id": f"review-{r['id']}", "where": f"review: {(r.get('state') or '').lower()}",
+                          "at": r.get("submitted_at"), **_said(r)})
+    return sorted((c for c in found if MARKER not in c["body"]), key=lambda c: c["at"] or "")
+
+
+def _said(c):
+    return {"author": (c.get("user") or {}).get("login") or "?", "body": c.get("body") or "", "url": c.get("html_url")}
+
+
+TRIAGE_RE = re.compile(r"^\W*((?:inline|comment|review)-\d+)\W+(done|ticket|rejected)\b\W*(.*?)\s*$", re.I)
+
+
+def record_triage(state, review):
+    """Keep the feature reviewer's triage of PR comments (`## PR comments`:
+    `- <id>: done | ticket | rejected — <reason>`) in the finish state, so it
+    outlives the review file. A line without a reason doesn't count."""
+    for line in (section(review, "PR comments") or "").splitlines():
+        m = TRIAGE_RE.match(line)
+        if m and m.group(3):
+            state.setdefault("triage", {})[m.group(1).lower()] = f"{m.group(2).lower()}: {m.group(3)}"
+
+
+def write_pr_comments(branch, number, comments, triage):
+    """factory/jobs/_features/<slug>-pr-comments.md: every comment, triaged or not."""
+    out = [f"# PR #{number} comments: {branch} → {BASE}", "",
+           f"Collected {now()}. The feature reviewer triages every comment marked untriaged as done, "
+           "ticket or rejected, with a reason, in its review's `## PR comments` section.", ""]
+    for c in comments:
+        out += [f"## {c['id']} ({'triaged, ' + triage[c['id']] if c['id'] in triage else 'untriaged'})", "",
+                f"- Author: {c['author']}"] + ([f"- Where: {c['where']}"] if c["where"] else []) \
+               + [f"- URL: {c['url']}", "", quote(c["body"]), ""]
+    if not comments:
+        out.append("No comments yet.")
+    path = feature_file(branch, "-pr-comments.md")
+    path.write_text("\n".join(out).rstrip() + "\n")
+    return path
+
+
 def cmd_finish(branch, pr_only=False):
     """Merge a finished feature branch into base_branch: sync, full checks, merge.
     With pr_only (`--pr`) the same steps, then the pull request stays open for a
@@ -2537,15 +2606,21 @@ def cmd_finish(branch, pr_only=False):
                 stop("FAIL", f"checks.sh fails on {branch} after syncing with {BASE}:\n\n```\n{tail}\n```")
             state["checked"] = tip
             state_file.write_text(json.dumps(state, indent=2))
-        if CONFIG.get("feature_review", True):
+        verdict = None
+        # PR comments need the reviewer's triage even with feature_review off.
+        if CONFIG.get("feature_review", True) or state.get("pr_comments"):
             verdict = first_line(review)
+            if verdict:
+                record_triage(state, review)
+                state_file.write_text(json.dumps(state, indent=2))
             if state.get("reviewed") != tip or not verdict:
                 state.update({"worktree": where, "tip": tip, "reviewed": tip})
                 state_file.write_text(json.dumps(state, indent=2))
                 review.unlink(missing_ok=True)
                 temp = None  # keep the worktree for the reviewer
                 print(f"{branch}: synced and checked; start the feature review: "
-                      f"`factory/bin/job feature-review {branch}`, then run `job finish {branch}` again")
+                      f"`factory/bin/job feature-review {branch}`, then run `job finish {branch}"
+                      + (" --pr" if pr_only else "") + "` again")
                 return
             if verdict != "VERDICT: PASS":
                 stop("REVIEW", f"The feature review asks for changes; see `factory/jobs/_features/{slug}-review.md`."
@@ -2556,12 +2631,39 @@ def cmd_finish(branch, pr_only=False):
             number = prs[0]["number"] if prs else gh("pr", "create", "--base", BASE, "--head", branch,
                                                       "--title", f"Merge {branch}", "--body",
                                                       f"Every factory ticket for {branch} is done.").strip().rsplit("/", 1)[-1]
+            triaged = ""
+            if prs:  # a re-run: reviewers had time to comment on the open PR
+                comments = pr_comments(number)
+                triage = state.get("triage") or {}
+                listing = write_pr_comments(branch, number, comments, triage).relative_to(REPO)
+                untriaged = [c["id"] for c in comments if c["id"] not in triage]
+                if untriaged:
+                    missed = [c for c in untriaged if c in (state.get("triage_asked") or [])]
+                    if missed and verdict:
+                        stop("COMMENTS", f"The feature review left PR comments untriaged: {', '.join(missed)}. "
+                                         f"See `{listing}`; triage them in `factory/jobs/_features/{slug}-review.md` "
+                                         f"(`## PR comments`), then run `job finish {branch} --pr` again.")
+                    state.update({"worktree": where, "tip": tip, "reviewed": tip, "pr_comments": str(listing),
+                                  "pr_comments_untriaged": untriaged})
+                    state_file.write_text(json.dumps(state, indent=2))
+                    review.unlink(missing_ok=True)
+                    temp = None  # keep the worktree for the reviewer
+                    report.write_text(f"FINISH: PR COMMENTS\n\n# {branch} → {BASE}\n\nPull request #{number} has "
+                                      f"{len(untriaged)} comment(s) nobody triaged yet ({', '.join(untriaged)}); "
+                                      f"see `{listing}`. Not merged.\n")
+                    print(f"{branch}: pull request #{number} has {len(untriaged)} untriaged comment(s) ({listing}); "
+                          f"start the feature review on them: `factory/bin/job feature-review {branch}`, then run "
+                          f"`job finish {branch}" + (" --pr" if pr_only else "") + "` again")
+                    return
+                if comments:
+                    triaged = f"; its {len(comments)} comment(s) are triaged ({listing})"
             if pr_only:
                 url = f"#{number}"
                 report.write_text(f"FINISH: PR OPEN\n\n# {branch} → {BASE}\n\nSynced, checked"
                                   + (", reviewed" if CONFIG.get("feature_review", True) else "")
-                                  + f"; pull request {url} opened at {now()}, not merged.\n")
-                print(f"{branch}: pull request {url} is open; merge it on GitHub")
+                                  + f"; pull request {url} opened at {now()}, not merged{triaged}.\n")
+                print(f"{branch}: pull request {url} is open{triaged}; merge it on GitHub. When reviewers have "
+                      f"commented, run `job finish {branch} --pr` again to triage their comments")
                 return
             gh("pr", "merge", str(number), f"--{CONFIG['merge_method']}")
         else:
@@ -2576,26 +2678,33 @@ def cmd_finish(branch, pr_only=False):
                       + f" and merged at {now()}.\n")
     if state_file.exists():
         state_file.unlink()
+    feature_file(branch, "-mid.json").unlink(missing_ok=True)
+    if (worktree_base() / f"_midreview-{slug}").exists():
+        remove_worktree(worktree_base() / f"_midreview-{slug}", check=False)
     wt = worktree_base() / f"_finish-{slug}"
     if wt.exists():
         remove_worktree(wt, check=False)
     print(f"{branch}: merged into {BASE}")
 
 
-def cmd_feature_review(branch):
-    """Start the feature reviewer on the whole branch: the reviews per ticket
-    never saw how the tickets fit together."""
-    slug = re.sub(r"[^\w-]", "-", branch)
-    report_dir = JOBS / "_features"
-    state_file = report_dir / f"{slug}.json"
-    if not state_file.exists():
-        die(f"run `job finish {branch}` first: it syncs and checks the branch")
-    state = json.loads(state_file.read_text())
+def feature_slug(branch):
+    return re.sub(r"[^\w-]", "-", branch)
+
+
+def feature_file(branch, suffix):
+    """factory/jobs/_features/<slug><suffix>: the finish report (".md"), its state
+    (".json"), the review ("-review.md"), the PR comments ("-pr-comments.md"),
+    the mid-feature reviews' findings ("-integration.md") and their state ("-mid.json")."""
+    return JOBS / "_features" / f"{feature_slug(branch)}{suffix}"
+
+
+def start_feature_reviewer(branch, worktree, tip, write, lines, title):
+    """Start the feature reviewer's Orca worker; returns its dispatch id."""
     entry = CONFIG["stages"].get("feature-review") or CONFIG["routing"]["high"]["code"]
     brief = FACTORY / "agents" / "reviewer-feature.md"
     spec = (f"Feature branch: {branch}. Merges into: {BASE}. Main checkout: {REPO}. "
-            f"Worktree: {state['worktree']}. Tip: {state['tip']}. Base: {ref_of(BASE)}. "
-            f"Jobs folder: {JOBS}/. Write: {report_dir / (slug + '-review.md')}.\n\n"
+            f"Worktree: {worktree}. Tip: {tip}. Base: {ref_of(BASE)}. "
+            f"Jobs folder: {JOBS}/. Write: {write}. " + " ".join(lines) + "\n\n"
             f"Your brief is {brief}. Read it in full and follow it exactly. When you're done, "
             "report with worker_done; its summary is the one line your brief names.")
     cmd = [orca_cli(), "orchestration", "worker-start", "--agent", entry["agent"]]
@@ -2603,8 +2712,7 @@ def cmd_feature_review(branch):
         cmd += ["--model", entry["model"]]
     if entry.get("effort"):
         cmd += ["--effort", entry["effort"]]
-    cmd += ["--worktree", f"path:{state['worktree']}", "--task-title", f"feature-review {branch}",
-            "--spec-file", "-", "--json"]
+    cmd += ["--worktree", f"path:{worktree}", "--task-title", title, "--spec-file", "-", "--json"]
     res = subprocess.run(cmd, cwd=REPO, input=spec, capture_output=True, text=True)
     try:
         dispatch = (json.loads(res.stdout).get("result") or {}).get("dispatchId")
@@ -2612,9 +2720,95 @@ def cmd_feature_review(branch):
         dispatch = None
     if res.returncode != 0 or not dispatch:
         die(f"worker-start for the feature review failed:\n{(res.stdout or res.stderr).strip()[:2000]}")
+    return dispatch, entry
+
+
+def cmd_feature_review(branch):
+    """Start the feature reviewer on the whole branch: the reviews per ticket
+    never saw how the tickets fit together."""
+    state_file = feature_file(branch, ".json")
+    if not state_file.exists():
+        die(f"run `job finish {branch}` first: it syncs and checks the branch")
+    state = json.loads(state_file.read_text())
+    lines = ["Mode: final (every ticket of the feature is done)."]
+    notes = feature_file(branch, "-integration.md")
+    if notes.exists():
+        lines.append(f"Integration notes from the mid-feature reviews: {notes}.")
+    comments = feature_file(branch, "-pr-comments.md")
+    if state.get("pr_comments") and comments.exists():
+        lines.append(f"PR comments: {comments}; triage every one marked untriaged in your file's "
+                     "`## PR comments` section.")
+        state["triage_asked"] = state.get("pr_comments_untriaged") or []
+    dispatch, entry = start_feature_reviewer(branch, state["worktree"], state["tip"],
+                                             feature_file(branch, "-review.md"), lines, f"feature-review {branch}")
     state["dispatch"] = dispatch
     state_file.write_text(json.dumps(state, indent=2))
     print(f"{branch}: feature review started on {describe(entry)}, dispatch {dispatch}")
+
+
+def merged_into(branch):
+    """How many jobs have merged into <branch>."""
+    return sum(1 for j in all_jobs() if jbase(j) == branch and j["stage"] == "merged")
+
+
+def cmd_mid_review(branch):
+    """Start a mid-feature review of <branch> while its tickets are still being
+    built: its findings go to <slug>-integration.md, which the intake, spec and
+    builder prompts of every later job for the branch point to, instead of
+    becoming tickets of their own."""
+    if branch == BASE:
+        die(f"{branch} is base_branch; a mid-feature review is for a feature branch")
+    jobs, tickets = open_work_for(branch)
+    if GITHUB:
+        run(["git", "fetch", "origin", branch])
+    ref = ref_of(branch)
+    if run(["git", "rev-parse", "--verify", "-q", ref], check=False).returncode != 0:
+        die(f"{ref} doesn't exist")
+    # Detached, so the branch stays free for `job finish` to check out.
+    where = worktree_base() / f"_midreview-{feature_slug(branch)}"
+    if where.exists():
+        run(["git", "checkout", "-q", "--detach", ref], cwd=where)
+    else:
+        where.parent.mkdir(parents=True, exist_ok=True)
+        run(["git", "worktree", "add", "-q", "--detach", str(where), ref])
+    tip = run(["git", "rev-parse", "HEAD"], cwd=where).stdout.strip()
+    notes = feature_file(branch, "-integration.md")
+    notes.parent.mkdir(parents=True, exist_ok=True)
+    open_work = ", ".join(jobs + tickets) or "none listed"
+    lines = [f"Mode: mid-feature (tickets still open: {open_work}). Propose no tickets: write your findings "
+             f"for the jobs still to come; rewrite the file, keeping the earlier findings that still hold."]
+    dispatch, entry = start_feature_reviewer(branch, where, tip, notes, lines, f"mid-review {branch}")
+    state_file = feature_file(branch, "-mid.json")
+    state = json.loads(state_file.read_text()) if state_file.exists() else {}
+    state.update({"merged": merged_into(branch), "tip": tip, "worktree": str(where), "dispatch": dispatch,
+                  "at": now()})
+    state_file.write_text(json.dumps(state, indent=2))
+    print(f"{branch}: mid-feature review started on {describe(entry)}, dispatch {dispatch}; it writes "
+          f"{notes.relative_to(REPO)}, which later jobs for {branch} read")
+
+
+def mid_review_due(job):
+    """After a job merged into a feature branch: start a mid-feature review on
+    every `feature_review_every`-th merge since the last one, while the feature
+    still has open tickets (when it has none, `job finish` reviews it)."""
+    every = CONFIG.get("feature_review_every") or 0
+    branch = jbase(job)
+    if not every or branch == BASE:
+        return
+    jobs, tickets = open_work_for(branch)
+    if not jobs and not tickets:
+        return
+    state_file = feature_file(branch, "-mid.json")
+    last = json.loads(state_file.read_text()).get("merged", 0) if state_file.exists() else 0
+    count = merged_into(branch) - last
+    if count < every:
+        return
+    print(f"{branch}: {count} jobs merged since the last feature review (feature_review_every: {every})")
+    try:
+        cmd_mid_review(branch)
+    except SystemExit:
+        print(f"{branch}: the mid-feature review didn't start; start it with "
+              f"`factory/bin/job feature-review {branch} --mid`")
 
 
 # ---- Commands --------------------------------------------------------------
@@ -3240,6 +3434,7 @@ def cmd_merge(job):
     elif CONFIG.get("retro_after_merge"):
         print(f"{job['id']}: no retro: the job went through without friction")
     feature_hint(job)
+    mid_review_due(job)
 
 
 MERGE_ATTEMPTS = 3
@@ -3518,7 +3713,18 @@ def job_header(job, role):
     return (f"Job: {job['id']}. Job folder: {job_dir(job['id'])}/. Main checkout: {REPO}. "
             f"Worktree: {where}. Branch: {branch}. Base: {jref(job)} (merges into {jbase(job)}). "
             f"Tracker: {job.get('tracker', TRACKER)}. Issue: {job['issue']}."
-            + (f" Pre-review: {pre_review(job)}." if role == "builder" and pre_review(job) else ""))
+            + (f" Pre-review: {pre_review(job)}." if role == "builder" and pre_review(job) else "")
+            + integration_note(job, role))
+
+
+def integration_note(job, role):
+    """For the intake, spec and builder prompts of a job on a feature branch that
+    had a mid-feature review: where its findings are, or "" when it had none."""
+    notes = feature_file(jbase(job), "-integration.md")
+    if jbase(job) == BASE or not (role in {"intake", "spec"} or role.startswith("builder")) or not notes.exists():
+        return ""
+    return (f" Integration notes: {notes} (a mid-feature review of {jbase(job)}: how the tickets merged so "
+            "far fit together); read it, and where this ticket touches what a finding names, follow it.")
 
 
 def pre_review(job):
@@ -4086,8 +4292,9 @@ def main(argv):
             cmd_route_set(resolve(args[0]), args[1:])
         elif cmd == "finish" and len([a for a in args if a != "--pr"]) == 1:
             cmd_finish(next(a for a in args if a != "--pr"), pr_only="--pr" in args)
-        elif cmd == "feature-review" and len(args) == 1:
-            cmd_feature_review(args[0])
+        elif cmd == "feature-review" and len([a for a in args if a != "--mid"]) == 1:
+            branch = next(a for a in args if a != "--mid")
+            cmd_mid_review(branch) if "--mid" in args else cmd_feature_review(branch)
         elif cmd == "approve" and len(args) == 1:
             cmd_approve(resolve(args[0]))
         elif cmd == "feedback" and len(args) == 1:
