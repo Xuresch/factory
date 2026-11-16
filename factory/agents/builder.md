@@ -29,11 +29,14 @@ other jobs.
 3. When a round's gate failed, `round-<N>/checks.md` and `checks.log` in the
    job folder: the failing output of `factory/checks.sh`.
 4. When reviews asked for changes, every `review-*.md` in the round folder the
-   message names. Address each finding in a `VERDICT: CHANGES` file. Notes in
-   `VERDICT: PASS` files are optional. Carry out the UX and UI reviewers'
-   findings as written: they are build instructions, and the design judgment
-   is theirs, not yours. Where one is ambiguous or contradicts the spec, do
-   the closest reading and say so in build.md.
+   message names. Each finding has an id and a severity: `F1 [blocker]`,
+   `F2 [should]`, `F3 [nit]`. Answer every blocker and should of a
+   `VERDICT: CHANGES` file, and every earlier finding it calls `still open`,
+   under `## Review findings` in build.md: see "Answer the findings" below.
+   Nits and Notes are optional. Carry out the UX and UI reviewers' findings as
+   written: they are build instructions, and the design judgment is theirs,
+   not yours. Where one is ambiguous or contradicts the spec, do the closest
+   reading and say so in build.md.
 5. When the prompt names a `feedback-*.md` file, read it: the user's feedback
    after the job escalated. Read `decision.md` and every round folder too, so
    you know the history. The feedback comes before the reviews and the spec
@@ -120,6 +123,31 @@ If a skill is missing on this machine, carry on without it.
   `factory/config.json`; the gate fails the branch if you do. If the spec
   can't be met without changing a protected file, write a BLOCKED build.md
   that says which file and why.
+
+## Answer the findings
+
+Check each finding against the code yourself before you change anything. A
+reviewer can be wrong, and a fix you don't believe in makes the change worse.
+
+- **You agree:** make the smallest fix. Prefer deleting or narrowing code
+  over a new helper, option, lock or cache. Fix the case the finding names,
+  not every case like it. Add one focused test that fails without the fix
+  when the spec needs the behaviour. Answer `<lens> F<n> fixed: <what you
+  changed>`.
+- **You disagree:** change nothing for it and answer `<lens> F<n> disagree:
+  <evidence>`: a `file:line`, a test, command output. "I think it's fine" is
+  not evidence. The reviewer reads it next round and withdraws the finding
+  or keeps it open; a finding you disputed that stays open goes to a human
+  with both sides. Don't agree just to end the loop, and don't dispute to
+  avoid work. You can't dispute a UX or UI finding: the factory refuses it.
+- **A nit:** fix it when it costs nothing, otherwise leave it. `<lens> F<n>
+  declined: <why>` is allowed for nits only.
+
+Review rounds tend to grow a change one cheap-looking fix at a time. Before
+READY in a round after reviews, run `git diff --shortstat <base>...HEAD` and
+compare it with what the last round's `diff.md` says: when your fixes grew the
+change by much, cut first. The factory measures it too, and a change that
+keeps growing through reviews goes to a human.
 
 ## Long commands
 
@@ -248,6 +276,10 @@ The commands you ran and whether each one passed.
 ## Self-review
 What you checked in your own diff before READY, and what you changed.
 
+## Review findings
+code F1 fixed: <what you changed>
+code F2 disagree: <evidence: file:line, a test, output>
+
 ## Log
 ### Round <N>
 What you did this round. On rounds after the first, list each gate failure or
@@ -256,6 +288,12 @@ review finding and what you did about it, or why you didn't change anything.
 
 `## Summary` is 3 to 5 short bullets a human can skim on the dashboard. The
 detail goes in the sections below it.
+
+`## Review findings` has one line for each blocker, should and still-open
+finding of the last reviews, starting with the lens and the id. The factory
+refuses READY while one is unanswered. Keep the section until those lenses
+have reviewed again; leave it out in a round with no findings to answer
+(round 1, or after a human's feedback, which closes the earlier findings).
 
 The first line is one of three:
 

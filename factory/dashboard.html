@@ -598,7 +598,7 @@ async function listFiles(dir) {
 }
 
 const ORDER = ['issue.md', 'intake.md', 'spec.md', 'build.md', 'decision.md', 'rejection.md']
-const ROUND_ORDER = ['checks', 'review-code', 'review-security', 'review-ux', 'review-ui', 'merge-checks']
+const ROUND_ORDER = ['checks', 'diff', 'review-code', 'review-security', 'review-ux', 'review-ui', 'merge-checks']
 
 function fileRank(path) {
   if (ORDER.includes(path)) return [0, ORDER.indexOf(path), path]
@@ -615,8 +615,8 @@ function sortFiles(files) {
 }
 
 function tone(first) {
-  if (/^(VERDICT:\s*PASS|GATE:\s*PASS|APPROVE|STATUS:\s*READY|DECISION:\s*ACCEPT)$/.test(first)) return 'good'
-  if (/^(VERDICT:\s*CHANGES|DECISION:\s*NEEDS-INFO|DECISION:\s*PROTECTED|STATUS:\s*PARTIAL)$/.test(first)) return 'warn'
+  if (/^(VERDICT:\s*PASS|GATE:\s*PASS|APPROVE|STATUS:\s*READY|DECISION:\s*ACCEPT|DIFF:\s*OK)$/.test(first)) return 'good'
+  if (/^(VERDICT:\s*CHANGES|DECISION:\s*NEEDS-INFO|DECISION:\s*PROTECTED|STATUS:\s*PARTIAL|DIFF:\s*GROWN)$/.test(first)) return 'warn'
   if (/^(ESCALATE|REJECTED|STATUS:\s*BLOCKED|GATE:\s*FAIL|DECISION:\s*REJECT)$/.test(first)) return 'stop'
   return null
 }

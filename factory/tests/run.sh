@@ -88,12 +88,20 @@ intake() {  # intake <job> <risk> <surfaces> [extra header lines]
     "$2" "$3" "${4:-}" > "factory/jobs/$1/intake.md"
 }
 
-ready() {  # ready <job>: a READY build.md with a self-review
-  printf 'STATUS: READY\n\n# Build\n\n## Summary\n- ok\n\n## Self-review\nChecked.\nPre-review: no findings.\n' > "factory/jobs/$1/build.md"
+ready() {  # ready <job>: a READY build.md with a self-review; answers every finding the reviews listed as fixed
+  { printf 'STATUS: READY\n\n# Build\n\n## Summary\n- ok\n\n## Self-review\nChecked.\nPre-review: no findings.\n\n## Review findings\n'
+    local f lens; for f in "factory/jobs/$1"/round-*/review-*.md; do
+      [[ -f "$f" ]] || continue; lens=${f##*/review-}; lens=${lens%.md}
+      grep -o '^F[0-9]* \[' "$f" | while read -r id _; do echo "$lens $id fixed: done"; done
+    done; true; } > "factory/jobs/$1/build.md"
 }
 
-review() {  # review <job> <round> <lens> <PASS|CHANGES>
-  printf 'VERDICT: %s\n\n## Summary\n- ok\n\n## Standards\nNone.\n\n## Spec\nMet.\n\n## Findings\nNone.\n' "$4" \
+review() {  # review <job> <round> <lens> <PASS|CHANGES>: CHANGES lists one [should]; earlier findings are resolved
+  local f earlier=""; for f in "factory/jobs/$1"/round-*/review-"$3".md; do
+    [[ -f "$f" && "$f" != *"/round-$2/"* ]] && earlier+=$(grep -o '^F[0-9]* \[' "$f" | while read -r id _; do echo "$id resolved"; done)$'\n'
+  done
+  local findings="None."; [[ "$4" == CHANGES ]] && findings="F$2 [should] x.txt:1 fix it"
+  printf 'VERDICT: %s\n\n## Summary\n- ok\n\n## Standards\nNone.\n\n## Spec\nMet.\n\n## Earlier findings\n%s\n## Findings\n%s\n' "$4" "$earlier" "$findings" \
     > "factory/jobs/$1/round-$2/review-$3.md"
 }
 
@@ -193,7 +201,7 @@ elif cmd == ["issue", "close"]:
     i = load(f"issue-{args[2]}.json"); i["state"] = "CLOSED"; save(f"issue-{args[2]}.json", i)
 elif cmd == ["pr", "create"]:
     save("pr.json", {"number": 7, "url": "https://github.com/o/r/pull/7", "headRefName": opt("--head"),
-                     "state": "OPEN", "isDraft": "--draft" in args, "statusCheckRollup": []})
+                     "state": "OPEN", "isDraft": "--draft" in args, "statusCheckRollup": [], "body": opt("--body")})
     print("https://github.com/o/r/pull/7")
 elif cmd == ["pr", "list"]:
     ok = pr and pr["state"] == "OPEN" and opt("--head") in (None, pr["headRefName"])
@@ -202,6 +210,8 @@ elif cmd == ["pr", "view"]:
     print(json.dumps({"headRefOid": head(), **pr}))
 elif cmd == ["pr", "ready"]:
     pr["isDraft"] = False; save("pr.json", pr)
+elif cmd == ["pr", "edit"]:
+    pr["body"] = opt("--body"); save("pr.json", pr)
 elif cmd == ["pr", "merge"]:
     fail = load("merge-fail.json")
     if fail and fail["count"] > 0:
@@ -2065,6 +2075,141 @@ PY
   local want; want=$(python3 -c "import json; print(repr(json.load(open('$FACTORY_SRC/config.json'))['labels'].get('factory')))")
   check "added with the template's value" "$(python3 -c "import json; print(json.load(open('factory/config.json'))['labels'])")" "'factory': $want" &&
   check "own value kept" "$(python3 -c "import json; print(json.load(open('factory/config.json'))['labels']['queue'])")" "agent-go"
+}
+
+# ---- findings: severities, stable ids, the builder's answers, disputes --------
+
+rv() {  # rv <job> <round> <lens> <PASS|CHANGES> <earlier findings lines> <findings lines>
+  printf 'VERDICT: %s\n\n## Summary\n- ok\n\n## Standards\nNone.\n\n## Spec\nMet.\n\n## Earlier findings\n%s\n\n## Findings\n%s\n' \
+    "$4" "$5" "$6" > "factory/jobs/$1/round-$2/review-$3.md"
+}
+
+built() {  # built <job> <review findings lines>: a READY build.md with these answers
+  printf 'STATUS: READY\n\n# Build\n\n## Summary\n- ok\n\n## Self-review\nChecked.\nPre-review: no findings.\n\n## Review findings\n%s\n' \
+    "$2" > "factory/jobs/$1/build.md"
+}
+
+regate() {  # regate <job>: build → gate → review, with the build.md that is there
+  J advance "$1" gate >/dev/null && factory/bin/gate "$1" >/dev/null && J advance "$1" review >/dev/null
+}
+
+t_findings_verdict_fits_severity() {
+  new_repo sev; ticket 01 One; commit_all
+  local id; id=$(to_build 01 medium none); build_commit "$id" y.txt y; to_review "$id"
+  rv "$id" 1 code CHANGES "" "None."
+  check "CHANGES needs a blocker or a should" "$(J advance "$id" build 2>&1)" "no finding is a blocker or a should" || return 1
+  rv "$id" 1 code CHANGES "" "1. x.txt:1 old format"
+  check "a finding without id and severity doesn't count" "$(J advance "$id" build 2>&1)" "F<n> [blocker|should|nit]" || return 1
+  rv "$id" 1 code CHANGES "" "F1 [nit] x.txt:1 rename it"
+  check "only nits is a PASS" "$(J advance "$id" build 2>&1)" "a review with only nits is a PASS" || return 1
+  rv "$id" 1 code PASS "" "- **F1** [blocker] x.txt:1 wrong result"
+  check "PASS can't leave a blocker" "$(J advance "$id" approve 2>&1)" "it says PASS but leaves F1 open" || return 1
+  rv "$id" 1 code PASS "" "F1 [nit] x.txt:1 rename it"
+  check "nits pass" "$(J advance "$id" approve 2>&1)" "$id: approve"
+}
+
+t_findings_answered_next_round() {
+  new_repo answers; ticket 01 One; commit_all
+  local id; id=$(to_build 01 medium ui); build_commit "$id" y.txt y; to_review "$id"
+  rv "$id" 1 code CHANGES "" $'F1 [blocker] x.txt:1 wrong result\nF2 [nit] x.txt:2 name it better'
+  rv "$id" 1 ux CHANGES "" "F1 [should] page: the button says Go, make it Save"; review "$id" 1 ui PASS
+  J advance "$id" build >/dev/null; build_commit "$id" y.txt y2
+  built "$id" "ux F1 fixed: says Save"
+  check "an open finding needs an answer" "$(J advance "$id" gate 2>&1)" "build.md doesn't answer code F1 (round-1/review-code.md)" || return 1
+  built "$id" $'code F1 declined: later\nux F1 fixed: says Save'
+  check "declined is for nits" "$(J advance "$id" gate 2>&1)" "\`declined\` is for nits" || return 1
+  built "$id" $'code F1 disagree:\nux F1 fixed: says Save'
+  check "disagree needs evidence" "$(J advance "$id" gate 2>&1)" "disagrees with code F1 without evidence" || return 1
+  built "$id" $'code F1 fixed: guarded it\nux F1 disagree: Go is fine'
+  check "ux findings are binding" "$(J advance "$id" gate 2>&1)" "the ux reviewer's findings are build instructions" || return 1
+  built "$id" $'- code F1 fixed: guarded it\n- **ux F1** fixed: says Save'
+  regate "$id" || return 1
+  check "answers recorded" "$(field "$id" "d['answers']['2']['code F1']['status']")" "fixed" || return 1
+  J start "$id" reviewer-code >/dev/null
+  check "the reviewer is told what to answer" "$(cat "$SPECS")" \
+    "Earlier findings to answer under \`## Earlier findings\`: F1 (round-1/review-code.md)" &&
+  check "and where to number from" "$(cat "$SPECS")" "Number new findings from F3." || return 1
+  rv "$id" 2 ux PASS "F1 resolved" "None."; rv "$id" 2 code PASS "" "None."
+  check "an earlier finding needs a status" "$(J advance "$id" approve 2>&1)" \
+    "doesn't say what became of F1 from round-1/review-code.md" || return 1
+  check "next sends that to the reviewer" "$(J next "$id")" "review-code.md does not count" || return 1
+  rv "$id" 2 code PASS "F1 still open: the guard misses 0" "None."
+  check "still open is no PASS" "$(J advance "$id" approve 2>&1)" "it says PASS but leaves F1 open" || return 1
+  rv "$id" 2 code PASS $'F1 resolved\n' "F3 [nit] y.txt:1 comment"
+  check "resolved passes" "$(J advance "$id" approve 2>&1)" "$id: approve"
+}
+
+dispute_setup() {  # dispute_setup <name>: round 1 found code F1, the builder disputed it in round 2; sets id
+  new_repo "$1"; ticket 01 One; commit_all
+  id=$(to_build 01 medium none); build_commit "$id" y.txt y; to_review "$id"
+  rv "$id" 1 code CHANGES "" "F1 [should] y.txt:1 handle the empty list"
+  J advance "$id" build >/dev/null; build_commit "$id" z.txt z
+  built "$id" "code F1 disagree: the caller in x.txt:1 never passes an empty list"
+  regate "$id"
+}
+
+t_dispute_goes_to_a_human() {
+  local id; dispute_setup dispute || return 1
+  J start "$id" reviewer-code >/dev/null
+  rv "$id" 2 code CHANGES "F1 still open: the API is public, other callers will" "None."
+  check "next: a human decides" "$(J next "$id")" "advance: factory/bin/job advance $id needs-human" &&
+  check "another round is refused" "$(J advance "$id" build 2>&1)" "code F1 stayed disputed: go to needs-human" || return 1
+  J advance "$id" needs-human >/dev/null
+  local why; why=$(cat "factory/jobs/$id/decision.md")
+  check "the finding" "$why" "**code F1** [should] y.txt:1 handle the empty list" &&
+  check "the builder's side" "$why" "- Builder: the caller in x.txt:1 never passes an empty list" &&
+  check "the reviewer's side" "$why" "- Reviewer: the API is public, other callers will" &&
+  check "round 2 of 3: no round was spent" "$(field "$id" "d['round'], d['round_limit']")" "(2, 3)" || return 1
+  echo "The builder is right: the list is never empty." | J feedback "$id" >/dev/null
+  build_commit "$id" z.txt z2; built "$id" ""
+  check "after the human decided, nothing is owed" "$(regate "$id" && field "$id" "d['stage']")" "review" || return 1
+  J start "$id" reviewer-code >/dev/null
+  check "the reviewer gets no earlier findings" "[$(tail -1 "$SPECS" | grep -c 'Earlier findings to answer')]" "[0]" || return 1
+  rv "$id" 3 code PASS "" "None."
+  check "and the job goes on" "$(J advance "$id" approve 2>&1)" "$id: approve"
+}
+
+t_dispute_withdrawn_or_off() {
+  local id; dispute_setup withdrawn || return 1
+  rv "$id" 2 code PASS "F1 withdrawn: the builder is right, one caller" "None."
+  check "the reviewer gives in: PASS" "$(J advance "$id" approve 2>&1)" "$id: approve" || return 1
+  dispute_setup disputeoff || return 1; set_config max_disputes 0
+  rv "$id" 2 code CHANGES "F1 still open: the API is public" "None."
+  check "max_disputes 0: another round" "$(J advance "$id" build 2>&1)" "$id: build (round 3)"
+}
+
+t_diff_growth_flagged() {
+  new_repo growth; ticket 01 One; commit_all
+  local id; id=$(to_build 01 medium none); build_commit "$id" y.txt "$(seq 40)"; to_review "$id"
+  check "round 1 is the baseline" "$(cat "factory/jobs/$id/round-1/diff.md")" "DIFF: OK" &&
+  check "its size" "$(cat "factory/jobs/$id/round-1/diff.md")" "Round 1: 1 file(s), +40 -0." || return 1
+  review "$id" 1 code CHANGES; J advance "$id" build >/dev/null
+  build_commit "$id" z.txt "$(seq 30)"; to_review "$id"
+  check "small growth is fine" "$(head -1 "factory/jobs/$id/round-2/diff.md")" "DIFF: OK" || return 1
+  review "$id" 2 code CHANGES; J advance "$id" build >/dev/null
+  build_commit "$id" w.txt "$(seq 60)"; to_review "$id"
+  local diff; diff=$(cat "factory/jobs/$id/round-3/diff.md")
+  check "the reviews grew the change" "$diff" "DIFF: GROWN" &&
+  check "by how much" "$diff" "The change is 3.2x its size in round 1" &&
+  check "kept in job.json" "$(field "$id" "d['diff_grown'], d['diff_sizes']['3']['insertions']")" "(True, 130)"
+}
+
+t_gh_pr_review_table() {
+  new_gh_repo ghtable; gh_issue 1 One
+  local id; id=$(gh_to_approve 1) || return 1
+  rv "$id" 1 code CHANGES "" $'F1 [blocker] y.txt:1 wrong\nF2 [nit] y.txt:1 name'
+  J advance "$id" build >/dev/null
+  local body; body=$(python3 -c "import json; print(json.load(open('$GH/pr.json'))['body'])")
+  check "the builder's text stays" "$body" "b" &&
+  check "table in the PR" "$body" "## Factory review" &&
+  check "round 1" "$body" "| code | CHANGES (1 blocker, 1 nit)<br>claude/sonnet:medium |" || return 1
+  build_commit "$id" y.txt y2; (cd ".worktrees/$id" && git push -q origin "factory/$id")
+  built "$id" "code F1 fixed: right now"; regate "$id" || return 1
+  rv "$id" 2 code PASS "F1 resolved" "None."; J advance "$id" approve >/dev/null
+  body=$(python3 -c "import json; print(json.load(open('$GH/pr.json'))['body'])")
+  check "round 2 next to it" "$body" "| code | CHANGES (1 blocker, 1 nit)<br>claude/sonnet:medium | PASS<br>claude/sonnet:medium |" &&
+  check "the gate row" "$body" "| gate | PASS | PASS |" &&
+  check "one table, not two" "[$(grep -c '## Factory review' <<< "$body")]" "[1]"
 }
 
 # ---- runner ----------------------------------------------------------------

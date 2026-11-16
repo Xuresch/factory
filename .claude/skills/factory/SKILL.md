@@ -353,16 +353,24 @@ a Claude review and the other way round. **WAIT FOR ALL.** Each time one finishe
 `factory/bin/job sync <id>` so the dashboard fills in. When every reviewer has
 finished:
 
-- `advance` refuses because a review doesn't count (no verdict, or a required
-  section such as `## Standards` or `## Spec` missing): `job send` that
-  reviewer the refusal, and advance again when it reports.
+- `advance` refuses because a review doesn't count (no verdict, a required
+  section such as `## Standards` or `## Spec` missing, a CHANGES without a
+  `[blocker]` or `[should]` finding, or an earlier finding without a status
+  under `## Earlier findings`): `job send` that reviewer the refusal, and
+  advance again when it reports.
 - all PASS: `factory/bin/job advance <id> approve`, then
   `factory/bin/job start <id> approver`. In a merge-only round whose change
   was approved before, `advance` writes `decision.md` (`APPROVE`, carried from
   round k) itself and prints `approval carried`: don't start the approver
   (`job start` refuses), run `factory/bin/job merge <id>`.
 - any CHANGES: `factory/bin/job advance <id> build` (or `needs-human` when it
-  refuses because this was the last round), then `factory/bin/job send <id> builder "Round <N-1> reviews are in round-<N-1>/. Address every VERDICT: CHANGES, push, and update build.md for round <N>."`
+  refuses because this was the last round, or because a finding `stayed
+  disputed`: the builder answered it `disagree` and the reviewer kept it
+  open, so `advance` writes both sides into `decision.md` and a human
+  decides), then `factory/bin/job send <id> builder` with the message
+  `job next <id>` prints: the builder answers every blocker and should under
+  `## Review findings` in build.md. `advance <id> gate` refuses a build.md
+  that leaves one unanswered: `job send` the builder the refusal.
   When ux or ui asked for changes, `advance` switches the builder to the
   fallback (claude), says so, and clears its dispatch id: `send` refuses, so
   `job start <id> builder` with the same message plus the take-over line.

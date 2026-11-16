@@ -934,7 +934,7 @@ def sync(job):
                 f = rd / f"review-{r}.md"
                 line = first_line(f)
                 m = re.fullmatch(r"VERDICT:\s*(PASS|CHANGES)", line or "")
-                problem = review_problem(r, f, m)
+                problem = review_problem(r, f, m, job if job["stage"] == "review" else None)
                 job["reviews"][r] = "pending" if line is None else "invalid" if problem else m.group(1)
                 if problem and line is not None:
                     job["review_problems"][r] = problem
@@ -1112,16 +1112,277 @@ def is_merged(job):
     return run(["git", "merge-base", "--is-ancestor", tip, jbase(job)], check=False).returncode == 0
 
 
-def review_problem(lens, path, verdict):
+# ---- Findings: ids, severities, answers, disputes ----------------------------
+#
+# A review lists each finding as `F<n> [blocker|should|nit] <path:line> ...`
+# under `## Findings`. Ids are per lens and stay the same in every round. Only
+# a blocker or a should makes a review CHANGES. In the next round the builder
+# answers each of them in build.md under `## Review findings`
+# (`<lens> F<n> fixed: ...` or `<lens> F<n> disagree: <evidence>`), and the
+# reviewer says under `## Earlier findings` what became of it
+# (`F<n> resolved`, `F<n> still open: <why>` or `F<n> withdrawn: <why>`).
+# A finding the builder disputed and the reviewer kept open goes to a human
+# with both sides instead of costing another round (config.json `max_disputes`).
+# A human's feedback or a rewind closes every earlier finding
+# (`findings_reset`): the feedback decides, and every lens looks again.
+
+BLOCKING = {"blocker", "should"}
+FINDING_RE = re.compile(r"^[ \t]*(?:[-*][ \t]+|\d+[.)][ \t]+)?\**(F\d+)\**:?[ \t]*\[(blocker|should|nit)\][ \t]*(.*)$", re.I | re.M)
+EARLIER_RE = re.compile(r"^[ \t]*(?:[-*][ \t]+|\d+[.)][ \t]+)?\**(F\d+)\**[ \t]*[:-]?[ \t]*\**(resolved|still open|withdrawn)\b\**[: \t]*(.*)$",
+                        re.I | re.M)
+ANSWER_RE = re.compile(r"^[ \t]*(?:[-*][ \t]+|\d+[.)][ \t]+)?\**([a-z]+)[ \t]+(F\d+)\**[ \t]*[:-]?[ \t]*\**(fixed|disagree|declined)\b\**[: \t]*(.*)$",
+                       re.I | re.M)
+
+
+def review_findings(path):
+    """({id: (severity, text)} from `## Findings`, {id: (status, text)} from
+    `## Earlier findings`) of a review file. A review the factory carried
+    forward (`## Skipped`) has neither."""
+    if not path.exists() or section(path, "Skipped") is not None:
+        return {}, {}
+    new = {m[1].upper(): (m[2].lower(), m[3].strip()) for m in FINDING_RE.finditer(section(path, "Findings") or "")}
+    earlier = {m[1].upper(): (m[2].lower(), m[3].strip())
+               for m in EARLIER_RE.finditer(section(path, "Earlier findings") or "")}
+    return new, earlier
+
+
+def open_findings(path):
+    """The ids a review leaves for the builder: its blockers and shoulds, and
+    the earlier findings it calls still open."""
+    new, earlier = review_findings(path)
+    return ([i for i, (sev, _) in new.items() if sev in BLOCKING]
+            + [i for i, (status, _) in earlier.items() if status == "still open" and i not in new])
+
+
+def last_review(job, lens, before=None):
+    """(round, path) of the lens's latest review before round `before` (default:
+    this round), or (None, None). Rounds up to `findings_reset` don't count."""
+    for n in range((before or job["round"]) - 1, job.get("findings_reset", 0), -1):
+        f = round_dir(job, n) / f"review-{lens}.md"
+        if f.exists():
+            return n, f
+    return None, None
+
+
+def owed_findings(job, lens):
+    """(round, ids): the findings of `lens` that the round before left open.
+    This round's builder and this round's reviewer each say what became of them."""
+    n, f = last_review(job, lens)
+    return (n, open_findings(f)) if f else (None, [])
+
+
+def next_finding_number(job, lens):
+    used = [int(i[1:]) for n in range(1, job["round"] + 1)
+            for i in review_findings(round_dir(job, n) / f"review-{lens}.md")[0]]
+    return max(used, default=0) + 1
+
+
+def finding_text(job, lens, fid):
+    """What the reviewer first wrote for a finding: `[severity] text`."""
+    for n in range(job["round"], 0, -1):
+        new = review_findings(round_dir(job, n) / f"review-{lens}.md")[0]
+        if fid in new:
+            return f"[{new[fid][0]}] {new[fid][1]}"
+    return "(not found)"
+
+
+def builder_answers(job):
+    """{"<lens> F<n>": (status, text)} from build.md `## Review findings`."""
+    f = job_dir(job["id"]) / "build.md"
+    body = (section(f, "Review findings") or "") if f.exists() else ""
+    return {f"{m[1].lower()} {m[2].upper()}": (m[3].lower(), m[4].strip()) for m in ANSWER_RE.finditer(body)}
+
+
+def check_builder_answers(job):
+    """Before the gate: build.md answers every finding the last reviews left
+    open. Records the answers per round, for the dispute count."""
+    answers, owed = builder_answers(job), {}
+    for lens in reviewers(job):
+        n, ids = owed_findings(job, lens)
+        owed.update({f"{lens} {i}": n for i in ids})
+    if not owed:
+        return
+    how = ("one line each under `## Review findings` in build.md: `<lens> F<n> fixed: <what you changed>` "
+           "or `<lens> F<n> disagree: <evidence: file:line, a test, output>`")
+    missing = [k for k in owed if k not in answers]
+    if missing:
+        raise Refused(f"build.md doesn't answer {', '.join(missing)} "
+                      f"(round-{owed[missing[0]]}/review-{missing[0].split()[0]}.md): {how}")
+    binding = set(CONFIG.get("binding_lenses", ["ux", "ui"]))
+    for key in owed:
+        status, text = answers[key]
+        lens = key.split()[0]
+        require(status != "declined", f"build.md declines {key}, a blocker or should: `declined` is for nits. "
+                                      f"Fix it, or disagree with evidence")
+        require(status != "disagree" or lens not in binding,
+                f"build.md disagrees with {key}, but the {lens} reviewer's findings are build instructions "
+                f"(config.json binding_lenses): carry it out and answer `{key} fixed: ...`")
+        require(status != "disagree" or text, f"build.md disagrees with {key} without evidence: {how}")
+    job.setdefault("answers", {})[str(job["round"])] = {k: {"status": answers[k][0], "text": answers[k][1]} for k in owed}
+
+
+def stuck_disputes(job):
+    """Findings the builder disputed in this round (and `max_disputes` times in
+    all) that this round's review still calls open: [{key, finding, builder,
+    reviewer}]. They go to a human now instead of costing another round."""
+    limit = CONFIG.get("max_disputes", 1)
+    if not limit or job["stage"] != "review":
+        return []
+    reset = job.get("findings_reset", 0)
+    rounds = {int(n): a for n, a in (job.get("answers") or {}).items() if int(n) > reset}
+    now_answers, out = rounds.get(job["round"], {}), []
+    for lens in reviewers(job):
+        f = round_dir(job) / f"review-{lens}.md"
+        if first_line(f) != "VERDICT: CHANGES":
+            continue
+        for fid, (status, why) in review_findings(f)[1].items():
+            key = f"{lens} {fid}"
+            if status != "still open" or (now_answers.get(key) or {}).get("status") != "disagree":
+                continue
+            if sum(1 for a in rounds.values() if (a.get(key) or {}).get("status") == "disagree") >= limit:
+                out.append({"key": key, "finding": finding_text(job, lens, fid),
+                            "builder": now_answers[key]["text"], "reviewer": why or "(no reason given)"})
+    return out
+
+
+def dispute_text(job, stuck):
+    lines = [f"The builder and a reviewer disagree in round {job['round']}, so you decide instead of "
+             f"another round going to it.", ""]
+    for s in stuck:
+        lines += [f"**{s['key']}** {s['finding']}", f"- Builder: {s['builder']}", f"- Reviewer: {s['reviewer']}", ""]
+    lines += [f"Say who is right with `factory/bin/job feedback {job['id']}` (the builder then fixes it, or "
+              f"the finding is closed), or `job approve {job['id']}` to merge the branch as it is. "
+              f"The reviews are in round-{job['round']}/, the builder's answers in build.md."]
+    return "\n".join(lines)
+
+
+def reset_findings(job):
+    """A human's feedback or a rewind: the earlier findings are closed, and the
+    diff's growth is measured from the next reviewed round."""
+    job["findings_reset"] = job["round"]
+
+
+def review_problem(lens, path, verdict, job=None):
     """Why a review file doesn't count, or None. A lens with required sections
-    (config.json `review_sections`, e.g. code: Standards and Spec) must have them."""
+    (config.json `review_sections`, e.g. code: Standards and Spec) must have them.
+    With `job` (a round under review): the verdict fits the findings'
+    severities, and every finding the last round left open is answered."""
     if not path.exists():
         return None
     if not verdict:
         return "its first line isn't `VERDICT: PASS` or `VERDICT: CHANGES`"
     need = CONFIG.get("review_sections", {}).get(lens, [])
     missing = [h for h in need if section(path, h) is None]
-    return f"it has no {', '.join('## ' + h for h in missing)} section" if missing else None
+    if missing:
+        return f"it has no {', '.join('## ' + h for h in missing)} section"
+    if job is None or section(path, "Skipped") is not None:
+        return None
+    n, owed = owed_findings(job, lens)
+    earlier = review_findings(path)[1]
+    unanswered = [i for i in owed if i not in earlier]
+    if unanswered:
+        return (f"its `## Earlier findings` doesn't say what became of {', '.join(unanswered)} from "
+                f"round-{n}/review-{lens}.md: one line each, `F<n> resolved`, `F<n> still open: <why>` "
+                f"or `F<n> withdrawn: <why>`")
+    still = open_findings(path)
+    if verdict.group(1) == "CHANGES" and not still:
+        return ("it says CHANGES but no finding is a blocker or a should: write each finding as "
+                "`F<n> [blocker|should|nit] <path:line> <problem and fix>` under `## Findings`; "
+                "a review with only nits is a PASS")
+    if verdict.group(1) == "PASS" and still:
+        return (f"it says PASS but leaves {', '.join(still)} open (a blocker, a should or `still open`): "
+                f"that is CHANGES, or mark what doesn't block as [nit]")
+    return None
+
+
+# ---- Diff size: reviews must not grow the change ------------------------------
+
+
+def record_diff(job, head):
+    """The size of the job's change at `head`, kept per reviewed round and
+    written to round-<N>/diff.md. `DIFF: GROWN` when review rounds grew it past
+    config.json `diff_growth` (ratio and min_lines) since the first reviewed
+    round; reviewers and the approver read it."""
+    exclude = [f":(exclude){p}" for p in (CONFIG.get("lockfile_regenerate") or {})]
+    out = git(job, "diff", "--shortstat", f"{jref(job)}...{head}", "--", ".", *exclude, check=False).stdout
+    num = lambda word: int(m.group(1)) if (m := re.search(rf"(\d+) {word}", out)) else 0
+    size = {"files": num("file"), "insertions": num("insertion"), "deletions": num("deletion")}
+    sizes = job.setdefault("diff_sizes", {})
+    sizes[str(job["round"])] = size
+    show = lambda s: f"{s['files']} file(s), +{s['insertions']} -{s['deletions']}"
+    total = lambda s: s["insertions"] + s["deletions"]
+    first = min(n for n in map(int, sizes) if n > job.get("findings_reset", 0))
+    base, cfg = sizes[str(first)], CONFIG.get("diff_growth") or {}
+    lines = [f"- Round {job['round']}: {show(size)}."]
+    grown = False
+    if first != job["round"]:
+        lines.append(f"- Round {first}, the first reviewed round: {show(base)}.")
+        ratio = total(size) / total(base) if total(base) else 0
+        grown = bool(cfg.get("ratio") and ratio >= cfg["ratio"]
+                     and total(size) - total(base) >= cfg.get("min_lines", 0))
+        if grown:
+            lines.append(f"- The change is {ratio:.1f}x its size in round {first}. Review fixes should be "
+                         f"small: what was added that neither the spec nor a finding needs?")
+    job["diff_grown"] = grown
+    (round_dir(job) / "diff.md").write_text(f"DIFF: {'GROWN' if grown else 'OK'}\n\n## Summary\n" + "\n".join(lines) + "\n")
+
+
+# ---- The PR's review table ----------------------------------------------------
+
+REVIEW_BEGIN, REVIEW_END = "<!-- factory:review -->", "<!-- /factory:review -->"
+
+
+def review_table(job):
+    """Markdown: one row per lens, one column per round, for the PR description."""
+    rounds = range(1, job["round"] + 1)
+    log = job.get("review_log") or {}
+    lenses = list(dict.fromkeys([l for n in rounds for l in log.get(str(n), {})] + reviewers(job)))
+
+    def cell(lens, n):
+        f = round_dir(job, n) / f"review-{lens}.md"
+        m = re.fullmatch(r"VERDICT:\s*(PASS|CHANGES)", first_line(f) or "")
+        if not m:
+            return "–"
+        if section(f, "Skipped") is not None:
+            return "carried"
+        new = review_findings(f)[0]
+        counts = [f"{sum(1 for s, _ in new.values() if s == sev)} {sev}" for sev in ("blocker", "should", "nit")
+                  if any(s == sev for s, _ in new.values())]
+        who = log.get(str(n), {}).get(lens)
+        return m.group(1) + (f" ({', '.join(counts)})" if counts else "") + (f"<br>{who}" if who else "")
+
+    def gate(n):
+        f = round_dir(job, n) / "checks.md"
+        return header(f).get("GATE", "–") if f.exists() else "–"
+
+    rows = ["## Factory review", "", f"Rounds: {job['round']}", "",
+            "| | " + " | ".join(f"Round {n}" for n in rounds) + " |", "| --- |" + " --- |" * len(rounds),
+            "| gate | " + " | ".join(gate(n) for n in rounds) + " |"]
+    rows += [f"| {lens} | " + " | ".join(cell(lens, n) for n in rounds) + " |" for lens in lenses]
+    sizes = job.get("diff_sizes") or {}
+    if sizes:
+        rows += ["| diff | " + " | ".join(
+            f"+{sizes[str(n)]['insertions']} -{sizes[str(n)]['deletions']}" if str(n) in sizes else "–"
+            for n in rounds) + " |"]
+    return "\n".join(rows)
+
+
+def update_pr_review(job):
+    """Put the review table into the PR description, between its markers. The
+    PR is where a human approves, so it shows who reviewed what. Never fails a
+    transition."""
+    if not (GITHUB and job.get("pr")):
+        return
+    try:
+        body = gh_json("pr", "view", str(job["pr"]), "--json", "body").get("body") or ""
+        block = f"{REVIEW_BEGIN}\n{review_table(job)}\n{REVIEW_END}"
+        if REVIEW_BEGIN in body and REVIEW_END in body:
+            body = body.split(REVIEW_BEGIN)[0] + block + body.split(REVIEW_END, 1)[1]
+        else:
+            body = f"{body.rstrip()}\n\n{block}\n"
+        gh("pr", "edit", str(job["pr"]), "--body", body)
+    except Exception as e:
+        print(f"{job['id']}: couldn't update the PR's review table: {str(e).strip()[:200]}", file=sys.stderr)
 
 
 def check_reviews_done(job):
@@ -1572,6 +1833,7 @@ def advance(job, stage):
                     f"build.md's `## Self-review` has no `Pre-review:` line: the builder runs "
                     f"{pre_review(job)} on its diff before READY and says what it found and fixed "
                     f"(see its brief)")
+        check_builder_answers(job)
         require(not git(job, "status", "--porcelain").stdout.strip(), "the worktree has uncommitted changes")
         require(int(git(job, "rev-list", "--count", f"{job['base_ref']}..HEAD").stdout) > 0,
                 f"{job['branch']} has no commits on top of {job['base_ref']}")
@@ -1621,6 +1883,9 @@ def advance(job, stage):
             job["merge_only"] = {"round": job["round"], "from": k} if k else None
             job["skipped_reviews"] = carry_merge_only(job, k) if k else skip_unchanged_reviews(job)
             job["reviews"].update({r: "PASS" for r in job["skipped_reviews"]})
+            job.setdefault("review_log", {})[str(job["round"])] = {
+                r: describe(e) for r, e in job["agents"]["reviewers"].items() if r not in job["skipped_reviews"]}
+            record_diff(job, h["COMMIT"])
         else:
             require(h.get("GATE") == "FAIL", "the gate passed")
             last = job["round"] >= job["round_limit"]
@@ -1651,15 +1916,21 @@ def advance(job, stage):
         else:
             require(changes, "every review passed")
             last = job["round"] >= job["round_limit"]
-            require(last == (stage == "needs-human"),
-                    f"round {job['round']} of {job['round_limit']}: go to {'needs-human' if last else 'build'}")
-            if last:
+            stuck = stuck_disputes(job)
+            require((last or bool(stuck)) == (stage == "needs-human"),
+                    (f"{', '.join(s['key'] for s in stuck)} stayed disputed" if stuck else
+                     f"round {job['round']} of {job['round_limit']}")
+                    + f": go to {'needs-human' if last or stuck else 'build'}")
+            if stuck:
+                escalate(job, dispute_text(job, stuck))
+            elif last:
                 escalate(job, f"Review rounds exhausted. Outstanding CHANGES in round-{job['round']}/ "
                               f"from: {', '.join(changes)}.")
             else:
                 maybe_fall_back(job, changes)
                 remember_reviewed(job)
                 next_round(job)
+        update_pr_review(job)
 
     elif old == "approve":
         want = "APPROVE" if stage == "merging" else "ESCALATE"
@@ -1683,6 +1954,7 @@ def advance(job, stage):
         require(feedback and feedback[-1].stat().st_mtime > (d / "decision.md").stat().st_mtime,
                 "use `job feedback` to send a job back to the builder")
         job["round_limit"] = job["round"] + CONFIG["max_rounds"]
+        reset_findings(job)
         job.pop("carry", None)  # a human's feedback: every lens looks again, at the whole change,
         job.pop("reviewed_at", None)  # and no round after it is merge-only
         job.pop("approved", None)
@@ -2485,6 +2757,7 @@ def cmd_rewind(job, target, text):
         for role in ("intake", "spec"):
             (job.get("dispatch") or {}).pop(role, None)
     job["round_limit"] = max(job["round_limit"], job["round"] + CONFIG["max_rounds"])
+    reset_findings(job)
     job.pop("carry", None)  # a human's feedback: every lens looks again, at the whole change,
     job.pop("reviewed_at", None)  # and no round after it is merge-only
     job.pop("approved", None)
@@ -4025,6 +4298,12 @@ def cmd_start(job, role, extra):
     if role.startswith("reviewer-") and job["round"] > 1 and since:
         lines.append(f"Follow-up review: your lens last reviewed {since[:12]}. Review the fixes, "
                      f"`git diff {since[:12]}..HEAD`, not the whole change again.")
+    if role.startswith("reviewer-") and job["stage"] == "review":
+        n, owed = owed_findings(job, lens)
+        if owed:
+            lines.append(f"Earlier findings to answer under `## Earlier findings`: {', '.join(owed)} "
+                         f"(round-{n}/review-{lens}.md); the builder's answers are in build.md `## Review findings`.")
+        lines.append(f"Number new findings from F{next_finding_number(job, lens)}.")
     if port and (role.startswith("builder") or role in {"reviewer-ux", "reviewer-ui"}):
         lines.append(f"Port: {port}.")
     if role == "approver":
@@ -4247,8 +4526,9 @@ def build_message(job):
     elif before.get("stage") == "gate":
         msg = f"The gate failed: read round-{n - 1}/checks.md and checks.log, fix it, push, and update build.md."
     elif before.get("stage") == "review":
-        msg = (f"Round {n - 1} reviews are in round-{n - 1}/. Address every VERDICT: CHANGES, push, "
-               f"and update build.md for round {n}.")
+        msg = (f"Round {n - 1} reviews are in round-{n - 1}/. Answer every [blocker] and [should] finding of a "
+               f"VERDICT: CHANGES review under `## Review findings` in build.md (fix it, or disagree with "
+               f"evidence), push, and update build.md for round {n}.")
     else:
         msg = ""
     if first_line(rd / "base-sync.md") == "SYNC: CONFLICT":
@@ -4336,7 +4616,7 @@ def next_build(job, since):
 
 def after_round(job):
     """Where a failed gate or review goes: another round, or a human after the last."""
-    return "needs-human" if job["round"] >= job["round_limit"] else "build"
+    return "needs-human" if job["round"] >= job["round_limit"] or stuck_disputes(job) else "build"
 
 
 def next_gate(job, since):
@@ -4373,7 +4653,7 @@ def next_review(job, since):
     for lens in reviewers(job):
         f = rd / f"review-{lens}.md"
         m = re.fullmatch(r"VERDICT:\s*(PASS|CHANGES)", first_line(f) or "")
-        problem = review_problem(lens, f, m)
+        problem = review_problem(lens, f, m, job)
         if problem:
             out.append(("send", f"{JOB} send {i} reviewer-{lens} "
                         + shlex.quote(f"review-{lens}.md does not count: {problem}. Fix it and report again.")))

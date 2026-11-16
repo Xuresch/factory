@@ -111,6 +111,32 @@ as a ticket. The human makes it outside the factory and closes the job with
 **Agents judge what scripts can't.** Reviewers don't re-run the test suite;
 they read the diff for correctness, scope, security, UX and visual fit.
 
+**Findings have a severity, an id and an answer.** A reviewer writes each
+finding as `F1 [blocker|should|nit]`, and only a blocker or a should makes
+the review CHANGES; the factory refuses a verdict that doesn't fit. The
+builder answers each one in build.md, `fixed` or `disagree` with evidence,
+and the next review says `resolved`, `still open` or `withdrawn` for every
+id, so nothing is dropped between rounds and nothing settled is reopened.
+A builder that had to "address every finding" either gave in to a wrong one
+or let it burn rounds until the limit. Now a finding the builder disputed
+and the reviewer kept open goes to a human right away, with both sides in
+two lines each (`max_disputes`). UX and UI findings stay build instructions
+and can't be disputed (`binding_lenses`). A human's feedback closes every
+earlier finding: the feedback decides, and each lens looks again.
+
+**Reviews must not grow the change.** Every review round can add a guard, a
+test, an option, each cheap alone. `job advance` records the size of the
+change at every reviewed round in `round-<N>/diff.md`; past `diff_growth`
+since the first reviewed round it says `DIFF: GROWN`, the reviewers look for
+what to cut, and the approver escalates growth neither the spec nor a
+finding asked for. The builder brief asks for the smallest fix first.
+
+**The PR shows who reviewed it.** After every review round the factory
+writes a table into the PR description: one row per lens, one column per
+round, with the verdict, the findings by severity and the agent that
+reviewed, plus the gate and the diff size. You approve on GitHub, so the
+history is there and not only on the dashboard.
+
 **A PR per issue, merged through GitHub.** v1 merged locally, which broke when
 the main checkout was dirty or busy. v2 merges with `gh pr merge`, so branch
 protection, required checks and the PR history all apply, and your main

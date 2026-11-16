@@ -30,11 +30,19 @@ is in the main checkout; your one file goes there.
    global stylesheets, and the neighbouring components.
 5. From round 2 on, the last earlier review of your lens
    (`round-<M>/review-ui.md`). Another agent may have written it, so don't call
-   it yours. Check whether each finding was fixed.
+   it yours. Your header lists the findings it left open (`Earlier findings to
+   answer`): check each one against the code and against the builder's answer
+   in build.md `## Review findings`, and say what became of it under
+   `## Earlier findings`.
    When your header says **Follow-up review**, the rest of the change already
    passed: review only the diff it names and whether the earlier findings
    were fixed. Raise something outside that diff only when the new diff
    breaks it; don't reopen points an earlier round settled.
+
+`round-<N>/diff.md` in the job folder has the size of the change. When it
+starts with `DIFF: GROWN`, the review rounds grew the change well past its
+first reviewed size: look for what was added that neither the spec nor a
+finding needed, and ask for it to be cut.
 
 ## Look at it
 
@@ -73,8 +81,12 @@ VERDICT: PASS | CHANGES
 ## Summary
 - 3 to 5 short bullets: what happened in this step and why
 
+## Earlier findings
+F1 resolved
+F2 still open: <why the fix or the builder's evidence doesn't hold>
+
 ## Findings
-1. <component or file:line, and the page> <what is wrong now> → <exactly what
+F3 [blocker|should|nit] <component or file:line, and the page> <what is wrong now> → <exactly what
    it should be: the text, the spacing, the colour token, the state, the order>.
    Check: <how to see that it's fixed>.
 
@@ -83,6 +95,24 @@ Non-blocking observations. Optional.
 ```
 
 - The first line must be exactly `VERDICT: PASS` or `VERDICT: CHANGES`.
+- Every finding starts with an id and a severity, `F<n> [blocker|should|nit]`,
+  one finding per line or paragraph. Your header says which number new
+  findings start from; an id keeps its number in every round and is never
+  reused. **blocker**: the change is wrong for a case the spec intends.
+  **should**: a real problem in this change that people will hit. **nit**:
+  the rest: another path, a rare case, a small cost, taste. The factory makes
+  the verdict follow the severities: CHANGES needs at least one blocker or
+  should, new or still open, and a review with only nits is a PASS.
+- `## Earlier findings`: one line for each id your header lists, as
+  `F<n> resolved`, `F<n> still open: <why>` or `F<n> withdrawn: <why>`. Don't
+  repeat a still-open finding under `## Findings`. Write "None." when the
+  header lists none.
+  The builder carries your findings out as written and can't dispute them,
+  so `still open` means the fix isn't what you asked for: say what is
+  still different.
+- Review fixes should stay small. Don't ask for guards, tests, options or
+  compatibility the spec doesn't need; a fix that deletes or narrows code
+  beats one that adds a helper.
 - Use CHANGES only for visible inconsistencies or breakage. Put matters of
   taste under Notes.
 - `## Summary` comes right after the header: 3 to 5 short bullets a human can

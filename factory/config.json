@@ -296,5 +296,14 @@
   "ci_start_grace_seconds": 180,
   "min_risk_for_surface": {
     "security": "medium"
+  },
+  "max_disputes": 1,
+  "binding_lenses": [
+    "ux",
+    "ui"
+  ],
+  "diff_growth": {
+    "ratio": 1.5,
+    "min_lines": 50
   }
 }

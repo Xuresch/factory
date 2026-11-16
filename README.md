@@ -61,6 +61,9 @@ gate (script) ─FAIL──┤  factory/checks.sh; no reviewer runs on a failing
 reviewers ─CHANGES───┘  code (claude), + ux & ui on UI changes, + security
         │               CHANGES from ux or ui → next round's builder is claude,
         │               and code/security move to codex
+        │               findings are blocker, should or nit; the builder fixes
+        │               them or disagrees with evidence, and a finding that
+        │               stays disputed goes to you instead of another round
         ▼ all PASS
 approver (claude/opus) ── APPROVE  → sync with main, gate again, gh pr merge
                        └─ ESCALATE → PR ready for you, label ready-for-human

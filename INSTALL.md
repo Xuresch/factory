@@ -178,6 +178,18 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
   code always, security at high). From round 2 on every other lens that passed
   carries its PASS forward; only the lenses that asked for CHANGES run again,
   on the diff since they last looked.
+- `max_disputes` (default `1`): how often the builder may answer the same
+  finding with `disagree` and have the reviewer keep it open before the job
+  goes to a human with both sides, instead of spending another round. `0`
+  never escalates early; the round limit still applies. `binding_lenses`
+  (default `["ux", "ui"]`): lenses whose findings are build instructions, so
+  the builder can't dispute them.
+- `diff_growth` (default `{"ratio": 1.5, "min_lines": 50}`): every reviewed
+  round writes the size of the change to `round-<N>/diff.md`. When the change
+  is `ratio` times its first reviewed size and at least `min_lines` changed
+  lines bigger, the file says `DIFF: GROWN`; the reviewers look for what can
+  be cut and the approver escalates growth nothing asked for. `null` turns
+  the flag off.
 - `review_skip`: leave it `{}`, or name a lens's files so it runs again when a
   later round touches them:
   `{"ui": {"paths": ["src/components/*"], "except": ["*.test.tsx"]}}`.
