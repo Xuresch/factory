@@ -1462,8 +1462,12 @@ t_dashboard_outside() {
   head -3 "$cx/rollout-c1.jsonl" > "$acct/rollout-c1.jsonl"
   local q='import importlib.machinery as m, importlib.util as u, json
 l = m.SourceFileLoader("d", "factory/bin/dashboard"); d = u.module_from_spec(u.spec_from_loader("d", l)); l.exec_module(d)
-r = d.Outside().scan(); r2 = d.Outside().scan()
-print(json.dumps({"months": {k: {a: round(v, 2) for a, v in x.items()} for k, x in sorted(r["months"].items())},
+import os, pathlib
+r = d.Outside().scan(); before = d.CACHE.stat().st_mtime_ns; r2 = d.Outside().scan()
+untouched = d.CACHE.stat().st_mtime_ns == before
+for f in pathlib.Path(os.environ["HOME"], ".claude/projects/-x").glob("s[12].jsonl"): f.unlink()
+r3 = d.Outside().scan()
+print(json.dumps({"untouched": untouched, "kept": r3 == r, "months": {k: {a: round(v, 2) for a, v in x.items()} for k, x in sorted(r["months"].items())},
   "cwds": [c["cwd"] + ":" + str(c["sessions"]) for c in r["by_cwd"]], "unpriced": r["unpriced"],
   "factory": r["factory_sessions"], "cached": r == r2}, sort_keys=True))'
   local out; out=$(env -u CODEX_HOME -u CLAUDE_CONFIG_DIR -u XDG_CACHE_HOME HOME="$h" python3 -c "$q")
@@ -1472,7 +1476,9 @@ print(json.dumps({"months": {k: {a: round(v, 2) for a, v in x.items()} for k, x 
   check "by directory, costliest first, a copy adds no session" "$out" '"cwds": ["/w/api:1", "/w/app:1"]' &&
   check "unpriced model reported by month" "$out" '"unpriced": {"2026-11": {"claude-x": 500}}' &&
   check "second pass from the cache agrees" "$out" '"cached": true' &&
-  check "cache written" "[$(test -s "$h/.cache/factory/usage.json" && echo y)]" "[y]"
+  check "cache written" "[$(test -s "$h/.cache/factory/usage.json" && echo y)]" "[y]" &&
+  check "nothing new, cache not rewritten" "$out" '"untouched": true' &&
+  check "deleted transcripts keep counting" "$out" '"kept": true'
 }
 
 t_high_risk_holds_only_when_needed() {

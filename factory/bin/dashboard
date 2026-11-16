@@ -25,14 +25,15 @@ prices every other Claude Code transcript (~/.claude/projects) and Codex
 session (the homes bin/job reads) on this machine, month by month: `outside`.
 A session whose first lines name a `Job folder: .../factory/jobs/...` belongs to
 a job and is left out, since the job already counts it. Reading 1 GB of sessions
-takes a while, so a background thread does it and caches each file's result in
-~/.cache/factory/usage.json (keyed by size and mtime); until the first pass is
-done `outside.status` is "scanning". `"outside": false` in subscriptions.json
+takes a while, so a background thread does it and caches each file's token
+counts in ~/.cache/factory/usage.json (keyed by size and mtime), priced only when
+served. The cache only grows: a session deleted since (Claude Code drops
+transcripts after 30 days) keeps counting. Until the first pass is done
+`outside.status` is "scanning". `"outside": false` in subscriptions.json
 turns it off.
 """
 
 import functools
-import hashlib
 import http.server
 import json
 import os
@@ -51,7 +52,7 @@ JOB_KEYS = ("id", "stage", "started", "ended", "cost_usd", "cost_by_agent")
 CACHE = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "factory" / "usage.json"
 JOB_FOLDER = re.compile(r"Job folder: \S*/factory/jobs/")
 RESCAN_SECONDS = 300
-CACHE_VERSION = 1  # bump when a file's cached result changes shape
+CACHE_VERSION = 2  # bump when a file's cached result changes shape; that drops the cache
 
 
 def config():
@@ -88,11 +89,12 @@ def claude_user_text(entry):
     return " ".join(b.get("text", "") for b in content or [] if isinstance(b, dict))
 
 
-def scan_claude(path, prices):
-    """{factory, cwd, msgs: {message id: [month, usd]}, unpriced: {model: {month: tokens}}}.
+def scan_claude(path):
+    """{factory, cwd, msgs: {message id: [month, model, input, output, write_5m, write_1h, read]}}.
 
-    Messages are kept by id so a message copied into a resumed session counts once."""
-    out = {"factory": False, "cwd": None, "msgs": {}, "unpriced": {}}
+    Tokens, not dollars, so a price change needs no rescan. Messages are kept by
+    id so a message copied into a resumed session counts once."""
+    out = {"factory": False, "cwd": None, "msgs": {}}
     with path.open(errors="replace") as f:
         for i, line in enumerate(f):
             try:
@@ -103,54 +105,35 @@ def scan_claude(path, prices):
                 continue
             out["cwd"] = out["cwd"] or entry.get("cwd")
             if i <= 40 and JOB_FOLDER.search(claude_user_text(entry)):
-                out["factory"] = True
-                return out
+                return {"factory": True, "cwd": out["cwd"], "msgs": {}}
             msg = entry.get("message")
-            if entry.get("type") != "assistant" or not isinstance(msg, dict) or not msg.get("usage"):
+            if entry.get("type") != "assistant" or not isinstance(msg, dict) or not msg.get("usage") \
+                    or not entry.get("timestamp"):
                 continue
-            u, model = msg["usage"], msg.get("model")
-            split = u.get("cache_creation") or {}
-            write_1h = split.get("ephemeral_1h_input_tokens", 0) or 0
-            write_5m = (u.get("cache_creation_input_tokens", 0) or 0) - write_1h
-            tokens = (u.get("input_tokens", 0) or 0) + (u.get("output_tokens", 0) or 0) + write_5m + write_1h \
-                + (u.get("cache_read_input_tokens", 0) or 0)
-            if not tokens:
-                continue
-            p = prices.get(model)
-            if not p:
-                if entry.get("timestamp"):
-                    by = out["unpriced"].setdefault(str(model), {})
-                    m = month(entry["timestamp"])
-                    by[m] = by.get(m, 0) + tokens
-                continue
-            usd = ((u.get("input_tokens", 0) or 0) * p["input"] + (u.get("output_tokens", 0) or 0) * p["output"]
-                   + write_5m * p["cache_write_5m"] + write_1h * p["cache_write_1h"]
-                   + (u.get("cache_read_input_tokens", 0) or 0) * p["cache_read"]) / 1e6
-            if entry.get("timestamp"):
-                out["msgs"][msg.get("id") or f"{path}:{i}"] = [month(entry["timestamp"]), usd]
+            u = msg["usage"]
+            write_1h = (u.get("cache_creation") or {}).get("ephemeral_1h_input_tokens", 0) or 0
+            row = [u.get("input_tokens", 0) or 0, u.get("output_tokens", 0) or 0,
+                   (u.get("cache_creation_input_tokens", 0) or 0) - write_1h, write_1h,
+                   u.get("cache_read_input_tokens", 0) or 0]
+            if any(row):
+                out["msgs"][msg.get("id") or f"{path}:{i}"] = [month(entry["timestamp"]), str(msg.get("model"))] + row
     return out
 
 
-def codex_usd(u, p):
-    cached = u.get("cached_input_tokens", 0) or 0
-    written = u.get("cache_write_input_tokens", 0) or 0
-    fresh = (u.get("input_tokens", 0) or 0) - cached - written
-    return (fresh * p["input"] + cached * p["cached_input"] + written * p.get("cache_write", p["input"])
-            + (u.get("output_tokens", 0) or 0) * p["output"]) / 1e6
+CODEX_KEYS = ("input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "total_tokens")
 
 
-def scan_codex(path, prices):
-    """{factory, cwd, sid, tokens, months: {month: usd}, unpriced: {model: {month: tokens}}}.
+def scan_codex(path):
+    """{factory, cwd, sid, tokens, usage: {month: {model: {token field: n}}}}.
 
     token_count events carry running totals, so each event adds the growth since
-    the one before, priced at the model of the turn it falls in."""
-    out = {"factory": False, "cwd": None, "sid": path.stem, "tokens": 0, "months": {}, "unpriced": {}}
+    the one before, under the model of the turn it falls in."""
+    out = {"factory": False, "cwd": None, "sid": path.stem, "tokens": 0, "usage": {}}
     model, last = None, {}
     with path.open(errors="replace") as f:
         for i, line in enumerate(f):
             if i <= 60 and JOB_FOLDER.search(line):
-                out["factory"] = True
-                return out
+                return {**out, "factory": True, "usage": {}}
             if '"session_meta"' not in line[:80] and '"turn_context"' not in line[:80] and '"token_count"' not in line:
                 continue
             try:
@@ -165,18 +148,29 @@ def scan_codex(path, prices):
                 model = p.get("model") or model
             elif p.get("type") == "token_count" and p.get("info") and p["info"].get("total_token_usage"):
                 total = p["info"]["total_token_usage"]
-                grown = {k: (total.get(k, 0) or 0) - (last.get(k, 0) or 0) for k in total}
+                grown = {k: (total.get(k, 0) or 0) - (last.get(k, 0) or 0) for k in CODEX_KEYS}
                 last = total
                 out["tokens"] = total.get("total_tokens", 0) or 0
-                if (grown.get("total_tokens", 0) or 0) <= 0 or not entry.get("timestamp"):
+                if grown["total_tokens"] <= 0 or not entry.get("timestamp"):
                     continue
-                m = month(entry["timestamp"])
-                if model not in prices:
-                    by = out["unpriced"].setdefault(str(model), {})
-                    by[m] = by.get(m, 0) + grown["total_tokens"]
-                    continue
-                out["months"][m] = out["months"].get(m, 0) + codex_usd(grown, prices[model])
+                row = out["usage"].setdefault(month(entry["timestamp"]), {}).setdefault(str(model), {})
+                for k, n in grown.items():
+                    row[k] = row.get(k, 0) + n
     return out
+
+
+def claude_usd(row, p):
+    inp, outp, w5m, w1h, read = row
+    return (inp * p["input"] + outp * p["output"] + w5m * p["cache_write_5m"]
+            + w1h * p["cache_write_1h"] + read * p["cache_read"]) / 1e6
+
+
+def codex_usd(u, p):
+    cached = u.get("cached_input_tokens", 0)
+    written = u.get("cache_write_input_tokens", 0)
+    fresh = u.get("input_tokens", 0) - cached - written
+    return (fresh * p["input"] + cached * p["cached_input"] + written * p.get("cache_write", p["input"])
+            + u.get("output_tokens", 0) * p["output"]) / 1e6
 
 
 class Outside:
@@ -205,15 +199,17 @@ class Outside:
             time.sleep(RESCAN_SECONDS)
 
     def scan(self):
+        """Read the sessions that are new or changed since the cache, keep the rest.
+
+        The cache only grows: a session Claude Code or Codex has since deleted
+        keeps its entry, so its months stay counted."""
         cfg = config()
-        prices = cfg["prices_usd_per_mtok"]
-        key = hashlib.sha256(json.dumps([CACHE_VERSION, prices], sort_keys=True).encode()).hexdigest()
         try:
             cache = json.loads(CACHE.read_text())
-            files = cache["files"] if cache.get("prices") == key else {}
+            files = cache["files"] if cache.get("version") == CACHE_VERSION else {}
         except (OSError, ValueError, KeyError):
             files = {}
-        fresh = {}
+        changed = False
         for kind, paths in (("claude", claude_files()), ("codex", codex_files(cfg))):
             for path in paths:
                 try:
@@ -223,59 +219,54 @@ class Outside:
                 stamp = [st.st_size, st.st_mtime_ns]
                 old = files.get(str(path))
                 if old and old["stamp"] == stamp:
-                    fresh[str(path)] = old
                     continue
                 try:
-                    data = (scan_claude if kind == "claude" else scan_codex)(path, prices)
+                    data = (scan_claude if kind == "claude" else scan_codex)(path)
                 except OSError:
                     continue
-                fresh[str(path)] = {"stamp": stamp, "kind": kind, **data}
-        CACHE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = CACHE.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"prices": key, "files": fresh}))
-        tmp.replace(CACHE)
-        return summarize(fresh)
+                files[str(path)] = {"stamp": stamp, "kind": kind, **data}
+                changed = True
+        if changed:
+            CACHE.parent.mkdir(parents=True, exist_ok=True)
+            tmp = CACHE.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"version": CACHE_VERSION, "files": files}))
+            tmp.replace(CACHE)
+        return summarize(files, cfg["prices_usd_per_mtok"])
 
 
-def summarize(files):
+def summarize(files, prices):
     """{status, months: {month: {claude, codex}}, by_cwd: [...], unpriced: {month: {model: tokens}}, factory_sessions}."""
     months, cwds, unpriced, seen_msgs, codex_best = {}, {}, {}, set(), {}
     factory_sessions = 0
 
-    def add(m, agent, usd, cwd):
-        row = months.setdefault(m, {"claude": 0.0, "codex": 0.0})
-        row[agent] += usd
+    def add(m, agent, model, tokens, usd_of, cwd, path):
+        p = prices.get(model)
+        if not p:
+            row = unpriced.setdefault(m, {})
+            row[model] = row.get(model, 0) + tokens
+            return
+        months.setdefault(m, {"claude": 0.0, "codex": 0.0})[agent] += usd_of(p)
         c = cwds.setdefault(cwd or "?", {"cwd": cwd or "?", "claude": 0.0, "codex": 0.0, "sessions": set()})
-        c[agent] += usd
+        c[agent] += usd_of(p)
+        c["sessions"].add(path)
 
     for path, f in sorted(files.items()):
         if f["factory"]:
             factory_sessions += 1
-            continue
-        for model, by in f["unpriced"].items():
-            for m, n in by.items():
-                row = unpriced.setdefault(m, {})
-                row[model] = row.get(model, 0) + n
-        if f["kind"] == "claude":
-            counted = False
-            for mid, (m, usd) in f["msgs"].items():
-                if mid in seen_msgs:
-                    continue
-                seen_msgs.add(mid)
-                add(m, "claude", usd, f["cwd"])
-                counted = True
-            if counted:
-                cwds[f["cwd"] or "?"]["sessions"].add(path)
+        elif f["kind"] == "claude":
+            for mid, (m, model, *row) in f["msgs"].items():
+                if mid not in seen_msgs:
+                    seen_msgs.add(mid)
+                    add(m, "claude", model, sum(row), lambda p, row=row: claude_usd(row, p), f["cwd"], path)
         else:
             # One session can sit in two homes; the longest copy counts.
             best = codex_best.get(f["sid"])
             if not best or f["tokens"] > best["tokens"]:
                 codex_best[f["sid"]] = {**f, "path": path}
     for f in codex_best.values():
-        for m, usd in f["months"].items():
-            add(m, "codex", usd, f["cwd"])
-        if f["months"]:
-            cwds[f["cwd"] or "?"]["sessions"].add(f["path"])
+        for m, models in f["usage"].items():
+            for model, u in models.items():
+                add(m, "codex", model, u.get("total_tokens", 0), lambda p, u=u: codex_usd(u, p), f["cwd"], f["path"])
     by_cwd = [{**c, "sessions": len(c["sessions"])} for c in cwds.values()]
     by_cwd.sort(key=lambda c: -(c["claude"] + c["codex"]))
     return {"status": "ready", "months": months, "by_cwd": by_cwd, "unpriced": unpriced,
