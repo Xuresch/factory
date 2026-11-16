@@ -1440,6 +1440,41 @@ print(json.dumps(d.subscriptions()))'
   unset XDG_CONFIG_HOME
 }
 
+t_dashboard_outside() {
+  new_repo dashout; commit_all
+  local h="$TMP_ROOT/dashout/home"; local cl="$h/.claude/projects/-x" cx="$h/.codex/sessions/2026/11/14"
+  local acct="$h/.config/orca/codex-accounts/a/home/sessions/2026/11/14"
+  mkdir -p "$cl/s1/subagents" "$cx" "$acct"
+  local use='"usage":{"input_tokens":1000000,"output_tokens":0}'
+  # A plain session; a resumed copy repeating its message; a factory job's session; an unpriced model.
+  printf '%s\n' '{"type":"user","cwd":"/w/app","message":{"role":"user","content":"hi"}}' \
+    "{\"type\":\"assistant\",\"timestamp\":\"2026-11-14T12:00:00Z\",\"message\":{\"id\":\"m1\",\"model\":\"claude-opus-5-5\",$use}}" > "$cl/s1.jsonl"
+  cp "$cl/s1.jsonl" "$cl/s2.jsonl"
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":"Job folder: /r/factory/jobs/001-a/"}}' \
+    "{\"type\":\"assistant\",\"timestamp\":\"2026-11-14T12:00:00Z\",\"message\":{\"id\":\"m2\",\"model\":\"claude-opus-5-5\",$use}}" > "$cl/s3.jsonl"
+  echo "{\"type\":\"assistant\",\"timestamp\":\"2026-11-14T12:00:00Z\",\"message\":{\"id\":\"m3\",\"model\":\"claude-x\",\"usage\":{\"input_tokens\":500}}}" > "$cl/s1/subagents/agent-1.jsonl"
+  # Codex: running totals across a month boundary; a shorter copy of it in Orca's account home.
+  local tc='{"timestamp":"%s","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":%s,"cached_input_tokens":0,"output_tokens":%s,"total_tokens":%s}}}}\n'
+  { echo '{"timestamp":"2026-11-14T12:00:00Z","type":"session_meta","payload":{"id":"c1","cwd":"/w/api"}}'
+    echo '{"timestamp":"2026-11-14T12:00:00Z","type":"turn_context","payload":{"model":"gpt-6.1-sol"}}'
+    printf "$tc" 2026-11-14T12:00:00Z 1000000 0 1000000; printf "$tc" 2026-11-14T12:00:01Z 1000000 0 1000000
+    printf "$tc" 2026-12-14T12:00:00Z 2000000 100000 2100000; } > "$cx/rollout-c1.jsonl"
+  head -3 "$cx/rollout-c1.jsonl" > "$acct/rollout-c1.jsonl"
+  local q='import importlib.machinery as m, importlib.util as u, json
+l = m.SourceFileLoader("d", "factory/bin/dashboard"); d = u.module_from_spec(u.spec_from_loader("d", l)); l.exec_module(d)
+r = d.Outside().scan(); r2 = d.Outside().scan()
+print(json.dumps({"months": {k: {a: round(v, 2) for a, v in x.items()} for k, x in sorted(r["months"].items())},
+  "cwds": [c["cwd"] + ":" + str(c["sessions"]) for c in r["by_cwd"]], "unpriced": r["unpriced"],
+  "factory": r["factory_sessions"], "cached": r == r2}, sort_keys=True))'
+  local out; out=$(env -u CODEX_HOME -u CLAUDE_CONFIG_DIR -u XDG_CACHE_HOME HOME="$h" python3 -c "$q")
+  check "a resumed copy counts once, codex growth lands in its month" "$out" '"months": {"2026-11": {"claude": 4.0, "codex": 2.0}, "2026-12": {"claude": 0.0, "codex": 3.0}}' &&
+  check "factory sessions left out" "$out" '"factory": 1' &&
+  check "by directory, costliest first, a copy adds no session" "$out" '"cwds": ["/w/api:1", "/w/app:1"]' &&
+  check "unpriced model reported by month" "$out" '"unpriced": {"2026-11": {"claude-x": 500}}' &&
+  check "second pass from the cache agrees" "$out" '"cached": true' &&
+  check "cache written" "[$(test -s "$h/.cache/factory/usage.json" && echo y)]" "[y]"
+}
+
 t_high_risk_holds_only_when_needed() {
   new_repo holdneeded; ticket 01 One; ticket 02 Two; commit_all
   python3 -c "import json; p='factory/config.json'; c=json.load(open(p)); c['hold']['only_when_needed']=True; json.dump(c, open(p,'w'))"

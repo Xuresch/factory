@@ -153,6 +153,9 @@ Subscription puts that against what you pay, month by month, over every repo the
 factory runs in: list your plans and repos in `~/.config/factory/subscriptions.json`
 and start the dashboard with `factory/bin/dashboard`. The format is in that script's
 docstring, and the view shows an example while the file is missing.
+It also counts what the same subscriptions did outside the factory: every other
+Claude Code and Codex session on this machine, priced the same way and shown apart
+from the factory's jobs.
 
 ## The example jobs
 
