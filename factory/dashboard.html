@@ -1504,7 +1504,7 @@ function planPage() {
     ${Object.entries(unpriced).map(([model, n]) => `${esc(model)} (${tokens(n)} tokens)`).join(', ')}.` : ''
 
   const subList = subs.map((s) => `${esc(s.name || s.agent)} ${money(s.usd_per_month)}/month${s.since ? ` since ${esc(s.since)}` : ''}`).join(' · ') || 'none listed'
-  return `<div class="cv">${tiles}${chart}<div class="grid2"><div>${monthTable}</div><div>${projTable}</div></div>${outTable}
+  return `<div class="cv">${tiles}${chart}${monthTable}<div class="grid2"><div>${projTable}</div><div>${outTable}</div></div>
     <p class="note">Subscriptions: ${subList}, from <code>${esc(plan.data.config)}</code>. API-equivalent at each repo's
       factory/config.json prices. Outside the factory: every other Claude Code transcript and Codex session on this
       machine, at this repo's prices; orchestrating sessions count there too. Claude Code deletes transcripts after
