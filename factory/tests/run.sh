@@ -1790,6 +1790,110 @@ t_overlap_clears_when_merged() {
   check "start works" "$(J start "$B" builder)" "started builder"
 }
 
+# ---- protected-only tickets: work no builder may do stops before the build ----
+
+protected_intake() {  # protected_intake <job> <file>...: intake says the whole change is in protected files
+  local id="$1"; shift
+  { printf 'DECISION: PROTECTED\nRISK: low\nSURFACES: none\nRESCOPED: no\nSIZE: small\nSPLIT: no\n\n'
+    printf '## Summary\n- only the checks\n\n## Why\nThe gate script needs a new step.\n\n## Protected files\n'
+    for f in "$@"; do printf -- '- `%s`\n' "$f"; done
+    printf '\n## Follow-ups\nNone.\n'; } > "factory/jobs/$id/intake.md"
+}
+
+to_spec() {  # to_spec <ticket>: create .. spec (medium risk, so the spec writer runs); prints the job id
+  local id; id=$(J create "f/$1") || return 1
+  intake "$id" medium none
+  factory/bin/route "$id" >/dev/null && J advance "$id" spec >/dev/null || return 1
+  echo "$id"
+}
+
+t_protected_intake_needs_human() {
+  new_repo protintake; mkdir -p src; echo a > src/a.ts; ticket 01 One; commit_all
+  local id; id=$(J create f/01) || return 1
+  J start "$id" intake >/dev/null
+  check "intake prompt names the protected paths" "$(cat "$SPECS")" 'Protected paths: `factory/checks.sh`, `factory/config.json`, `factory/agents/*`' || return 1
+  protected_intake "$id" src/a.ts
+  check "a buildable file is refused" "$(J advance "$id" needs-human 2>&1)" "src/a.ts doesn't match config.json protected_paths" || return 1
+  protected_intake "$id" factory/checks.sh factory/agents/builder.md
+  check "next says needs-human" "$(J next "$id")" "advance: factory/bin/job advance $id needs-human" &&
+  J advance "$id" needs-human >/dev/null &&
+  check "stage" "$(field "$id" "d['stage']")" "needs-human" &&
+  check "label" "$(status_of 01)" "ready-for-human" &&
+  check "reason in decision.md" "$(cat "factory/jobs/$id/decision.md")" \
+    "Only protected files: factory/checks.sh, factory/agents/builder.md; a human makes this change" &&
+  check "reason on the ticket" "$(cat .scratch/f/issues/01-t.md)" "### Factory: needs a human" &&
+  check "intake's why too" "$(cat "factory/jobs/$id/decision.md")" "The gate script needs a new step." &&
+  check "no spec" "[$(ls "factory/jobs/$id/spec.md" 2>/dev/null)]" "[]" &&
+  check "no worktree" "[$(ls -d ".worktrees/$id" 2>/dev/null)]" "[]" &&
+  check "no spec worker" "[$(cat "$CALLS" 2>/dev/null | grep -c "$id spec")]" "[0]" &&
+  check "waits for a human" "$(J next "$id")" "wait: human" || return 1
+  echo "Made by hand in abc123." | J reject "$id" >/dev/null &&
+  check "closed as done" "$(status_of 01)" "done" &&
+  check "not wontfix" "$(cat .scratch/f/issues/01-t.md)" "### Factory: closed, a human made this change" &&
+  check "stage rejected" "$(field "$id" "d['stage']")" "rejected"
+}
+
+t_protected_intake_feedback_goes_back_to_intake() {
+  new_repo protintakefb; ticket 01 One; commit_all
+  local id; id=$(J create f/01) || return 1
+  protected_intake "$id" factory/checks.sh
+  J advance "$id" needs-human >/dev/null || return 1
+  check "feedback rewinds to intake" "$(echo "It needs src/ too." | J feedback "$id")" "back to intake" &&
+  check "stage" "$(field "$id" "d['stage']")" "intake" &&
+  check "flag cleared" "$(field "$id" "d.get('protected_only')")" "None"
+}
+
+t_protected_spec_stops_before_build() {
+  new_repo protspec; ticket 01 One; commit_all
+  local id; id=$(to_spec 01) || return 1
+  printf '# Spec\n\n## Requirements\n1. Add a step to `factory/checks.sh`.\n2. Mention it in factory/agents/builder.md.\n\n## Out of scope\n- `src/a.ts`\n' \
+    > "factory/jobs/$id/spec.md"
+  check "next says needs-human" "$(J next "$id")" "advance: factory/bin/job advance $id needs-human" &&
+  check "build refused" "$(J advance "$id" build 2>&1)" "every path spec.md names is protected (factory/checks.sh, factory/agents/builder.md)" &&
+  J advance "$id" needs-human >/dev/null &&
+  check "stage" "$(field "$id" "d['stage']")" "needs-human" &&
+  check "no build round" "$(field "$id" "d['round']")" "0" &&
+  check "label" "$(status_of 01)" "ready-for-human" &&
+  check "reason" "$(cat "factory/jobs/$id/decision.md")" "Only protected files: factory/checks.sh, factory/agents/builder.md; a human makes this change" &&
+  check "no builder" "[$(cat "$CALLS" 2>/dev/null | grep -c "$id builder")]" "[0]"
+}
+
+t_protected_mixed_spec_builds() {
+  new_repo protmixed; mkdir -p src; echo a > src/a.ts; ticket 01 One; commit_all
+  local id; id=$(to_spec 01) || return 1
+  printf '# Spec\n\n## Requirements\n1. Change `src/a.ts`.\n2. The gate in `factory/checks.sh` stays as it is.\n' > "factory/jobs/$id/spec.md"
+  check "next says build" "$(J next "$id")" "advance: factory/bin/job advance $id build" &&
+  check "needs-human refused" "$(J advance "$id" needs-human 2>&1)" "advance it to build" &&
+  J advance "$id" build >/dev/null &&
+  check "stage" "$(field "$id" "d['stage']")" "build"
+}
+
+t_protected_off_without_config() {
+  new_repo protoff; ticket 01 One; ticket 02 Two; set_config protected_paths '[]'; commit_all
+  local id; id=$(to_spec 01) || return 1
+  check "no protected note in prompts" "[$(cat "$SPECS" 2>/dev/null | grep -c 'Protected paths')]" "[0]" || return 1
+  J start "$id" spec >/dev/null
+  check "spec prompt without it too" "[$(grep -c 'Protected paths' "$SPECS")]" "[0]" &&
+  printf '# Spec\n\n## Requirements\n1. Add a step to `factory/checks.sh`.\n' > "factory/jobs/$id/spec.md" &&
+  check "next says build" "$(J next "$id")" "advance: factory/bin/job advance $id build" &&
+  J advance "$id" build >/dev/null &&
+  check "stage" "$(field "$id" "d['stage']")" "build" || return 1
+  local id2; id2=$(J create f/02) || return 1
+  protected_intake "$id2" factory/checks.sh
+  check "PROTECTED with nothing protected is refused" "$(J advance "$id2" needs-human 2>&1)" "doesn't match config.json protected_paths"
+}
+
+t_protected_spec_from_intake_stops() {
+  new_repo protskip; ticket 01 One; commit_all
+  local id; id=$(J create f/01) || return 1
+  printf 'DECISION: ACCEPT\nRISK: low\nSURFACES: none\nRESCOPED: no\nSIZE: small\nSPLIT: no\n\n## Summary\n- ok\n\n## Scope\nAdd a lint step to `factory/checks.sh`.\n\n## Acceptance criteria\n1. `factory/checks.sh` runs the lint.\n\n## Follow-ups\nNone.\n' \
+    > "factory/jobs/$id/intake.md"
+  factory/bin/route "$id" >/dev/null && J advance "$id" spec >/dev/null || return 1
+  check "stops instead of building" "$(field "$id" "d['stage']")" "needs-human" &&
+  check "reason" "$(cat "factory/jobs/$id/decision.md")" "Only protected files: factory/checks.sh" &&
+  check "no build round" "$(field "$id" "d['round']")" "0"
+}
+
 # ---- labels.factory: only issues handed to the factory run --------------------
 
 FACTORY_LABELS='{"queue": "ready-for-agent", "needs_info": "needs-info", "needs_human": "ready-for-human", "returned": "needs-triage", "wontfix": "wontfix", "factory": "factory"}'

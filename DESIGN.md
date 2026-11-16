@@ -29,7 +29,7 @@ skim a job on the dashboard and read the detail only where it matters.
 ## Pipeline
 
 ```
-intake (fable)     → ACCEPT (scope possibly changed) | NEEDS-INFO | REJECT, posted as an issue comment
+intake (fable)     → ACCEPT (scope possibly changed) | NEEDS-INFO | REJECT | PROTECTED, posted as an issue comment
 route (script)     → reviewers + models from risk/surfaces via config.json
 worktree           → factory/<job-id> from origin/main
 spec-writer (opus) → spec.md
@@ -93,6 +93,20 @@ protected, since features have to update them; the code reviewer fails any
 test that was weakened, skipped or special-cased to pass. The
 builder also has a `SubagentStop` hook that runs the checks before it finishes,
 as a nudge; the gate is still what decides.
+
+**Work only a human may do stops at the door.** A ticket whose whole change
+lies in `protected_paths` (a feature review asking to change `checks.sh` or a
+brief, say) can't be built: the builder would only report BLOCKED after a
+spec and a build round. So intake gets the protected paths in its prompt and
+answers `DECISION: PROTECTED` with the files, and `job advance` sends the job
+to `needs-human` with `only protected files: <list>; a human makes this
+change`, checking that each listed file really is protected. As a backstop,
+`job advance <job> build` refuses when every repo path `spec.md` names is
+protected (the same paths the overlap wait reads); a spec that also names
+other files builds, and the builder leaves the protected part alone. The
+feature reviewer and intake report such work as a change for a human, not
+as a ticket. The human makes it outside the factory and closes the job with
+`job reject`, which for these jobs closes the issue as done.
 
 **Agents judge what scripts can't.** Reviewers don't re-run the test suite;
 they read the diff for correctness, scope, security, UX and visual fit.

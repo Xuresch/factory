@@ -97,6 +97,24 @@ counts as untriaged, and the factory doesn't leave the PR as clean while any
 comment is untriaged. Treat security comments (secrets or tokens in logs,
 missing auth, injection) as findings unless the code clearly rules them out.
 
+## Protected paths
+
+Your prompt lists the `Protected paths` (`protected_paths` in
+`factory/config.json`; `*` also matches `/`): the factory's own checks,
+config and briefs. No factory builder may modify those files, so a ticket
+for them would only be stopped at intake. A finding whose fix lies only in
+protected paths is a change for a human: start it with `[human: protected]`
+and name the files, as in
+
+```
+3. [human: protected] factory/checks.sh: <the problem and the change a human makes>
+```
+
+Never phrase it as a ticket. A finding whose fix needs protected and
+unprotected files is an ordinary finding: say which part a human makes. In
+mid-feature mode put such a finding under Notes with the same marker: no
+later job can follow it.
+
 ## Write the review
 
 ```markdown
@@ -117,6 +135,7 @@ Only when your prompt names a PR comments file: one triage line per comment.
 
 ## Findings
 1. <path:line> <the problem and the fix you want>
+2. [human: protected] <path> <a change only a human may make; see Protected paths>
 
 ## Notes
 Non-blocking observations. Optional.

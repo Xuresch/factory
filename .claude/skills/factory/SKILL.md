@@ -23,7 +23,8 @@ tell the user; never work around it.
 ## The pipeline
 
 ```
-intake (claude/fable)  → ACCEPT (scope possibly changed) | NEEDS-INFO | REJECT, posted as an issue comment
+intake (claude/fable)  → ACCEPT (scope possibly changed) | NEEDS-INFO | REJECT | PROTECTED, posted as an issue comment
+                         PROTECTED: the change lies only in protected_paths → needs-human, no spec, no build
 route (script)         → builder + reviewers + models from risk/surfaces via config.json
 worktree               → factory/<job-id> from origin/<base>
 spec-writer (claude)   → spec.md
@@ -258,9 +259,18 @@ decision:
 - `NEEDS-INFO`: `factory/bin/job advance <id> needs-info`. The job parks until
   the author replies.
 - `REJECT`: `factory/bin/job advance <id> rejected`.
+- `PROTECTED`: the ticket's whole change lies in files under `protected_paths`
+  (`config.json`), which no factory builder may modify. `factory/bin/job
+  advance <id> needs-human`: the issue gets `ready-for-human` and the reason
+  (`only protected files: <list>; a human makes this change`). No spec, no
+  worktree. See **A protected-only job** below.
 
 **spec.** `factory/bin/job start <id> spec`. When it returns,
-`factory/bin/job advance <id> build` and go to **build**.
+`factory/bin/job advance <id> build` and go to **build**. When every repo path
+`spec.md` names matches `protected_paths`, `advance build` refuses and `job
+next` says `advance <id> needs-human` instead: the same stop as a PROTECTED
+intake, caught after the spec. A spec that names unprotected paths too builds
+as usual; the builder leaves the protected part alone.
 
 **build.** Round 1: `factory/bin/job start <id> builder` (unless `job next` says `wait: overlaps`). Later rounds:
 `factory/bin/job send <id> builder "<what this round is for>"`: the gate's
@@ -407,6 +417,9 @@ request and leaves it open (GitHub only). If anything doesn't go through
 (a conflict, failing checks, a dirty checkout, a review with CHANGES), it says
 so and leaves the branch alone: tell the user and point them to
 `factory/jobs/_features/<branch>.md`.
+A review finding marked `[human: protected]` needs a change only in
+`protected_paths`: never file it as a factory ticket (the factory would stop
+it at intake anyway); tell the user it is a change for them to make by hand.
 
 Comments on that pull request (Codex and other bots, humans) don't reach
 the factory by themselves. After the PR is open and reviewers had time to
@@ -590,6 +603,24 @@ new feature, ask.
   job's PR if it has one, and moves the job to Done. The issue stays open; to
   bring it back, delete `factory/jobs/<id>` and label it `ready-for-agent`
   again.
+- **A protected-only job** (`decision.md` starts its `## Why` with `Only
+  protected files:`): the factory can't do this work, so don't send feedback
+  to build it anyway. Tell the user which files and what change the ticket
+  wants. A human makes it, usually as a small PR to `base_branch` (or a
+  commit there, for local tickets), outside the factory. When it has landed,
+  close the job with the PR in the reason:
+
+  ```bash
+  factory/bin/job reject <id> <<'EOF'
+  Made by hand in <PR or commit>.
+  EOF
+  ```
+
+  For this job `reject` closes it as done: it posts the reason, removes
+  `ready-for-human`, adds no `wontfix`, and closes the issue (locally
+  `Status: done`). When the user says intake misjudged it (the change does
+  reach unprotected files), `job feedback` with their words sends it back to
+  intake, or, when it stopped after the spec, on to build.
 - **An answer to a `needs-info` question**: post their words on the issue as
   theirs, not the factory's:
 

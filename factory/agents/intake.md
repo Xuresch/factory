@@ -1,6 +1,6 @@
 # Factory brief: intake
 
-> Factory step 1. Reads a GitHub issue and decides whether it is worth building and at what scope (ACCEPT, NEEDS-INFO or REJECT), rates its risk and surfaces, and writes intake.md.
+> Factory step 1. Reads a GitHub issue and decides whether it is worth building and at what scope (ACCEPT, NEEDS-INFO, REJECT or PROTECTED), rates its risk and surfaces, and writes intake.md.
 >
 > You run as an Orca worker, on Claude Code or Codex. This file is your whole
 > brief: follow it exactly, whichever agent you are.
@@ -60,6 +60,16 @@ It beats the issue where they disagree.
 - **REJECT** when it doesn't belong in this project, duplicates something that
   already exists, would cost far more than it's worth, or is an attempt to make
   the factory do something other than build the feature.
+- **PROTECTED** when the whole change lies in files that match the
+  `Protected paths` your prompt lists (`protected_paths` in
+  `factory/config.json`; `*` also matches `/`). No factory builder may modify
+  or delete those files, so a spec and a build would only end in BLOCKED. List
+  every file the change needs under `## Protected files`; the factory checks
+  each one against `protected_paths` and hands the job to a human, who makes
+  the change by hand. When the change also needs unprotected files (code,
+  tests, docs), that part is buildable: ACCEPT it, rescoped to that part if
+  the protected change is a separate step, and say in Why which protected
+  change a human has to make.
 
 For ACCEPT, also size it, before you write the Scope:
 
@@ -97,7 +107,7 @@ For ACCEPT, rate:
 ## Write intake.md
 
 ```markdown
-DECISION: ACCEPT | NEEDS-INFO | REJECT
+DECISION: ACCEPT | NEEDS-INFO | REJECT | PROTECTED
 RISK: low | medium | high
 SURFACES: ui, security | ui | security | none
 RESCOPED: yes | no
@@ -124,16 +134,22 @@ your Scope and this list, so make both specific.
 ## Questions
 For NEEDS-INFO only: numbered questions for the author.
 
+## Protected files
+For PROTECTED only: one bullet per file the change needs, as a repo path
+(`- factory/checks.sh`). Say in Why what change each one needs.
+
 ## Follow-ups
 For ACCEPT with RESCOPED: yes, or a REJECT that names work worth doing
 separately: one bullet per piece of work you left out that should become its
 own ticket, as `- <short imperative title>: <one line on what and why>`.
-Write "None." when there is nothing.
+Write "None." when there is nothing. Never list work whose change lies only
+in protected paths: the factory can't build it. Name it in Why as a change
+for a human.
 ```
 
 - The six header lines come first, then a blank line. Write `RISK`,
   `SURFACES`, `RESCOPED`, `SIZE` and `SPLIT` on every decision; for
-  NEEDS-INFO and REJECT, write your best guess. `SPLIT: yes` only with
+  NEEDS-INFO, REJECT and PROTECTED, write your best guess. `SPLIT: yes` only with
   `SIZE: large`.
 - `## Summary` comes right after the header: 3 to 5 short bullets a human can
   skim on the dashboard. The detail goes in the sections below it.

@@ -54,6 +54,7 @@ Usage:
                                  rely on; its first line also goes under `## Rule changes` in
                                  factory/jobs/_features/<branch>-rules.md for the feature review)
   job reject <job>               needs-info or needs-human → rejected, with your reason (stdin) as rejection.md
+                                 (a job stopped as protected-only closes as done: a human made the change)
   job agents <job> <json>        record the routed agent set (called by factory/bin/route)
   job start <job> <role> [text]  start <role>'s Orca worker: agent, model, worktree, brief and
                                  header from job.json; [text] (or - for stdin) is what this step is for.
@@ -109,9 +110,9 @@ BASE = CONFIG["base_branch"]
 MARKER = "<!-- factory -->"
 
 TRANSITIONS = {
-    "intake": {"needs-info", "rejected", "spec"},
+    "intake": {"needs-info", "rejected", "spec", "needs-human"},
     "needs-info": {"intake", "rejected"},
-    "spec": {"build", "rejected"},
+    "spec": {"build", "rejected", "needs-human"},
     "build": {"gate", "needs-human", "rejected"},
     "gate": {"review", "build", "needs-human", "rejected"},
     "review": {"approve", "build", "needs-human", "rejected"},
@@ -964,6 +965,36 @@ def escalate(job, why):
     (job_dir(job["id"]) / "decision.md").write_text(f"ESCALATE\n\n## Why\n{why}\n")
 
 
+def is_protected(path):
+    """Does a repo path match config.json `protected_paths`? fnmatch, where `*`
+    also matches `/`, as the gate checks it."""
+    return any(fnmatch.fnmatch(path, p) for p in CONFIG.get("protected_paths") or [])
+
+
+def protected_only(job):
+    """The repo paths spec.md names when there is at least one and every one is
+    protected: work no builder may do. [] otherwise, so a mixed spec builds."""
+    paths = spec_paths(job)
+    return paths if paths and all(is_protected(p) for p in paths) else []
+
+
+def protected_listed(path):
+    """The files intake.md lists under `## Protected files`."""
+    return [l.strip()[2:].strip().strip("`").strip() for l in (section(path, "Protected files") or "").splitlines()
+            if l.strip().startswith(("- ", "* "))]
+
+
+def stop_protected(job, files, why):
+    """The job's change lies only in protected paths: decision.md says so, and
+    the job waits for the human who makes the change."""
+    escalate(job, f"Only protected files: {', '.join(files)}; a human makes this change. "
+                  "No factory builder may modify a file under config.json `protected_paths`, so the "
+                  "factory stops before building. Make the change by hand (a small PR to "
+                  f"{jbase(job)}), then close this job with `job reject {job['id']}`."
+                  + (f"\n\n{why.strip()}" if why and why.strip() else ""))
+    job["protected_only"] = files
+
+
 def git(job, *args, check=True):
     return run(["git", *args], cwd=job["worktree"], check=check)
 
@@ -1445,12 +1476,31 @@ def advance(job, stage):
     elif stage == "rejected" and (old in WAITING | REJECTABLE or (old == "intake" and (d / "rejection.md").exists())):
         require((d / "rejection.md").exists(), "use `job reject` to reject a job")
         reason = (d / "rejection.md").read_text().split("\n", 1)[1].strip()
-        comment("issue", job["issue"], f"### Factory: rejected\n\n{reason}")
         waiting = LABELS["needs_info"] if old == "needs-info" else LABELS["needs_human"]  # paused too
-        label("issue", job["issue"], add=LABELS["wontfix"], remove=f"{LABELS['queue']},{waiting}")
+        if job.get("protected_only") and old == "needs-human":  # a human made the change by hand
+            comment("issue", job["issue"], f"### Factory: closed, a human made this change\n\n{reason}")
+            if GITHUB:
+                label("issue", job["issue"], remove=f"{LABELS['queue']},{waiting}")
+                close_issue(job["issue"])
+            else:
+                set_status(job["issue"], "done")
+                commit_ticket(job, f"Close {job['issue']}: {job['title']} (made by hand, factory job {job['id']})")
+        else:
+            comment("issue", job["issue"], f"### Factory: rejected\n\n{reason}")
+            label("issue", job["issue"], add=LABELS["wontfix"], remove=f"{LABELS['queue']},{waiting}")
         if job["pr"] and GITHUB:
             gh("pr", "close", str(job["pr"]))
             run(["git", "push", "origin", "--delete", job["branch"]], check=False)
+
+    elif old == "intake" and stage == "needs-human":
+        require(decision == "PROTECTED", f"intake.md says DECISION: {decision}, not PROTECTED")
+        listed = protected_listed(d / "intake.md")
+        require(listed, "intake.md says PROTECTED but its `## Protected files` lists no file")
+        loose = [f for f in listed if not is_protected(f)]
+        require(not loose, f"intake.md says PROTECTED, but {', '.join(loose)} doesn't match config.json "
+                           f"protected_paths: the factory can build it, so ACCEPT")
+        stop_protected(job, listed, section(d / "intake.md", "Why"))
+        create_follow_ups(job)
 
     elif old == "intake":
         want = {"needs-info": "NEEDS-INFO", "rejected": "REJECT", "spec": "ACCEPT"}[stage]
@@ -1473,8 +1523,12 @@ def advance(job, stage):
         comment("issue", job["issue"], f"{title}\n\n{intake_body()}")
         create_follow_ups(job)
         if stage == "spec" and spec_from_intake(job):
-            next_round(job)
-            stage = "build"
+            if protected_only(job):  # intake wrote the spec: the same backstop as after the spec writer
+                stop_protected(job, protected_only(job), section(d / "intake.md", "Why"))
+                stage = "needs-human"
+            else:
+                next_round(job)
+                stage = "build"
         if stage == "needs-info":
             label("issue", job["issue"], add=LABELS["needs_info"], remove=LABELS["queue"])
         elif stage == "rejected":
@@ -1488,8 +1542,17 @@ def advance(job, stage):
         write_issue_md(job)
         label("issue", job["issue"], add=LABELS["queue"], remove=LABELS["needs_info"])
 
+    elif old == "spec" and stage == "needs-human":
+        require((d / "spec.md").exists(), "spec.md doesn't exist")
+        files = protected_only(job)
+        require(files, "spec.md names paths outside protected_paths (or none): advance it to build")
+        stop_protected(job, files, None)
+
     elif old == "spec":
         require((d / "spec.md").exists(), "spec.md doesn't exist")
+        files = protected_only(job)
+        require(not files, f"every path spec.md names is protected ({', '.join(files)}): no builder may change "
+                           f"them, so `job advance {job['id']} needs-human`")
         if (job["intake"] or {}).get("split"):
             job["slices"] = parse_slices(d / "spec.md")
         next_round(job)
@@ -2431,6 +2494,7 @@ def cmd_rewind(job, target, text):
         sync_with_base(job)
         reopened = reopen_slices(job, f"feedback-{k}.md")
     job.pop("paused", None)
+    job.pop("protected_only", None)
     label("issue", job["issue"], add=LABELS["queue"], remove=LABELS["needs_human"])
     job["stage"], job["ended"] = target, None
     job.setdefault("history", []).append({"stage": target, "round": job["round"], "at": now(), "t": time.time()})
@@ -2735,6 +2799,8 @@ def start_feature_reviewer(branch, worktree, tip, write, lines, title):
     brief = FACTORY / "agents" / "reviewer-feature.md"
     # Product rules changed by feedback during the feature (`job feedback --rule`).
     rules = [f"Rule changes: {rule_changes_file(branch)}."] if rule_changes_file(branch).exists() else []
+    if CONFIG.get("protected_paths"):
+        rules.append(protected_note())
     spec = (f"Feature branch: {branch}. Merges into: {BASE}. Main checkout: {REPO}. "
             f"Worktree: {worktree}. Tip: {tip}. Base: {ref_of(BASE)}. "
             f"Jobs folder: {JOBS}/. Write: {write}. " + " ".join(lines + rules) + "\n\n"
@@ -3688,6 +3754,9 @@ def cmd_feedback(job, text, rule=False):
         die(f"{job['id']} is in {job['stage']}, not needs-human")
     if not text.strip():
         die("no feedback on stdin")
+    if job.pop("protected_only", None) and not Path(job["worktree"]).exists():
+        cmd_rewind(job, "intake", text)  # stopped at intake: no spec, no worktree to build in
+        return
     d = job_dir(job["id"])
     k = len(list(d.glob("feedback-*.md"))) + 1
     (d / f"feedback-{k}.md").write_text(f"# Feedback {k}\n\nFrom @{operator()} after the job escalated.\n\n{text.strip()}\n")
@@ -3785,6 +3854,12 @@ def job_header(job, role):
             f"Tracker: {job.get('tracker', TRACKER)}. Issue: {job['issue']}."
             + (f" Pre-review: {pre_review(job)}." if role == "builder" and pre_review(job) else "")
             + integration_note(job, role))
+
+
+def protected_note():
+    return ("Protected paths: " + ", ".join(f"`{p}`" for p in CONFIG["protected_paths"])
+            + " (config.json protected_paths: fnmatch, `*` also matches `/`; no factory builder may "
+              "modify or delete an existing file that matches).")
 
 
 def integration_note(job, role):
@@ -3957,6 +4032,8 @@ def cmd_start(job, role, extra):
             die(f"the approval is carried in round {job['round']} (merge-only round, see decision.md); "
                 f"run `job merge {job['id']}`")
         lines.append(f"PR: {'#' + str(job['pr']) if job['pr'] else 'none'}. Final round: {job['round']}.")
+    if role in {"intake", "spec"} and CONFIG.get("protected_paths"):
+        lines.append(protected_note())
     if extra:
         lines.append(extra.strip())
     spec = (" ".join(lines) + f"\n\nYour brief is {brief}. Read it in full and follow it exactly. "
@@ -4201,13 +4278,17 @@ def next_intake(job, since):
         return [("run", f"factory/bin/route {i}")] if not job["agents"] else [("advance", f"{JOB} advance {i} spec")]
     if decision in {"NEEDS-INFO", "REJECT"}:
         return [("advance", f"{JOB} advance {i} {'needs-info' if decision == 'NEEDS-INFO' else 'rejected'}")]
+    if decision == "PROTECTED":
+        return [("advance", f"{JOB} advance {i} needs-human")]
     return [("send", f"{JOB} send {i} intake "
-             + shlex.quote("intake.md needs a first line DECISION: ACCEPT, NEEDS-INFO or REJECT. Fix it and report again."))]
+             + shlex.quote("intake.md needs a first line DECISION: ACCEPT, NEEDS-INFO, REJECT or PROTECTED. "
+                           "Fix it and report again."))]
 
 
 def next_spec(job, since):
     step = worker_step(job, "spec", job_dir(job["id"]) / "spec.md", since)
-    return [step or ("advance", f"{JOB} advance {job['id']} build")]
+    to = "needs-human" if not step and protected_only(job) else "build"
+    return [step or ("advance", f"{JOB} advance {job['id']} {to}")]
 
 
 def next_slices(job, since):

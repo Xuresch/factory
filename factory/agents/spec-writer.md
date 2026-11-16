@@ -169,7 +169,10 @@ What this slice builds, in two or three lines.
   don't restate it as a criterion. Ask for new tests where the repo has a test
   runner and the behaviour can be tested.
 - Never require a change to a file matching `protected_paths` in
-  `factory/config.json`: the gate fails any branch that modifies one.
+  `factory/config.json` (your prompt lists them as `Protected paths`): the
+  gate fails any branch that modifies one. When the ticket's whole change
+  lies in protected paths, name exactly those files and nothing else: the
+  factory then stops the job before the build and hands it to a human.
 
 When you're done, report to the factory with `worker_done` as your task
 preamble describes, with one line as the summary: `SPEC: <short title>`.
