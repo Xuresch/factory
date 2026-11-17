@@ -328,6 +328,14 @@
   .bstack i:last-child { border-radius: 4px 4px 0 0; }
   .bx { position: absolute; top: calc(100% + 5px); left: 50%; transform: translateX(-50%); font: 10px var(--mono); color: var(--faint); }
   .cv .grid2 { margin-top: 10px; }
+  /* The directory column takes what the numbers leave and cuts long paths short. */
+  .cv table.costs.fill { width: 100%; }
+  .cv table.costs.fill td.t { max-width: 0; width: 100%; }
+  @media (max-width: 760px) {
+    .costs-view .cv table.costs th, .costs-view .cv table.costs th.n { white-space: normal; }
+    .costs-view .cv table.costs th, .costs-view .cv table.costs td { padding-left: 5px; padding-right: 5px; }
+    .costs-view .cv table.costs td.n { font-size: 11px; }
+  }
   .heat { border-collapse: separate; border-spacing: 3px; font-size: 12px; }
   .heat th { font-weight: 500; color: var(--muted); padding: 4px 8px; text-align: left; border: 0; font-size: 11.5px; }
   .heat td { border: 0; border-radius: 6px; padding: 10px 12px; min-width: 92px; font-family: var(--mono); font-size: 12px; }
@@ -1505,11 +1513,11 @@ function planPage() {
 
   // Where the work outside the factory happened: the session's directory.
   const home = (c) => c.replace(/^\/home\/[^/]+|^\/Users\/[^/]+/, '~')
-  const outRows = (outside.by_cwd || []).slice(0, 15).map((c) => `<tr><td title="${esc(c.cwd)}">${esc(home(c.cwd))}</td>
+  const outRows = (outside.by_cwd || []).slice(0, 15).map((c) => `<tr><td class="t" title="${esc(c.cwd)}">${esc(home(c.cwd))}</td>
     <td class="n">${c.sessions}</td><td class="n">${money(c.claude)}</td><td class="n">${money(c.codex)}</td>
     <td class="n">${bar(pct(c.claude + c.codex, outT))}</td></tr>`).join('')
   const outTable = outRows ? `<h2>Outside the factory</h2><p class="sub">Claude and Codex sessions not part of a job, by
-    directory; the top 15 of ${(outside.by_cwd || []).length}.</p><table class="costs"><thead><tr><th>directory</th>
+    directory; the top 15 of ${(outside.by_cwd || []).length}.</p><table class="costs fill"><thead><tr><th>directory</th>
     <th class="n">sessions</th><th class="n">claude</th><th class="n">codex</th><th class="n">share</th></tr></thead>
     <tbody>${outRows}</tbody></table>` : ''
   const shown = new Set(months.map((m) => m.key))
@@ -1521,7 +1529,7 @@ function planPage() {
     ${Object.entries(unpriced).map(([model, n]) => `${esc(model)} (${tokens(n)} tokens)`).join(', ')}.` : ''
 
   const subList = subs.map((s) => `${esc(s.name || s.agent)} ${money(s.usd_per_month)}/month${s.since ? ` since ${esc(s.since)}` : ''}`).join(' · ') || 'none listed'
-  return `<div class="cv">${tiles}${chart}${monthTable}<div class="grid2"><div>${projTable}</div><div>${outTable}</div></div>
+  return `<div class="cv">${tiles}${chart}${monthTable}${projTable}${outTable}
     <p class="note">Subscriptions: ${subList}, from <code>${esc(plan.data.config)}</code>. API-equivalent at each repo's
       factory/config.json prices. Outside the factory: every other Claude Code transcript and Codex session on this
       machine, at this repo's prices; orchestrating sessions count there too. Claude Code deletes transcripts after
