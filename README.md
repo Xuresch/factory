@@ -114,7 +114,9 @@ factory/
   bin/gate                    runs checks.sh in a job's worktree → round-N/checks.md
   bin/route                   risk + surfaces → the job's builder, reviewers and models
   bin/dashboard               serves the board on 127.0.0.1, with local tickets
+  bin/report                  pushes this machine's jobs to the hub (optional)
   dashboard.html              the board
+hub/                          the hub: one web app for every factory on every machine
 examples/jobs/                finished jobs from a real run
 INSTALL.md                    instructions for the installing agent
 DESIGN.md                     how it works and why
@@ -159,6 +161,30 @@ docstring, and the view shows an example while the file is missing.
 It also counts what the same subscriptions did outside the factory: every other
 Claude Code and Codex session on this machine, priced the same way and shown apart
 from the factory's jobs.
+
+## Hub: every repo in one place
+
+The dashboard shows one repo on one machine. The hub collects every factory:
+each machine runs `factory/bin/report --watch`, which pushes what changed in
+its repos' `factory/jobs/` (job.json and the `.md` files, no logs) every few
+seconds. The hub shows what needs you, what's running and what finished across
+all repos, live, and opens each repo in the same board, costs and subscription
+views as above, at `/r/<owner>/<name>/`. `/all/` is one board over every repo.
+
+The hub is a Rust binary with an embedded Turso database, shipped as the image
+`ghcr.io/xuresch/factory-hub:<tag>` (see `hub/k8s.yaml`; pin a tag, there is
+no `:latest`). On a factory machine:
+
+```bash
+mkdir -p ~/.config/factory
+echo '{"url": "https://factory.example.net", "token": "…"}' > ~/.config/factory/hub.json
+factory/bin/report --install-service    # prints the systemctl command to start it
+```
+
+It reports this repo plus the `projects` in `subscriptions.json`. Try it
+locally with `hub/dev/kind.sh up && hub/dev/kind.sh report`, then open
+<http://127.0.0.1:8088/>. The protocol and every endpoint are in
+[`hub/PROTOCOL.md`](hub/PROTOCOL.md).
 
 ## The example jobs
 

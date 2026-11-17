@@ -1,0 +1,927 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Software Factory</title>
+<link rel="icon" id="fav" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2320222c'/%3E%3Cpath d='M6 25V15l7 4v-4l7 4V8h4v17z' fill='%238be9fd'/%3E%3C/svg%3E">
+
+<style>
+  :root {
+    --bg: #14151b;
+    --panel: #1a1c24;
+    --card: #20222c;
+    --card-hover: #252835;
+    --line: #2b2e3b;
+    --text: #e4e5ea;
+    --muted: #a3a8bd;      /* secondary text: 6.2:1 or better on every surface */
+    --subtle: #969bb1;     /* captions and timestamps: 5.3:1 or better */
+    --faint: #5b6075;      /* decoration and disabled only, never information */
+    --active: #8be9fd;
+    --pass: #50fa7b;
+    --changes: #ffb86c;
+    --human: #ff5555;
+    --merged: #bd93f9;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: inherit; text-decoration: none; }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  code { font-family: var(--mono); font-size: 12px; background: var(--card); padding: 1px 6px; border-radius: 4px; }
+  kbd { font: 12px var(--mono); color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 6px; }
+  [hidden] { display: none !important; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+  /* One focus ring for everything; a card whose stretched link has focus rings the whole card. */
+  :where(a, button, input, summary, [tabindex]):focus-visible { outline: 2px solid var(--active); outline-offset: 2px; border-radius: 4px; }
+  .stretch:focus-visible { outline: none; }
+  .box:has(.stretch:focus-visible) { outline: 2px solid var(--active); outline-offset: 2px; }
+
+  .wrap { max-width: 1400px; margin: 0 auto; padding: 0 32px; }
+
+  /* Top banner: slim, never dims the page */
+  .topbar { position: sticky; top: 0; z-index: 20; padding: 5px 32px; font: 12px/1.6 var(--mono); text-align: center;
+    color: var(--changes); background: color-mix(in srgb, var(--changes) 14%, var(--bg)); border-bottom: 1px solid color-mix(in srgb, var(--changes) 45%, var(--line)); }
+  .topbar.err { color: var(--human); background: color-mix(in srgb, var(--human) 12%, var(--bg)); border-bottom-color: color-mix(in srgb, var(--human) 45%, var(--line)); }
+
+  /* Header */
+  header { display: flex; align-items: center; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; padding: 24px 0 4px; }
+  h1 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
+  .hright { display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap; }
+  .kbdbtn { display: inline-flex; align-items: center; gap: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 4px 10px; font-size: 13px; color: var(--muted); transition: background-color .18s, border-color .18s, color .18s; }
+  .kbdbtn:hover { color: var(--text); border-color: var(--muted); background: var(--card); }
+  .status { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .status .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--pass); margin-right: 6px; vertical-align: 0; }
+  .status.wait { color: var(--changes); }
+  .status.wait .dot { background: var(--changes); }
+  .status.error { color: var(--human); }
+  .status.error .dot { background: var(--human); }
+  .totals { font-family: var(--mono); font-size: 12px; color: var(--muted); margin: 0; padding-bottom: 6px; min-height: 22px; }
+
+  main { padding: 12px 0 40px; outline: none; }
+  section { margin-bottom: 34px; }
+  .sec-h { display: flex; align-items: baseline; gap: 10px; margin: 0 0 12px; }
+  .sec-h h2 { margin: 0; font-size: 14px; font-weight: 600; }
+  .sec-h .count { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .calm { color: var(--subtle); font-size: 13px; padding: 10px 0; }
+
+  /* Filter pill */
+  .filterbar { margin: 0 0 16px; }
+  .fpill { display: inline-flex; align-items: center; gap: 4px 8px; background: color-mix(in srgb, var(--active) 10%, var(--panel)); border: 1px solid color-mix(in srgb, var(--active) 45%, var(--line));
+    border-radius: 999px; padding: 2px 4px 2px 14px; font-size: 13px; color: var(--muted); }
+  .fpill b { color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
+  .fpill button { background: none; border: 0; border-radius: 999px; width: 28px; height: 28px; color: var(--muted); font-size: 14px; line-height: 1; transition: background-color .18s, color .18s; }
+  .fpill button:hover { background: var(--card-hover); color: var(--text); }
+
+  /* KPI strip */
+  .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 30px; }
+  .tile { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; min-width: 0; }
+  .tile .v { font-family: var(--mono); font-size: 22px; font-weight: 600; line-height: 1.3; white-space: nowrap; }
+  .tile .k { color: var(--muted); font-size: 13px; }
+  .tile .s { color: var(--subtle); font-size: 12px; font-family: var(--mono); margin-top: 2px; overflow-wrap: anywhere; }
+  .tile.hot { border-color: var(--human); background: color-mix(in srgb, var(--human) 6%, var(--card)); }
+  .tile.hot .v { color: var(--human); }
+  .tile.ok { border-color: color-mix(in srgb, var(--pass) 35%, var(--line)); }
+  .tile.ok .v, .tile.ok .s { color: var(--pass); }
+  .tile.run .v { color: var(--active); }
+  .tile .v small { font-size: 12px; font-weight: 400; color: var(--muted); }
+  .tile .vs { font: 12px var(--mono); color: var(--muted); margin-top: 1px; }
+  .tile .vs b { color: var(--merged); font-weight: 600; }
+  .ratio { margin-top: 8px; display: grid; gap: 4px; }
+  .ratio i { display: block; height: 5px; border-radius: 3px; min-width: 2px; }
+  .ratio .api { background: var(--active); }
+  .ratio .sub { background: var(--merged); }
+
+  /* Stretched-link cards: one link covers the card, chips and buttons sit above it */
+  .box { position: relative; }
+  .stretch::after { content: ""; position: absolute; inset: 0; }
+  .above { position: relative; z-index: 1; }
+
+  /* Repo chip: a button that filters */
+  .rchip {
+    font-family: var(--mono); font-size: 12px; line-height: 1.5; color: var(--muted); background: var(--panel);
+    border: 1px solid var(--line); padding: 0 8px; border-radius: 4px; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; max-width: 200px; min-width: 0; position: relative; z-index: 1;
+    transition: background-color .18s, border-color .18s, color .18s;
+  }
+  button.rchip:hover { color: var(--text); border-color: var(--active); background: var(--card-hover); }
+  button.rchip[aria-pressed="true"] { color: var(--active); border-color: var(--active); }
+  .rchip b { font-weight: 500; color: var(--text); }
+  span.rchip { z-index: auto; }
+  .dim { color: var(--subtle); }
+
+  /* Stage chips */
+  .stg { display: inline-block; font: 12px/1.5 var(--mono); padding: 0 7px; border-radius: 4px; white-space: nowrap;
+    color: var(--active); background: color-mix(in srgb, var(--active) 13%, transparent); }
+  .stg.s-merged { color: var(--merged); background: color-mix(in srgb, var(--merged) 14%, transparent); }
+  .stg.s-rejected { color: var(--muted); background: none; box-shadow: inset 0 0 0 1px var(--faint); }
+  .stg.s-needs-human { color: var(--human); background: color-mix(in srgb, var(--human) 14%, transparent); }
+  .stg.s-paused, .stg.s-needs-info { color: var(--changes); background: color-mix(in srgb, var(--changes) 14%, transparent); }
+  .stg.s-new { color: var(--muted); background: var(--panel); }
+  .arrow { color: var(--subtle); font: 12px var(--mono); margin: 0 3px; }
+
+  /* Needs you */
+  .attn { border: 1px solid color-mix(in srgb, var(--human) 45%, var(--line)); border-radius: 12px; padding: 14px 16px 6px; background: color-mix(in srgb, var(--human) 5%, var(--bg)); }
+  .attn .sec-h h2 { color: var(--human); }
+  .attn-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
+  .card {
+    display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 12px 12px; margin-bottom: 10px; min-width: 0;
+    transition: background-color .18s, border-color .18s, transform .18s;
+  }
+  .card:hover { background: var(--card-hover); transform: translateY(-1px); }
+  .card.human { border-color: var(--human); box-shadow: 0 0 0 1px color-mix(in srgb, var(--human) 40%, transparent), 0 8px 24px -12px color-mix(in srgb, var(--human) 60%, transparent); }
+  .card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; min-width: 0; }
+  .num { font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .flag { margin-left: auto; font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--human); white-space: nowrap; }
+  .flag.wait { color: var(--changes); }
+  .feature { font-size: 14px; line-height: 1.4; margin: 0 0 6px; overflow-wrap: anywhere; }
+  .todo { font-size: 13px; font-weight: 600; margin: 2px 0 0; }
+  .meta { display: flex; gap: 4px 10px; margin-top: 8px; font-family: var(--mono); font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+  .risk-high { color: var(--human); } .risk-medium { color: var(--changes); } .risk-low { color: var(--muted); }
+  .acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: auto; padding-top: 12px; }
+  .btn { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; padding: 4px 12px; border-radius: 6px; border: 1px solid var(--line); color: var(--text); background: var(--panel);
+    transition: background-color .18s, border-color .18s, color .18s; }
+  .btn:hover { border-color: var(--muted); background: var(--card-hover); }
+  .btn.primary { color: var(--bg); background: var(--active); border-color: var(--active); font-weight: 600; }
+  .card.human .btn.primary { background: var(--human); border-color: var(--human); }
+  .btn.primary:hover { filter: brightness(1.12); }
+  .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--active); animation: pulse 1.6s ease-in-out infinite; flex: none; }
+
+  /* Running */
+  .prow {
+    display: grid; grid-template-columns: minmax(220px, 1.2fr) minmax(400px, 2fr) minmax(150px, .6fr); gap: 20px; align-items: center;
+    background: var(--card); border: 1px solid color-mix(in srgb, var(--active) 30%, var(--line)); border-radius: 10px;
+    padding: 14px 16px; margin-bottom: 8px; transition: background-color .18s, border-color .18s;
+  }
+  .prow:hover { background: var(--card-hover); border-color: color-mix(in srgb, var(--active) 55%, var(--line)); }
+  .prow > * { min-width: 0; }
+  .segs { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
+  .seg { height: 6px; border-radius: 3px; background: var(--line); position: relative; }
+  .seg span { position: absolute; top: 10px; left: 0; font-size: 12px; color: var(--subtle); font-family: var(--mono); white-space: nowrap; }
+  .seg.done { background: color-mix(in srgb, var(--active) 45%, var(--line)); }
+  .seg.skip { background: repeating-linear-gradient(45deg, var(--line) 0 3px, transparent 3px 6px); }
+  .seg.cur { background: var(--active); animation: breathe 1.6s infinite; }
+  .seg.cur span { color: var(--active); font-weight: 600; }
+  .seg.slices { display: flex; gap: 2px; background: none; animation: none; }
+  .seg.slices i { flex: 1; height: 6px; border-radius: 3px; background: var(--line); }
+  .seg.slices i.done { background: color-mix(in srgb, var(--active) 45%, var(--line)); }
+  .seg.slices i.running { background: var(--active); animation: breathe 1.6s infinite; }
+  .seg.slices i.blocked { background: var(--human); }
+  .pnow { margin-top: 30px; font: 12px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+  .pnow b { color: var(--text); font-weight: 600; }
+  .pside .meta { margin-top: 0; }
+  .where { font: 12px var(--mono); color: var(--subtle); margin-top: 6px; }
+
+  /* Repos */
+  .rgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 10px; }
+  .rcard { display: flex; flex-direction: column; gap: 8px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 14px 12px; min-width: 0;
+    transition: background-color .18s, border-color .18s, transform .18s; }
+  .rcard:hover { background: var(--card-hover); transform: translateY(-1px); }
+  .rcard.has-attn { border-color: var(--human); box-shadow: 0 0 0 1px color-mix(in srgb, var(--human) 35%, transparent); }
+  .rcard.has-run { border-color: color-mix(in srgb, var(--active) 35%, var(--line)); }
+  .rcard.picked { outline: 2px solid var(--active); outline-offset: 2px; }
+  .rcard.stale { border-style: dashed; }
+  .rcard.all { justify-content: center; border-style: dashed; background: none; }
+  .rcard.all:hover { background: var(--card); }
+  .rtop { display: flex; align-items: flex-start; gap: 8px; justify-content: space-between; }
+  .rname { margin: 0; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; line-height: 1.3; }
+  .rname .dim { font-weight: 400; }
+  .fbtn { flex: none; font-size: 12px; color: var(--muted); background: none; border: 1px solid var(--line); border-radius: 6px; padding: 0 8px; line-height: 1.7;
+    transition: background-color .18s, border-color .18s, color .18s; }
+  .fbtn:hover { color: var(--text); border-color: var(--active); background: var(--card-hover); }
+  .fbtn[aria-pressed="true"] { color: var(--active); border-color: var(--active); }
+  .fresh { font: 12px var(--mono); color: var(--muted); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .fdot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+  .f-ok .fdot { background: var(--pass); } .f-warn .fdot { background: var(--changes); } .f-bad .fdot { background: var(--human); }
+  .f-ok .ft { color: var(--pass); } .f-warn .ft { color: var(--changes); } .f-bad .ft { color: var(--human); }
+  .stalebox { display: flex; align-items: center; gap: 6px; font: 12px/1.4 var(--mono); color: var(--changes); background: color-mix(in srgb, var(--changes) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--changes) 40%, var(--line)); border-radius: 6px; padding: 3px 8px; }
+  .stalebox svg { flex: none; width: 14px; height: 14px; }
+  .mchips { display: flex; gap: 4px; flex-wrap: wrap; }
+  .counts { display: flex; gap: 4px 14px; font: 12px var(--mono); color: var(--muted); flex-wrap: wrap; }
+  .counts b { color: var(--text); font-weight: 600; }
+  .counts .run b { color: var(--active); } .counts .att b { color: var(--human); } .counts .mrg b { color: var(--merged); }
+  .rbottom { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-top: auto; padding-top: 4px; }
+  .cost { white-space: nowrap; font: 12px var(--mono); color: var(--muted); line-height: 1.6; }
+  .cost b { display: block; color: var(--text); font-weight: 600; font-size: 15px; }
+  .spk { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex: none; position: relative; z-index: 1; }
+  .spark { width: 168px; height: 44px; display: block; border-radius: 4px; overflow: visible; }
+  .spark .base { stroke: var(--faint); stroke-width: 1; }
+  .spark .hit { fill: transparent; }
+  .spark .bar { fill: color-mix(in srgb, var(--active) 45%, var(--line)); transition: fill .15s; }
+  .spark .day:last-of-type .bar { fill: var(--active); }
+  .spark .day:hover .bar, .spark .day.on .bar { fill: var(--text); }
+  .sp-cap { font: 12px var(--mono); color: var(--subtle); white-space: nowrap; }
+  .rcard .all-t { font-size: 15px; font-weight: 600; }
+  .rcard .all-s { font-size: 13px; color: var(--muted); }
+
+  /* Activity and recent */
+  .two { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 0 32px; align-items: start; }
+  .feed { list-style: none; margin: 0; padding: 0; }
+  .feed ul { list-style: none; margin: 0 0 4px 18px; padding: 0 0 0 8px; border-left: 1px solid var(--line); }
+  .ev { display: grid; grid-template-columns: fit-content(130px) minmax(0, 1fr) auto auto; gap: 4px 10px; align-items: center; padding: 6px 10px; border-radius: 6px; font-size: 13px;
+    min-height: 34px; transition: background-color .18s; }
+  .ev:hover { background: var(--card); }
+  .ev .t { font: 12px var(--mono); color: var(--subtle); white-space: nowrap; text-align: right; min-width: 64px; }
+  .ev .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); min-width: 0; }
+  .ev .txt b { color: var(--text); font-weight: 500; }
+  .ev .tr { white-space: nowrap; }
+  .ev.new { animation: slide-in .5s ease-out; }
+  .ev .sync { color: var(--muted); }
+  .ev .xbtn { position: relative; z-index: 1; background: none; border: 1px solid var(--line); color: var(--muted); font: 12px var(--mono); border-radius: 6px; padding: 0 8px;
+    transition: background-color .18s, border-color .18s, color .18s; }
+  .ev .xbtn:hover { color: var(--text); border-color: var(--active); background: var(--card-hover); }
+  @keyframes slide-in { from { opacity: 0; transform: translateY(-8px); background: color-mix(in srgb, var(--active) 14%, transparent); } to { opacity: 1; transform: none; } }
+  .more-btn { background: none; border: 0; border-radius: 6px; color: var(--active); font: 12px var(--mono); padding: 8px 10px; transition: background-color .18s; }
+  .more-btn:hover { background: var(--card); text-decoration: underline; }
+  .rec { display: grid; grid-template-columns: 8px fit-content(130px) minmax(0, 1fr) auto auto; gap: 4px 10px; align-items: center; padding: 6px 10px; border-radius: 6px; font-size: 13px;
+    min-height: 34px; transition: background-color .18s; }
+  .rec:hover { background: var(--card); }
+  .rec .tt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); min-width: 0; transition: color .18s; }
+  .rec:hover .tt { color: var(--text); }
+  .rec.rejected .tt { color: var(--subtle); }
+  .rec .n, .rec .m { font: 12px var(--mono); color: var(--subtle); white-space: nowrap; text-align: right; }
+  .sdot { width: 8px; height: 8px; border-radius: 2px; background: var(--merged); }
+  .sdot.s-rejected { background: var(--faint); }
+
+  /* Machines */
+  .mtable { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .mtable th, .mtable td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+  .mtable th { font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: .06em; color: var(--subtle); }
+  .mtable td.n, .mtable th.n { text-align: right; font-family: var(--mono); font-size: 12px; }
+  .mtable .fresh { display: inline-flex; }
+
+  /* Empty hub */
+  .welcome { border: 1px dashed var(--line); border-radius: 12px; padding: 28px 24px; max-width: 640px; margin: 24px 0; }
+  .welcome h2 { margin: 0 0 8px; font-size: 15px; }
+  .welcome p { margin: 0 0 10px; color: var(--muted); }
+  .welcome p:last-child { margin: 0; }
+
+  /* Quick jump */
+  dialog.pal { padding: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--text); width: min(640px, calc(100vw - 24px));
+    max-width: none; margin: 12vh auto auto; box-shadow: 0 24px 64px rgba(0, 0, 0, .6); }
+  dialog.pal::backdrop { background: rgba(5, 6, 10, .6); overflow: hidden; overscroll-behavior: contain; }
+  dialog.pal:modal { overscroll-behavior: contain; }
+  .pal-in { display: flex; flex-direction: column; max-height: min(520px, 76vh); }
+  #pal-q { background: none; border: 0; border-bottom: 1px solid var(--line); color: var(--text); font: 16px/1.4 inherit; padding: 16px 18px; outline: none; width: 100%; border-radius: 12px 12px 0 0; }
+  #pal-q::placeholder { color: var(--subtle); }
+  #pal-q:focus { border-bottom-color: var(--active); }
+  #pal-list { list-style: none; margin: 0; padding: 6px; overflow-y: auto; min-height: 0; }
+  #pal-list li { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px 10px; border-radius: 8px; cursor: pointer; min-height: 44px; }
+  #pal-list li:hover { background: var(--card); }
+  #pal-list li[aria-selected="true"] { background: var(--card-hover); box-shadow: inset 2px 0 0 var(--active); }
+  #pal-list .kind { font: 12px var(--mono); color: var(--subtle); text-transform: uppercase; letter-spacing: .04em; }
+  #pal-list .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+  #pal-list .sub { display: block; font: 12px var(--mono); color: var(--subtle); overflow: hidden; text-overflow: ellipsis; }
+  #pal-list mark { background: none; color: var(--active); font-weight: 600; }
+  .pal-empty { padding: 18px; color: var(--subtle); font-size: 13px; }
+  .pal-foot { display: flex; gap: 14px; flex-wrap: wrap; padding: 8px 14px; border-top: 1px solid var(--line); font: 12px var(--mono); color: var(--subtle); }
+  .pal-foot span:last-child { margin-left: auto; }
+
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+  @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+    .card:hover, .rcard:hover { transform: none; }
+  }
+
+  @media (max-width: 1100px) {
+    .prow { grid-template-columns: 1fr; gap: 12px; }
+    .two { grid-template-columns: 1fr; }
+    .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  /* Touch: every control is at least 44 px tall. Small chips grow their hit area, not their look. */
+  @media (pointer: coarse), (max-width: 640px) {
+    .btn, .kbdbtn, .more-btn { min-height: 44px; }
+    .fpill button { width: 44px; height: 44px; }
+    .rchip, .fbtn, .ev .xbtn { position: relative; }
+    .rchip::after, .fbtn::after, .ev .xbtn::after { content: ""; position: absolute; inset: -13px -6px; }
+    .ev, .rec { min-height: 44px; }
+    #pal-list li { min-height: 48px; }
+  }
+  @media (max-width: 640px) {
+    .wrap { padding: 0 16px; }
+    .topbar { padding: 5px 16px; }
+    header { padding-top: 16px; }
+    main { padding-top: 12px; }
+    .kbdbtn kbd { display: none; }
+    .rec { grid-template-columns: 8px minmax(0, 1fr) auto; grid-template-areas: "d c c" ". t t" ". x n"; row-gap: 2px; }
+    .rec .sdot { grid-area: d; } .rec > .rchip { grid-area: c; justify-self: start; }
+    .rec .tt { grid-area: t; white-space: normal; }
+    .rec .x { grid-area: x; text-align: left; } .rec .n { grid-area: n; }
+    .ev { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "c t" "x x" "r r"; }
+    .ev > .rchip { grid-area: c; justify-self: start; }
+    .ev .txt { grid-area: x; white-space: normal; }
+    .ev .tr, .ev .xbtn { grid-area: r; justify-self: start; }
+    .ev .t { grid-area: t; }
+    .attn { padding: 12px 12px 4px; }
+    .tile .v { font-size: 19px; }
+    .mtable .hide-s { display: none; }
+    .rgrid { grid-template-columns: 1fr; }
+    .seg:not(.cur) span { display: none; }
+    .pnow { margin-top: 22px; }
+    .spark { width: 140px; }
+    dialog.pal { margin-top: 8vh; }
+    .pal-foot .hide-s { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="topbar" id="topbar" role="status" hidden></div>
+<div class="wrap">
+  <header>
+    <h1>Software Factory</h1>
+    <div class="hright">
+      <button type="button" class="kbdbtn" id="pal-open" aria-keyshortcuts="/ Control+K Meta+K"><kbd>/</kbd><span>Jump to repo or job</span></button>
+      <div class="status wait" id="status" role="status"><span class="dot"></span><span id="conn">connecting…</span><span id="upd"></span></div>
+    </div>
+  </header>
+  <p class="totals" id="totals"></p>
+  <main id="main" tabindex="-1"></main>
+</div>
+
+<dialog class="pal" id="pal" aria-label="Jump to a repo or job" closedby="any">
+  <div class="pal-in">
+    <input id="pal-q" type="text" role="combobox" aria-expanded="true" aria-controls="pal-list" aria-autocomplete="list" aria-activedescendant=""
+      aria-label="Search repos and jobs" placeholder="Jump to a repo or job: name, #number, title" autocomplete="off" spellcheck="false" autofocus>
+    <ul id="pal-list" role="listbox" aria-label="Results"></ul>
+    <div class="pal-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> move</span><span><kbd>↵</kbd> open</span><span class="hide-s"><kbd>esc</kbd> close</span><span id="pal-n" aria-live="polite"></span></div>
+  </div>
+</dialog>
+
+<script>
+const LIVE = new Set(['intake', 'spec', 'build', 'gate', 'review', 'approve', 'merging'])
+const ATTN = new Set(['needs-human', 'paused', 'needs-info'])
+const TRACK = [['intake', 'intake'], ['spec', 'spec'], ['build', 'build'], ['gate', 'gate'], ['review', 'review'], ['approve', 'approve'], ['merging', 'merge']]
+const STALE_S = 900        // a machine silent this long makes its repos stale
+const BURST_S = 10         // `new` events of one repo and machine this close together are one sync
+
+const $ = (id) => document.getElementById(id)
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
+// Server-supplied hrefs end up in links: only same-origin paths and http(s).
+const safe = (h) => /^(\/(?!\/)|https?:\/\/)/.test(String(h || ''))
+const url = (h) => (safe(h) ? esc(h) : '#')
+
+let data = null
+let sync = { conn: 'wait', at: null, err: null }
+const seen = new Set()      // feed events already shown, to animate only the new ones
+const opened = new Set()    // collapsed sync lines the user expanded
+let firstLoad = true
+let filter = new URLSearchParams(location.search).get('repo') || ''
+const money = (n) => `$${Number(n || 0).toFixed(2)}`
+const money0 = (n) => `$${Math.round(Number(n || 0)).toLocaleString('en-US')}`
+const t = (iso) => Date.parse(iso)
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`
+const inF = (repo) => !filter || repo === filter
+
+// ---- Time ----------------------------------------------------------------
+
+function ago(iso) {
+  const s = Math.max(0, Math.round((Date.now() - t(iso)) / 1000))
+  if (!iso || Number.isNaN(s)) return 'never'
+  if (s < 5) return 'just now'
+  if (s < 60) return `${s} s ago`
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`
+  return `${Math.floor(s / 86400)} d ago`
+}
+const gap = (ms) => {
+  const s = Math.max(0, Math.round(ms / 1000))
+  return s < 60 ? `${s} s` : s < 3600 ? `${Math.floor(s / 60)} min` : `${Math.floor(s / 3600)} h`
+}
+function dur(iso) {
+  const s = Math.max(0, Math.floor((Date.now() - t(iso)) / 1000))
+  if (s >= 3600) return `${Math.floor(s / 3600)}h${String(Math.floor(s / 60) % 60).padStart(2, '0')}m`
+  return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`
+}
+function span(a, b) {
+  const m = Math.max(0, Math.round((t(b) - t(a)) / 60000))
+  return m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m` : `${m}m`
+}
+const freshClass = (iso) => {
+  const s = (Date.now() - t(iso)) / 1000
+  return s < 120 ? 'f-ok' : s < STALE_S ? 'f-warn' : 'f-bad'
+}
+// A repo is stale when every machine reporting it has been silent for STALE_S.
+function staleInfo(r) {
+  const ms = (r.machines || []).map((m) => (data.machines || []).find((x) => x.machine === m)).filter(Boolean)
+  const seenAt = ms.length ? Math.max(...ms.map((m) => t(m.last_seen))) : t(r.last_seen)
+  const age = Date.now() - seenAt
+  return age > STALE_S * 1000 ? { age, who: (r.machines || []).join(', ') } : null
+}
+// Elements with data-t hold a timestamp; tick() fills in their text every second without a refetch.
+function tick() {
+  for (const el of document.querySelectorAll('[data-t]')) {
+    const k = el.dataset.k
+    const txt = k === 'dur' ? dur(el.dataset.t) : k === 'rep' ? `reported ${ago(el.dataset.t)}` : ago(el.dataset.t)
+    if (el.textContent !== txt) el.textContent = txt
+    if (k === 'rep') {
+      const box = el.closest('.fresh')
+      const c = freshClass(el.dataset.t)
+      if (box && !box.classList.contains(c)) box.className = `fresh ${c}`
+    }
+  }
+  if (data) {   // a machine going quiet changes a card without any new data
+    const sig = data.repos.map((r) => (staleInfo(r) ? 1 : 0)).join('')
+    if (sig !== tick.sig) { tick.sig = sig; render() }
+  }
+  showHealth()
+}
+const T = (iso, k = 'ago', cls = '') => `<span ${cls ? `class="${cls}" ` : ''}data-t="${esc(iso || '')}" data-k="${k}"></span>`
+
+// ---- Live / stale honesty ------------------------------------------------
+
+function health() {
+  const age = sync.at ? Date.now() - sync.at : Infinity
+  if (!data && !sync.err) return { s: 'wait', label: 'connecting…' }
+  if (sync.err && age >= 60000) return { s: 'error', label: `offline since ${gap(age)}`, bar: `Can't reach the hub (${sync.err}). Showing data from ${gap(age)} ago.`, err: true }
+  if (sync.conn === 'error') return { s: 'wait', label: 'reconnecting…', bar: `Live updates are paused, reconnecting. What you see is from ${gap(age)} ago.` }
+  if (age >= 60000) return { s: 'wait', label: `stale since ${gap(age)}`, bar: `This page has not been refreshed for ${gap(age)}. Numbers may be out of date.` }
+  if (sync.conn !== 'live') return { s: 'wait', label: 'connecting…' }
+  return { s: 'ok', label: 'live' }
+}
+function showHealth() {
+  const h = health()
+  const s = $('status')
+  const cls = `status ${h.s === 'ok' ? '' : h.s === 'error' ? 'error' : 'wait'}`.trim()
+  if (s.className !== cls) s.className = cls
+  if ($('conn').textContent !== h.label) $('conn').textContent = h.label
+  const bar = $('topbar')
+  bar.hidden = !h.bar
+  if (h.bar && bar.textContent !== h.bar) bar.textContent = h.bar
+  bar.classList.toggle('err', !!h.err)
+  if (sync.at) {
+    const u = ` · updated ${new Date(sync.at).toLocaleTimeString()}`
+    if ($('upd').textContent !== u) $('upd').textContent = u
+  }
+}
+
+// ---- Pieces --------------------------------------------------------------
+
+const numOf = (id) => String(id).split('-')[0]
+const rshort = (repo) => String(repo).split('/').pop()
+function repoChip(repo) {
+  const [o, ...n] = String(repo).split('/')
+  const dupe = data && data.repos.filter((r) => rshort(r.repo) === rshort(repo)).length > 1
+  const on = filter === repo
+  return `<button type="button" class="rchip" data-repo="${esc(repo)}" aria-pressed="${on}" title="${on ? 'Clear the filter' : `Show only ${esc(repo)}`}">${dupe && n.length ? `<span class="dim">${esc(o)}/</span>` : ''}<b>${esc(rshort(repo))}</b></button>`
+}
+const stage = (s, extra = '') => `<span class="stg s-${esc(s)}${extra}">${esc(s)}</span>`
+function lastAt(j) {
+  const h = j.history || []
+  return h.length ? h[h.length - 1].at : j.started
+}
+function who(j) {
+  const b = j.agents?.builder
+  if (j.stage === 'build') return b ? `${b.agent || ''} ${b.model || ''}`.trim() || 'builder' : 'builder'
+  if (j.stage === 'review') return Object.keys(j.agents?.reviewers || {}).join(' · ')
+  if (j.stage === 'gate') return 'checks.sh'
+  return { intake: 'intake', 'needs-info': 'author', spec: 'spec-writer', approve: 'approver', merging: 'merge' }[j.stage] || ''
+}
+
+// What the person has to do, said plainly.
+function todo(j) {
+  if (j.stage === 'needs-human') return j.pr ? `Merge PR #${j.pr} or give feedback` : 'Open the job to approve or give feedback'
+  if (j.stage === 'paused') return `Paused after ${(j.paused || {}).after || 'a stage'}: open to continue`
+  return 'Waiting for the issue author'
+}
+
+function needCard(e) {
+  const j = e.job
+  const human = j.stage === 'needs-human'
+  const flag = j.stage === 'paused' ? `review ${esc((j.paused || {}).after || '')}`.trim() : j.stage === 'needs-info' ? 'needs info' : 'needs you'
+  const pr = j.pr_url && safe(j.pr_url) ? `<a class="btn above" href="${esc(j.pr_url)}" target="_blank" rel="noopener">PR #${esc(j.pr)} ↗</a>` : ''
+  const issue = j.stage === 'needs-info' && safe(j.issue_url) && /^https?:/.test(j.issue_url)
+    ? `<a class="btn above" href="${esc(j.issue_url)}" target="_blank" rel="noopener">Issue #${esc(j.issue)} ↗</a>` : ''
+  return `<article class="card box ${human ? 'human' : ''}">
+    <div class="card-top">${repoChip(e.repo)}<span class="num">${esc(numOf(e.id))}</span><span class="flag ${human ? '' : 'wait'}">${flag}</span></div>
+    <p class="feature">${esc(j.title)}</p>
+    <p class="todo">${esc(todo(j))}</p>
+    <div class="meta"><span>${esc(j.stage)}</span><span>waiting ${T(lastAt(j), 'dur')}</span><span>${money(j.cost_usd)}</span></div>
+    <div class="acts"><a class="btn primary stretch" href="${url(e.href)}">Open job →</a>${pr}${issue}</div></article>`
+}
+
+function liveRow(e) {
+  const j = e.job
+  const cur = TRACK.findIndex(([s]) => s === j.stage)
+  const slices = j.slices || []
+  const sliceDone = slices.filter((x) => x.state === 'done').length
+  const count = (st) => slices.filter((x) => x.state === st).length
+  const sliceNote = slices.length && j.stage === 'build'
+    ? ` · slices ${sliceDone}/${slices.length} done${[['running', 'running'], ['blocked', 'blocked'], ['pending', 'waiting'], ['resume', 'to resume']]
+      .map(([st, w]) => (count(st) ? ` · ${count(st)} ${w}` : '')).join('')}`
+    : ''
+  const h = j.history || []
+  const skipped = j.spec_skipped || (cur > 1 && h.length && !h.some((x) => x.stage === 'spec'))
+  const segs = TRACK.map(([s, l], i) => {
+    const cls = `${i < cur ? 'done' : i === cur ? 'cur' : ''} ${s === 'spec' && skipped ? 'skip' : ''}`
+    if (s !== 'build' || !slices.length) return `<div class="seg ${cls}"><span>${l}</span></div>`
+    const bars = slices.map((x) => `<i class="${esc(x.state)}" title="${esc(`slice ${x.n} ${x.state}: ${x.title}`)}"></i>`).join('')
+    return `<div class="seg ${cls} slices">${bars}<span>${l} ${sliceDone}/${slices.length}</span></div>`
+  }).join('')
+  const risk = j.intake?.risk
+  return `<article class="prow box">
+    <div><div class="card-top"><span class="pulse"></span>${repoChip(e.repo)}<span class="num">${esc(numOf(e.id))}</span></div>
+      <p class="feature"><a class="stretch" href="${url(e.href)}">${esc(j.title)}</a></p><div class="where">on ${esc(e.machine)}</div></div>
+    <div><div class="segs">${segs}</div>
+      <div class="pnow"><b>${esc(j.stage)}</b>${j.round ? ` · round ${esc(j.round)}` : ''}${sliceNote} · for ${T(lastAt(j), 'dur')} · ${esc(who(j))}</div></div>
+    <div class="pside"><div class="meta">${risk ? `<span class="risk-${esc(risk)}">${esc(risk)}</span>` : ''}<span>${money(j.cost_usd)}</span><span>${T(j.started, 'dur')} total</span></div></div>
+  </article>`
+}
+
+// 14 bars with a baseline. Every day has a hit area (so empty days read "$0.00") and a <title>.
+const dayName = (d) => new Date(`${d}T12:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+const dayRead = (x) => `${dayName(x.day)}: ${money(x.cost_usd)}, ${plural(Number(x.jobs) || 0, 'job')}`
+function spark(daily) {
+  const d = daily || []
+  const max = Math.max(...d.map((x) => Number(x.cost_usd) || 0), 0.01)
+  const n = Math.max(d.length, 1), w = 168, h = 44, gp = 3, bw = (w - gp * (n - 1)) / n, top = h - 3
+  const total = d.reduce((s, x) => s + (Number(x.cost_usd) || 0), 0)
+  const bars = d.map((x, i) => {
+    const v = Number(x.cost_usd) || 0
+    const bh = v > 0 ? Math.max(3, (v / max) * (top - 2)) : 0
+    const X = (i * (bw + gp)).toFixed(1)
+    const r = dayRead(x)
+    return `<g class="day" data-r="${esc(r)}"><title>${esc(r)}</title><rect class="hit" x="${(i * (bw + gp) - gp / 2).toFixed(1)}" y="0" width="${(bw + gp).toFixed(1)}" height="${h}"/>`
+      + (v > 0 ? `<rect class="bar" x="${X}" y="${(top - bh).toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" rx="2"/>` : '') + '</g>'
+  }).join('')
+  const cap = `14 days: ${money(total)}`
+  return `<div class="spk"><svg class="spark" viewBox="0 0 ${w} ${h}" role="group" tabindex="0" data-cap="${esc(cap)}" aria-label="Spend per day, last 14 days, ${money(total)} in all. Arrow keys read each day.">
+    <line class="base" x1="0" x2="${w}" y1="${top + .5}" y2="${top + .5}"/>${bars}</svg><div class="sp-cap" aria-hidden="true">${esc(cap)}</div></div>`
+}
+
+const pinIcon = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.5 1.5"/></svg>'
+function repoCard(r) {
+  const c = r.counts || {}
+  const st = staleInfo(r)
+  const cls = `${c.needs_you ? 'has-attn' : c.running ? 'has-run' : ''} ${st ? 'stale' : ''} ${filter === r.repo ? 'picked' : ''}`
+  const [o, ...n] = String(r.repo).split('/')
+  const name = n.length ? `<span class="dim">${esc(o)}/</span>${esc(n.join('/'))}` : esc(o)
+  const stat = (k, v, label) => (v || k === 'tot' ? `<span class="${k}"><b>${esc(v || 0)}</b> ${label}</span>` : '')
+  const sameTotal = Number(r.cost_usd || 0).toFixed(2) === Number(r.cost_month || 0).toFixed(2)
+  const fresh = st
+    ? `<div class="stalebox">${pinIcon}<span>Stale: ${esc(st.who)} silent for ${gap(st.age)}</span></div>`
+    : `<div class="fresh ${freshClass(r.last_seen)}"><span class="fdot"></span><span class="ft">${T(r.last_seen, 'rep')}</span></div>`
+  return `<article class="rcard box ${cls}">
+    <div class="rtop"><h3 class="rname"><a class="stretch" href="${url(r.href)}">${name}</a></h3>
+      <button type="button" class="fbtn" data-repo="${esc(r.repo)}" aria-pressed="${filter === r.repo}" aria-label="Filter the overview to ${esc(r.repo)}">filter</button></div>
+    ${fresh}
+    <div class="mchips">${(r.machines || []).map((m) => `<span class="rchip">${esc(m)}</span>`).join('')}</div>
+    <div class="counts">${stat('run', c.running, 'running')}${stat('att', c.needs_you, 'needs you')}${stat('mrg', c.merged, 'merged')}${stat('tot', c.total, 'jobs')}</div>
+    <div class="rbottom"><div class="cost"><b>${money(r.cost_month)}</b>this month${sameTotal ? '' : `<br>${money(r.cost_usd)} total`}</div>${spark(r.daily)}</div>
+  </article>`
+}
+
+function jobLink(repo, id) {
+  const all = [...data.live, ...data.needs_you, ...data.recent]
+  const hit = all.find((x) => x.repo === repo && (x.id === id || x.id.endsWith(`~${id}`)))
+  if (hit) return hit.href
+  const r = data.repos.find((x) => x.repo === repo)
+  return r ? r.href : '/'
+}
+
+// Feed lines. A first full push makes one `new` event per job, seconds apart: fold such a burst into one line.
+const evKey = (e) => `${e.at}|${e.repo}|${e.job}|${e.to}`
+function groupEvents(list) {
+  const out = []
+  let i = 0
+  while (i < list.length) {
+    const e = list[i]
+    let j = i + 1
+    if (!e.from) {
+      while (j < list.length && !list[j].from && list[j].repo === e.repo && list[j].machine === e.machine
+        && Math.abs(t(list[j - 1].at) - t(list[j].at)) <= BURST_S * 1000) j++
+    }
+    if (j - i >= 3) { out.push({ burst: list.slice(i, j) }); i = j } else { out.push({ one: e }); i++ }
+  }
+  return out
+}
+function transition(e) {
+  return `<span class="tr">${e.from ? stage(e.from) : stage('new', ' s-new')}<span class="arrow" aria-label="to">→</span>${stage(e.to || '?')}</span>`
+}
+function feedItem(e, fresh) {
+  return `<li><div class="ev box ${fresh ? 'new' : ''}">${repoChip(e.repo)}
+    <span class="txt"><a class="stretch" href="${url(jobLink(e.repo, e.job))}"><b>#${esc(numOf(e.job))}</b> ${esc(e.title || '')}</a></span>${transition(e)}${T(e.at, 'ago', 't')}</div></li>`
+}
+function burstItem(g) {
+  const first = g.burst[0], key = evKey(first)
+  const on = opened.has(key)
+  const tally = {}
+  for (const e of g.burst) tally[e.to] = (tally[e.to] || 0) + 1
+  const parts = Object.entries(tally).sort((a, b) => b[1] - a[1]).map(([s, n]) => `${n} ${esc(s)}`).join(' · ')
+  return `<li><div class="ev box">${repoChip(first.repo)}
+    <span class="txt sync">${plural(g.burst.length, 'job')} synced from ${esc(first.machine)} <span class="dim">· ${parts}</span></span>
+    <button type="button" class="xbtn" data-burst="${esc(key)}" aria-expanded="${on}">${on ? 'hide' : 'show'}</button>${T(first.at, 'ago', 't')}</div>
+    ${on ? `<ul>${g.burst.map((e) => feedItem(e, false)).join('')}</ul>` : ''}</li>`
+}
+
+// ---- Page ----------------------------------------------------------------
+
+const last = {}
+let freshKeys = new Set()   // keys to animate in the next render only
+let feedLimit = innerWidth < 640 ? 10 : 20
+
+// Replace the page only when its structure changed. A new timestamp alone is patched into place,
+// so a heartbeat never costs a hover or keyboard focus.
+function paint(html) {
+  const main = $('main')
+  const stamps = []
+  const sig = html.replace(/data-t="([^"]*)"/g, (_, s) => { stamps.push(s); return 'data-t=""' })
+  if (sig === last.sig) {
+    main.querySelectorAll('[data-t]').forEach((el, i) => { if (el.dataset.t !== stamps[i]) el.dataset.t = stamps[i] })
+  } else {
+    last.sig = sig
+    main.innerHTML = html
+  }
+}
+
+function setFavicon(n) {
+  const badge = n > 0 ? '<circle cx="24" cy="8" r="7.5" fill="#ff5555" stroke="#14151b" stroke-width="2"/>' : ''
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#20222c"/><path d="M6 25V15l7 4v-4l7 4V8h4v17z" fill="#8be9fd"/>${badge}</svg>`
+  const href = `data:image/svg+xml,${encodeURIComponent(svg)}`
+  if ($('fav').getAttribute('href') !== href) $('fav').setAttribute('href', href)
+}
+
+function render() {
+  const d = data
+  if (!d) return
+  if (!d.machines.length && !d.repos.length) {
+    document.title = 'Software Factory'
+    $('totals').textContent = ''
+    paint(`<div class="welcome"><h2>No factory has reported yet</h2>
+      <p>On each machine that runs the factory, put the hub's address and token in <code>~/.config/factory/hub.json</code>.</p>
+      <p>Then run <code>factory/bin/report --install-service</code> there: it starts the reporter, and this page fills in within seconds.</p></div>`)
+    return
+  }
+  const week = Date.now() - 7 * 864e5
+  // merged_week is exact; older hubs only send `recent`, which is capped at 20.
+  const exact = Number.isInteger(d.merged_week)
+  const merged7 = exact ? d.merged_week : d.recent.filter((e) => e.job.stage === 'merged' && t(e.job.ended) >= week).length
+  const capped = !exact && d.recent.length >= 20 && d.recent.every((e) => t(e.job.ended || 0) >= week)
+  const m = d.month || {}
+  const api = Number(m.api_equivalent_usd) || 0, subs = Number(m.subscriptions_usd) || 0
+  const mx = Math.max(api, subs, 1)
+  const times = subs > 0 ? `${(api / subs).toFixed(1)}×` : '—'
+  const by = m.by_agent || {}
+  const needs = d.needs_you.length, running = d.live.length
+  document.title = needs ? `(${needs}) Software Factory` : 'Software Factory'
+  setFavicon(needs)
+  $('totals').textContent = `${plural(d.repos.length, 'repo')} · ${plural(d.machines.length, 'machine')} · ${running} running · ${needs} waiting on you`
+
+  const kpis = `<div class="kpis">
+    <div class="tile run"><div class="k">Running now</div><div class="v">${running}</div><div class="s">${running ? `across ${new Set(d.live.map((e) => e.repo)).size} repo(s)` : 'idle'}</div></div>
+    <div class="tile ${needs ? 'hot' : 'ok'}"><div class="k">Needs you</div><div class="v">${needs}</div><div class="s">${needs ? 'waiting for a human' : '✓ nothing is waiting on you'}</div></div>
+    <div class="tile"><div class="k">Merged this week</div><div class="v">${capped ? `${merged7}+` : merged7}</div><div class="s">${exact ? `in the last 7 days · ${plural(d.repos.length, 'repo')}` : d.recent.length ? 'from the last 20 finished' : 'nothing finished yet'}</div></div>
+    <div class="tile"><div class="k">API-equivalent, ${esc(m.month || 'this month')}</div>
+      <div class="v">${money0(api)}</div>
+      <div class="vs">${subs > 0 ? `vs <b>${money0(subs)}</b> subscriptions · ${times}` : 'no subscriptions listed'}</div>
+      <div class="ratio" aria-hidden="true"><i class="api" style="width:${(api / mx * 100).toFixed(1)}%"></i><i class="sub" style="width:${(subs / mx * 100).toFixed(1)}%"></i></div>
+      <div class="s">${Object.keys(by).map((a) => `${esc(a)} ${money0(by[a])}`).join(' · ')}</div></div>
+  </div>`
+
+  const pill = filter ? `<div class="filterbar"><span class="fpill">Filtered: <b>${esc(filter)}</b><button type="button" data-clear aria-label="Clear the repo filter">✕</button></span></div>` : ''
+
+  const mine = d.needs_you.filter((e) => inF(e.repo))
+  // Nothing waiting: the KPI tile says so, there is no section. A filtered view says it for that repo.
+  const need = mine.length
+    ? `<section class="attn" aria-labelledby="h-need"><div class="sec-h"><h2 id="h-need">Needs you</h2><span class="count">${mine.length}</span></div>
+        <div class="attn-grid">${mine.map(needCard).join('')}</div></section>`
+    : filter && needs ? `<p class="calm">✓ Nothing is waiting on you in ${esc(filter)}. ${needs} wait${needs === 1 ? 's' : ''} elsewhere.</p>` : ''
+
+  const liveF = d.live.filter((e) => inF(e.repo))
+  const run = `<section aria-labelledby="h-run"><div class="sec-h"><h2 id="h-run">Running</h2><span class="count">${liveF.length}</span></div>
+    ${liveF.map(liveRow).join('') || '<div class="calm">Nothing running right now.</div>'}</section>`
+
+  const rank = (r) => [r.counts?.needs_you ? 1 : 0, r.counts?.running ? 1 : 0, t(r.last_activity) || 0]
+  const repos = [...d.repos].sort((a, b) => { const x = rank(a), y = rank(b); return y[0] - x[0] || y[1] - x[1] || y[2] - x[2] })
+  const all = `<a class="rcard all" href="/all/dashboard.html"><div class="all-t">All repos together →</div>
+    <div class="all-s">One board for every job, the combined costs and the subscription view.</div></a>`
+  const reposHtml = `<section aria-labelledby="h-repos"><div class="sec-h"><h2 id="h-repos">Repos</h2><span class="count">${repos.length}</span></div>
+    <div class="rgrid">${repos.map(repoCard).join('')}${all}</div></section>`
+
+  const evs = d.events.filter((e) => inF(e.repo))
+  const lines = groupEvents(evs)
+  const shown = lines.slice(0, feedLimit)
+  const feed = `<div><div class="sec-h"><h2 id="h-feed">Activity</h2><span class="count">${evs.length}</span></div>
+    ${shown.length ? `<ul class="feed" aria-labelledby="h-feed">${shown.map((g) => (g.burst ? burstItem(g) : feedItem(g.one, freshKeys.has(evKey(g.one))))).join('')}</ul>` : '<div class="calm">No events yet.</div>'}
+    ${lines.length > feedLimit ? `<button type="button" class="more-btn" data-more>show more →</button>` : ''}</div>`
+  const recent = d.recent.filter((e) => inF(e.repo))
+  const rec = `<div><div class="sec-h"><h2>Recently finished</h2><span class="count">${recent.length}</span></div>
+    ${recent.map((e) => `<div class="rec box ${esc(e.job.stage)}"><span class="sdot s-${esc(e.job.stage)}"></span>${repoChip(e.repo)}
+      <span class="tt"><a class="stretch" href="${url(e.href)}">${esc(e.job.title)}</a></span>
+      <span class="m x">${e.job.stage === 'rejected' ? `${stage('rejected')} ` : ''}${money(e.job.cost_usd)} · ${e.job.ended ? span(e.job.started, e.job.ended) : '–'}</span>
+      ${T(e.job.ended, 'ago', 'n')}</div>`).join('') || '<div class="calm">Nothing finished yet.</div>'}</div>`
+  const mach = `<section aria-labelledby="h-mach"><div class="sec-h"><h2 id="h-mach">Machines</h2><span class="count">${d.machines.length}</span></div>
+    <table class="mtable"><thead><tr><th>machine</th><th>last seen</th><th class="n">repos</th></tr></thead><tbody>
+    ${d.machines.map((x) => `<tr><td>${esc(x.machine)}</td><td><span class="fresh ${freshClass(x.last_seen)}"><span class="fdot"></span><span class="ft">${T(x.last_seen)}</span>${(Date.now() - t(x.last_seen)) / 1000 > STALE_S ? ' <span class="ft">· stale</span>' : ''}</span></td><td class="n">${esc(x.repos)}</td></tr>`).join('')}
+    </tbody></table></section>`
+
+  paint(pill + kpis + need + run + reposHtml + `<section class="two">${feed}${rec}</section>` + mach)
+  freshKeys = new Set()
+  tick()
+}
+
+// ---- Repo filter (the URL keeps it: ?repo=owner/name) --------------------
+
+function setFilter(repo, focus) {
+  repo = repo === filter ? '' : repo
+  const u = new URL(location.href)
+  if (repo) u.searchParams.set('repo', repo); else u.searchParams.delete('repo')
+  history.pushState(null, '', u)
+  filter = repo
+  render()
+  if (focus) (document.querySelector('[data-clear]') || $('main')).focus({ preventScroll: true })
+}
+addEventListener('popstate', () => { filter = new URLSearchParams(location.search).get('repo') || ''; render() })
+
+// ---- Data ----------------------------------------------------------------
+
+async function load() {
+  try {
+    const res = await fetch('/api/overview', { cache: 'no-store' })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const next = await res.json()
+    for (const e of next.events || []) {
+      const k = evKey(e)
+      if (!seen.has(k)) { seen.add(k); if (!firstLoad) freshKeys.add(k) }
+    }
+    firstLoad = false
+    data = next
+    sync.at = Date.now()
+    sync.err = null
+    render()
+  } catch (err) {
+    sync.err = err.message
+  }
+  showHealth()
+}
+let debounce = null
+const reload = () => { clearTimeout(debounce); debounce = setTimeout(load, 300) }
+
+function connect() {
+  if (!('EventSource' in window)) return
+  const es = new EventSource('/api/stream')
+  es.onopen = () => { const was = sync.conn; sync.conn = 'live'; showHealth(); if (was === 'error') reload() }
+  es.onerror = () => { sync.conn = 'error'; showHealth() }
+  es.addEventListener('job', (ev) => {
+    let e; try { e = JSON.parse(ev.data) } catch { return }
+    if (data) {
+      const k = evKey(e)
+      if (!seen.has(k)) {
+        seen.add(k); freshKeys.add(k)
+        data.events = [e, ...data.events].slice(0, 100)
+        render()
+      }
+    }
+    reload()
+  })
+  es.addEventListener('seen', (ev) => {
+    let e; try { e = JSON.parse(ev.data) } catch { return }
+    if (!data) return
+    const mc = data.machines.find((x) => x.machine === e.machine)
+    if (mc) mc.last_seen = e.at
+    for (const r of data.repos) if ((r.machines || []).includes(e.machine) && t(e.at) > t(r.last_seen)) r.last_seen = e.at
+    sync.at = Date.now()
+    render()
+  })
+}
+
+// ---- Sparkline readout: hover a day, or focus the chart and use the arrow keys ----
+
+function readDay(svg, g) {
+  svg.querySelectorAll('.day.on').forEach((x) => x.classList.remove('on'))
+  const cap = svg.parentElement.querySelector('.sp-cap')
+  if (g) { g.classList.add('on'); cap.textContent = g.dataset.r } else cap.textContent = svg.dataset.cap
+}
+document.addEventListener('pointerover', (e) => { const g = e.target.closest?.('.spark .day'); if (g) readDay(g.closest('svg'), g) })
+document.addEventListener('pointerout', (e) => { const g = e.target.closest?.('.spark .day'); if (g && !g.contains(e.relatedTarget)) readDay(g.closest('svg'), null) })
+document.addEventListener('focusout', (e) => { if (e.target.matches?.('.spark')) readDay(e.target, null) })
+document.addEventListener('keydown', (e) => {
+  const svg = e.target.closest?.('.spark')
+  if (!svg || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return
+  const days = [...svg.querySelectorAll('.day')]
+  const cur = days.findIndex((g) => g.classList.contains('on'))
+  const next = e.key === 'Home' ? 0 : e.key === 'End' ? days.length - 1
+    : Math.min(days.length - 1, Math.max(0, (cur < 0 ? days.length : cur) + (e.key === 'ArrowLeft' ? -1 : 1)))
+  e.preventDefault()
+  readDay(svg, days[next])
+})
+
+// ---- Quick jump (/ or Ctrl/Cmd+K) -----------------------------------------
+
+const pal = { items: [], shown: [], at: 0 }
+function palItems() {
+  if (!data) return []
+  const repos = data.repos.map((r) => ({ kind: 'repo', label: r.repo, sub: `${r.counts?.running || 0} running · ${r.counts?.needs_you || 0} needs you · ${r.counts?.total || 0} jobs`, href: r.href, hay: r.repo,
+    rank: (r.counts?.needs_you ? 2 : 0) + (r.counts?.running ? 1 : 0) }))
+  const jobs = new Map()
+  for (const [list, rank] of [[data.needs_you, 3], [data.live, 2], [data.recent, 0]]) {
+    for (const e of list) {
+      const k = `${e.repo}|${e.id}`
+      if (!jobs.has(k)) jobs.set(k, { kind: 'job', label: `#${numOf(e.id)} ${e.job.title}`, sub: `${e.repo} · ${e.job.stage}`, href: e.href, hay: `${e.repo} ${e.id} #${numOf(e.id)} ${e.job.title}`, rank })
+    }
+  }
+  return [...repos, ...jobs.values()].filter((x) => safe(x.href))
+}
+// Every word of the query must match: as a substring (best) or as scattered letters.
+function fuzzy(q, hay) {
+  hay = hay.toLowerCase()
+  let score = 0
+  for (const tok of q.toLowerCase().split(/\s+/).filter(Boolean)) {
+    const i = hay.indexOf(tok)
+    if (i >= 0) { score += 100 - Math.min(i, 60) + (i === 0 || /[\s/#_-]/.test(hay[i - 1]) ? 30 : 0); continue }
+    let p = -1, last = -1, holes = 0
+    for (const ch of tok) { p = hay.indexOf(ch, p + 1); if (p < 0) return -1; if (last >= 0) holes += p - last - 1; last = p }
+    if (tok.length < 3 || holes > 3) return -1   // scattered letters count only when they sit nearly together
+    score += Math.max(1, 40 - holes)
+  }
+  return score
+}
+const mark = (s, q) => {
+  const tok = q.toLowerCase().split(/\s+/).filter(Boolean)
+  const lo = s.toLowerCase()
+  const hit = new Array(s.length).fill(false)
+  for (const k of tok) { const i = lo.indexOf(k); if (i >= 0) for (let c = i; c < i + k.length; c++) hit[c] = true }
+  let out = '', open = false
+  for (let c = 0; c < s.length; c++) {
+    if (hit[c] !== open) { out += hit[c] ? '<mark>' : '</mark>'; open = hit[c] }
+    out += esc(s[c])
+  }
+  return out + (open ? '</mark>' : '')
+}
+function palRender() {
+  const q = $('pal-q').value.trim()
+  pal.shown = (q
+    ? pal.items.map((x) => ({ x, s: fuzzy(q, x.hay) })).filter((r) => r.s >= 0).sort((a, b) => b.s - a.s || b.x.rank - a.x.rank).map((r) => r.x)
+    : [...pal.items].sort((a, b) => b.rank - a.rank)).slice(0, q ? 30 : 12)
+  pal.at = Math.min(pal.at, Math.max(0, pal.shown.length - 1))
+  $('pal-list').innerHTML = pal.shown.length ? pal.shown.map((x, i) => `<li role="option" id="opt-${i}" data-i="${i}" aria-selected="${i === pal.at}">
+      <span class="kind">${x.kind}</span><span><span class="lbl" style="display:block">${mark(x.label, q)}</span><span class="sub">${esc(x.sub)}</span></span></li>`).join('')
+    : `<li class="pal-empty" role="presentation">${data ? 'Nothing matches.' : 'Still loading…'}</li>`
+  $('pal-q').setAttribute('aria-activedescendant', pal.shown.length ? `opt-${pal.at}` : '')
+  $('pal-n').textContent = pal.shown.length ? plural(pal.shown.length, 'result') : 'no results'
+}
+function palMove(by) {
+  if (!pal.shown.length) return
+  pal.at = (pal.at + by + pal.shown.length) % pal.shown.length
+  for (const li of $('pal-list').children) li.setAttribute('aria-selected', String(li.dataset.i === String(pal.at)))
+  $('pal-q').setAttribute('aria-activedescendant', `opt-${pal.at}`)
+  $(`opt-${pal.at}`).scrollIntoView({ block: 'nearest' })
+}
+function palGo(i) { const x = pal.shown[i]; if (x) { $('pal').close(); location.href = x.href } }
+function palOpen() {
+  if ($('pal').open) return
+  pal.items = palItems(); pal.at = 0
+  $('pal-q').value = ''
+  palRender()
+  $('pal').showModal()
+}
+$('pal-open').addEventListener('click', palOpen)
+$('pal-q').addEventListener('input', () => { pal.at = 0; palRender() })
+$('pal-q').addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowDown') { e.preventDefault(); palMove(1) }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); palMove(-1) }
+  else if (e.key === 'Enter') { e.preventDefault(); palGo(pal.at) }
+})
+$('pal-list').addEventListener('click', (e) => { const li = e.target.closest('li[data-i]'); if (li) palGo(Number(li.dataset.i)) })
+$('pal-list').addEventListener('pointermove', (e) => { const li = e.target.closest('li[data-i]'); if (li && Number(li.dataset.i) !== pal.at) palMove(Number(li.dataset.i) - pal.at) })
+// Safari has no closedby="any": a click on the backdrop reports the dialog itself.
+$('pal').addEventListener('click', (e) => { if (e.target === $('pal')) $('pal').close() })
+document.addEventListener('keydown', (e) => {
+  const typing = e.target.closest?.('input, textarea, select, [contenteditable]')
+  const k = e.key.toLowerCase()
+  if (((e.ctrlKey || e.metaKey) && k === 'k') || (e.key === '/' && !typing && !e.ctrlKey && !e.metaKey && !e.altKey)) {
+    e.preventDefault(); palOpen()
+  }
+})
+
+// ---- Clicks ----------------------------------------------------------------
+
+document.addEventListener('click', (e) => {
+  const c = e.target.closest('[data-repo]')
+  if (c) return setFilter(c.dataset.repo, true)
+  if (e.target.closest('[data-clear]')) return setFilter('', true)
+  const b = e.target.closest('[data-burst]')
+  if (b) { const k = b.dataset.burst; opened.has(k) ? opened.delete(k) : opened.add(k); return render() }
+  if (e.target.closest('[data-more]')) { feedLimit += 20; render() }
+})
+document.addEventListener('visibilitychange', () => { if (!document.hidden) load() })
+showHealth()
+load()
+connect()
+setInterval(load, 30000)
+setInterval(tick, 1000)
+</script>
+</body>
+</html>

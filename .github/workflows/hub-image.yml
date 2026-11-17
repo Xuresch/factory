@@ -1,0 +1,67 @@
+# Builds the factory hub image and pushes it to ghcr.io/<owner>/factory-hub.
+# No :latest on purpose: deploy a fixed tag so an update is a visible change.
+# main → :sha-<7 chars of the commit>; tag hub-v1.2.3 → :1.2.3 and :1.2. Pull requests build
+# and run the conformance suite, nothing is pushed.
+name: hub image
+
+on:
+  push:
+    branches: [main]
+    tags: ["hub-v*"]
+    paths: ["hub/**", "factory/dashboard.html", ".github/workflows/hub-image.yml"]
+  pull_request:
+    paths: ["hub/**", "factory/dashboard.html", ".github/workflows/hub-image.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: {components: "clippy, rustfmt"}
+      - uses: Swatinem/rust-cache@v2
+        with: {workspaces: hub}
+      - name: fmt + clippy
+        working-directory: hub
+        run: cargo fmt --check && cargo clippy --release -- -D warnings
+      - name: build
+        working-directory: hub
+        run: cargo build --release --locked
+      - name: conformance suite
+        run: HUB_CMD=hub/target/release/factory-hub python3 -m unittest hub/test_server.py -v
+
+  image:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/factory-hub
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=match,pattern=hub-v(\d+\.\d+\.\d+),group=1
+            type=match,pattern=hub-v(\d+\.\d+)\.\d+,group=1
+          flavor: latest=false
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: hub/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

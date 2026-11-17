@@ -1,0 +1,78 @@
+# Example: the hub in its own namespace. Adjust host, storage class and auth.
+#
+#   kubectl create namespace factory
+#   kubectl -n factory create secret generic factory-hub --from-literal=tokens="$(openssl rand -hex 32)"
+#   kubectl -n factory apply -f hub/k8s.yaml
+#
+# The image comes from .github/workflows/hub-image.yml: pin a hub-vX.Y.Z or
+# sha-<commit> tag, never :latest, so an update is a visible change here.
+#
+# Viewing has no login of its own: protect / with your auth proxy (e.g.
+# Authentik forward-auth). /api/ingest and /healthz stay outside it; ingest
+# checks the bearer token itself.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: factory-hub-data}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 1Gi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: factory-hub}
+spec:
+  replicas: 1                 # SQLite: exactly one writer
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: factory-hub}}
+  template:
+    metadata: {labels: {app: factory-hub}}
+    spec:
+      securityContext: {runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, runAsNonRoot: true}
+      containers:
+        - name: hub
+          image: ghcr.io/xuresch/factory-hub:1.0.0   # a fixed tag (hub-vX.Y.Z or sha-<commit>), never :latest
+          env:
+            - {name: FACTORY_HUB_BIND, value: "0.0.0.0"}
+            - {name: FACTORY_HUB_PORT, value: "8080"}
+            - {name: FACTORY_HUB_DB, value: /data/hub.db}
+            - {name: FACTORY_HUB_DASHBOARD, value: /app/factory/dashboard.html}
+            - name: FACTORY_HUB_TOKENS
+              valueFrom: {secretKeyRef: {name: factory-hub, key: tokens}}
+          ports: [{containerPort: 8080, name: http}]
+          readinessProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 10}
+          livenessProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 30}
+          resources:
+            requests: {cpu: 20m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: tmp, mountPath: /tmp}   # Turso needs a writable temp dir; the root fs is read-only
+      volumes:
+        - {name: data, persistentVolumeClaim: {claimName: factory-hub-data}}
+        - {name: tmp, emptyDir: {sizeLimit: 256Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: factory-hub}
+spec:
+  selector: {app: factory-hub}
+  ports: [{port: 80, targetPort: http, name: http}]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: factory-hub
+  annotations:
+    # The SSE stream must not be buffered or cut after 60 s.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "64m"
+spec:
+  rules:
+    - host: factory.example.net
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: {service: {name: factory-hub, port: {name: http}}}

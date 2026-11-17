@@ -1,0 +1,18 @@
+[package]
+name = "factory-hub"
+version = "0.1.0"
+edition = "2021"
+description = "The factory hub: one web app every factory reports to"
+publish = false
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+flate2 = "1"
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time", "fs"] }
+tokio-stream = "0.1"
+turso = { version = "=0.8.3", default-features = false }
+
+[profile.release]
+lto = "thin"
+strip = true

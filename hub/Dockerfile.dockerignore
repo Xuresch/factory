@@ -1,0 +1,4 @@
+.git
+hub/target
+hub/__pycache__
+**/node_modules
