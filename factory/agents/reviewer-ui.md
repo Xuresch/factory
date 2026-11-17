@@ -70,6 +70,11 @@ never kill by process name.
 - Alignment, spacing rhythm and hierarchy hold up, and nothing overflows at
   phone width.
 - Text contrast is readable.
+- New HTML, CSS and client-side JS follow current platform practice and stay
+  within the project's Baseline target (`AGENTS.md` or `CLAUDE.md`; Baseline
+  Widely available when none is set), or carry a fallback. Where the
+  `modern-web-guidance` skill is installed, check a pattern you doubt against
+  its guide (`search`, then `retrieve`) and quote the rule in the finding.
 
 If the branch has no visual change, write PASS and say so.
 

@@ -103,6 +103,13 @@ touch an issue or label.
 - `pr`: write the PR body with it. The first line stays `Closes #<issue>`.
 - `codebase-design`: when the spec needs a new module or seam, use its
   vocabulary and keep the interface small.
+- `modern-web-guidance`: before you
+  write HTML, CSS or client-side JS for a UI pattern, form, animation,
+  accessibility, performance or security concern, search and retrieve its
+  guide and follow it. Use only features within the project's Baseline target
+  (`AGENTS.md` or `CLAUDE.md`; Baseline Widely available when none is set), or
+  add the fallback the guide gives. Name the guides you applied under
+  `## Self-review`, not in a section of their own.
 
 If a skill is missing on this machine, carry on without it.
 

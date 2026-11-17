@@ -36,8 +36,10 @@ Stop and tell the user if any of these fail:
 - The `orchestration` and `orca-cli` skills are installed (`<orca> skills
   installed`), and the mattpocock/skills the briefs use exist under
   `~/.agents/skills/`: `tdd`, `diagnosing-bugs`, `code-review`, `pr`,
-  `domain-modeling`, `codebase-design`, `triage`. A missing one doesn't stop
-  the factory, but tell the user which.
+  `domain-modeling`, `codebase-design`, `triage`. For a web project also
+  Chrome's `modern-web-guidance` (`npx skills add GoogleChrome/modern-web-guidance`),
+  which the builder and the UI reviewer use for HTML, CSS and client-side JS.
+  A missing one doesn't stop the factory, but tell the user which.
 - `python3 --version` is 3.10 or later. The scripts use only the standard
   library.
 - None of the files in step 1 already exist. If one does, show the user the
