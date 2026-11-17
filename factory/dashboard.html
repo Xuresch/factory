@@ -3,7 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
 <title>Software Factory</title>
+<link rel="icon" id="fav" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2320222c'/%3E%3Cpath d='M6 25V15l7 4v-4l7 4V8h4v17z' fill='%238be9fd'/%3E%3C/svg%3E">
 
 <style>
   :root {
@@ -13,8 +15,9 @@
     --card-hover: #252835;
     --line: #2b2e3b;
     --text: #e4e5ea;
-    --muted: #868ba0;
-    --faint: #5b6075;
+    --muted: #a3a8bd;      /* secondary text, 6.2:1 or better on every surface */
+    --subtle: #969bb1;     /* captions and timestamps, 5.3:1 or better */
+    --faint: #5b6075;      /* decoration only, never information */
     --active: #8be9fd;
     --pass: #50fa7b;
     --changes: #ffb86c;
@@ -31,16 +34,27 @@
     -webkit-font-smoothing: antialiased;
   }
   button { font: inherit; color: inherit; }
+  a, button, summary, input { transition: background-color .18s, border-color .18s, color .18s; }
+  :where(a, button, input, summary, [tabindex]):focus-visible { outline: 2px solid var(--active); outline-offset: 2px; border-radius: 4px; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .seg-btn, .more, .close, .file, .tlink { cursor: pointer; }
+  .seg-btn:hover, .more:hover { color: var(--text); border-color: var(--muted); }
 
   /* Header */
   header {
-    display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
-    flex-wrap: wrap; padding: 28px 32px 8px;
+    display: flex; align-items: center; justify-content: space-between; gap: 8px 16px;
+    flex-wrap: wrap; padding: 24px 32px 8px;
   }
   h1 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
+  .back { font-size: 13px; font-weight: 400; color: var(--muted); text-decoration: none; margin-right: 14px; white-space: nowrap; }
+  .back:hover { color: var(--active); }
+  .back:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; border-radius: 4px; }
+  .back[hidden] { display: none; }
   .status { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .status.wait { color: var(--changes); }
+  .status.wait .dot { background: var(--changes); }
   .status .dot {
-    display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
     background: var(--pass); margin-right: 6px; vertical-align: 1px;
   }
   .status.error { color: var(--human); }
@@ -53,7 +67,7 @@
   /* Board */
   .board { padding: 20px 32px 40px; }
   .board[hidden] { display: none; }
-  .empty { color: var(--faint); font-size: 12px; padding: 4px 2px; }
+  .empty { color: var(--subtle); font-size: 12px; padding: 4px 2px; }
 
   /* Cards */
   .card {
@@ -63,6 +77,7 @@
     transition: background .15s, border-color .15s, transform .15s;
   }
   .card:hover { background: var(--card-hover); transform: translateY(-1px); }
+  .prow:focus-visible, .drow:focus-visible { outline-offset: -2px; }
   .card:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
   .card.live { border-color: color-mix(in srgb, var(--active) 35%, var(--line)); }
   .card.human {
@@ -71,7 +86,7 @@
                 0 8px 24px -12px color-mix(in srgb, var(--human) 60%, transparent);
   }
   .card.done { opacity: .72; }
-  .card.rejected .feature { text-decoration: line-through; text-decoration-color: var(--faint); }
+  .card.rejected .feature { text-decoration: line-through; text-decoration-color: var(--subtle); }
   .flag.wait { color: var(--changes); }
   .card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
   .num { font-family: var(--mono); font-size: 12px; color: var(--muted); }
@@ -81,27 +96,27 @@
     animation: pulse 1.6s ease-in-out infinite;
   }
   .flag {
-    margin-left: auto; font-size: 10px; font-weight: 600; letter-spacing: .06em;
+    margin-left: auto; font-size: 12px; font-weight: 600; letter-spacing: .06em;
     text-transform: uppercase; color: var(--human); white-space: nowrap;
   }
   .feature { font-size: 13px; line-height: 1.4; margin: 0 0 6px; }
-  .links { display: flex; gap: 10px; font-family: var(--mono); font-size: 11px; }
+  .links { display: flex; gap: 10px; font-family: var(--mono); font-size: 12px; }
   .links a { color: var(--active); text-decoration: none; }
   .links a:hover { text-decoration: underline; }
-  .meta { display: flex; gap: 10px; margin-top: 8px; font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+  .meta { display: flex; gap: 10px; margin-top: 8px; font-family: var(--mono); font-size: 12px; color: var(--muted); }
   .meta .risk-high { color: var(--human); } .meta .risk-medium { color: var(--changes); }
   .chip.gate { flex: 0 0 38px; }
   .chip.FAIL { border: 1px solid transparent; color: var(--human); background: color-mix(in srgb, var(--human) 16%, transparent); }
   .branch {
-    font-family: var(--mono); font-size: 11px; color: var(--faint);
+    font-family: var(--mono); font-size: 12px; color: var(--subtle);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .rounds { margin-top: 10px; display: grid; gap: 5px; }
   .round { display: flex; align-items: center; gap: 4px; }
-  .round .r { font-family: var(--mono); font-size: 10px; color: var(--faint); width: 20px; }
+  .round .r { font-family: var(--mono); font-size: 12px; color: var(--subtle); width: 20px; }
   .chip {
-    flex: 1; text-align: center; font-family: var(--mono); font-size: 10px;
-    padding: 2px 0; border-radius: 4px; border: 1px dashed var(--faint); color: var(--faint);
+    flex: 1; text-align: center; font-family: var(--mono); font-size: 12px;
+    padding: 2px 0; border-radius: 4px; border: 1px dashed var(--faint); color: var(--subtle);
   }
   .chip.wait { animation: breathe 1.6s ease-in-out infinite; }
   .chip.PASS {
@@ -115,13 +130,16 @@
   .chip.bad { border: 1px solid var(--human); color: var(--human); }
   .hint {
     margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line);
-    font-family: var(--mono); font-size: 10.5px; color: var(--muted); line-height: 1.6;
+    font-family: var(--mono); font-size: 12px; color: var(--muted); line-height: 1.6;
     overflow-wrap: anywhere;
   }
 
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
   @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
-  @media (prefers-reduced-motion: reduce) { .pulse, .chip.wait { animation: none; } }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+    .card:hover { transform: none; }
+  }
 
   /* Drawer */
   .scrim {
@@ -131,7 +149,7 @@
   .drawer {
     position: fixed; top: 0; right: 0; bottom: 0; z-index: 31; width: min(920px, 100vw);
     background: var(--panel); border-left: 1px solid var(--line);
-    display: grid; grid-template-rows: auto 1fr; transform: translateX(100%);
+    display: grid; grid-template-rows: auto minmax(0, 1fr); transform: translateX(100%); overflow: hidden;
     transition: transform .25s ease;
   }
   .open .scrim { opacity: 1; pointer-events: auto; }
@@ -140,16 +158,16 @@
   .d-head .num { font-size: 12px; }
   .d-head h3 { margin: 4px 40px 6px 0; font-size: 16px; font-weight: 600; line-height: 1.35; }
   .close {
-    position: absolute; top: 16px; right: 16px; width: 32px; height: 32px;
+    position: absolute; top: 16px; right: 16px; width: 36px; height: 36px;
     border-radius: 8px; border: 1px solid var(--line); background: none; cursor: pointer;
     color: var(--muted); font-size: 18px; line-height: 1;
   }
   .close:hover { color: var(--text); border-color: var(--muted); }
-  .d-body { display: grid; grid-template-columns: 200px 1fr; min-height: 0; }
+  .d-body { display: grid; grid-template-columns: 200px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); min-height: 0; }
   .files { border-right: 1px solid var(--line); padding: 14px 10px; overflow-y: auto; }
   .files .group {
-    font-size: 10px; text-transform: uppercase; letter-spacing: .08em;
-    color: var(--faint); margin: 12px 8px 4px;
+    font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--subtle); margin: 12px 8px 4px;
   }
   .files .group:first-child { margin-top: 0; }
   .file {
@@ -173,7 +191,7 @@
   .md ul, .md ol { padding-left: 1.3em; }
   .md li { margin: .2em 0; }
   .md li.task { list-style: none; margin-left: -1.3em; }
-  .md li.task::before { content: "☐"; margin-right: .5em; color: var(--faint); }
+  .md li.task::before { content: "☐"; margin-right: .5em; color: var(--subtle); }
   .md li.task.done::before { content: "☑"; color: var(--pass); }
   .md code {
     font-family: var(--mono); font-size: 12px; background: var(--card);
@@ -202,13 +220,13 @@
   .verdict.good { color: var(--pass); background: color-mix(in srgb, var(--pass) 14%, transparent); }
   .verdict.warn { color: var(--changes); background: color-mix(in srgb, var(--changes) 16%, transparent); }
   .verdict.stop { color: var(--human); background: color-mix(in srgb, var(--human) 16%, transparent); }
-  .note { color: var(--faint); font-size: 13px; }
+  .note { color: var(--subtle); font-size: 13px; }
   .md .summary {
     background: var(--card); border: 1px solid var(--line); border-radius: 8px;
     padding: 12px 16px 4px; margin: 0 0 22px;
   }
   .md .summary h2 {
-    margin: 0 0 6px; font-size: 11px; font-weight: 600; text-transform: uppercase;
+    margin: 0 0 6px; font-size: 12px; font-weight: 600; text-transform: uppercase;
     letter-spacing: .08em; color: var(--muted);
   }
   .md .summary ul { margin: 0 0 .6em; }
@@ -227,7 +245,7 @@
   .tile { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
   .tile .v { font-family: var(--mono); font-size: 20px; font-weight: 600; }
   .tile .k { color: var(--muted); font-size: 12px; }
-  .tile .s { color: var(--faint); font-size: 11px; font-family: var(--mono); }
+  .tile .s { color: var(--subtle); font-size: 12px; font-family: var(--mono); }
   .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(560px, 1fr)); gap: 0 28px; }
   .grid2 > * { min-width: 0; }
   .costs-view table.costs th, .costs-view table.costs td { white-space: nowrap; }
@@ -237,25 +255,25 @@
   .md table.costs tr[data-job]:hover td { background: var(--card-hover); }
   .md table.costs td.t { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .md table.costs .stage-merged { color: var(--merged); }
-  .md table.costs .stage-rejected { color: var(--faint); }
+  .md table.costs .stage-rejected { color: var(--subtle); }
   .md table.costs .stage-human { color: var(--human); }
 
   footer {
-    padding: 0 32px 32px; font-family: var(--mono); font-size: 11px; color: var(--faint);
+    padding: 0 32px 32px; font-family: var(--mono); font-size: 12px; color: var(--subtle);
     display: flex; gap: 20px; flex-wrap: wrap;
   }
 
   /* Sections and the done list */
   .sec-h { display: flex; align-items: baseline; gap: 10px; margin: 0 0 12px; }
   .sec-h h2 { margin: 0; font-size: 13px; font-weight: 600; }
-  .sec-h .count { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .sec-h .count { font-family: var(--mono); font-size: 12px; color: var(--muted); }
   .sec-h .tools { margin-left: auto; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
   .seg-btn { background: none; border: 1px solid var(--line); color: var(--muted); border-radius: 6px;
     padding: 2px 9px; font-size: 12px; cursor: pointer; }
   .seg-btn.on { color: var(--text); background: var(--card); border-color: var(--muted); }
   .search { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; color: var(--text);
     padding: 3px 9px; font: 12px var(--mono); width: 180px; }
-  .tag { font-family: var(--mono); font-size: 10.5px; color: var(--merged); background: color-mix(in srgb, var(--merged) 12%, transparent);
+  .tag { font-family: var(--mono); font-size: 12px; color: var(--merged); background: color-mix(in srgb, var(--merged) 12%, transparent);
     padding: 1px 6px; border-radius: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
   .rdots { display: inline-flex; gap: 3px; align-items: center; }
   .rd { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--faint); }
@@ -263,19 +281,20 @@
   .rd.human { background: none; box-shadow: inset 0 0 0 2px var(--human); } .rd.live { background: var(--active); animation: pulse 1.6s infinite; }
   .rd.muted { background: var(--faint); }
   .risk-high { color: var(--human); } .risk-medium { color: var(--changes); } .risk-low { color: var(--muted); }
-  .day { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); margin: 14px 0 4px; }
+  .day { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--subtle); margin: 14px 0 4px; }
   .drow { display: grid; grid-template-columns: 8px 32px minmax(0, 1fr) auto auto 56px 62px 52px; gap: 10px; align-items: center;
     padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; }
   .drow:hover { background: var(--card); }
   .drow .dt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
   .drow:hover .dt { color: var(--text); }
-  .drow .n { text-align: right; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
-  .drow > span:nth-child(6) { font-family: var(--mono); font-size: 11px; }
+  .drow .n { text-align: right; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .drow > span:nth-child(6) { font-family: var(--mono); font-size: 12px; }
   .sd { width: 8px; height: 8px; border-radius: 2px; background: var(--merged); }
   .sd.rejected { background: var(--faint); }
-  .drow.rejected .dt { text-decoration: line-through; }
+  .drow.rejected .dt { color: var(--subtle); }
+  .stg { display: inline-block; font: 12px/1.5 var(--mono); padding: 0 7px; border-radius: 4px; margin-right: 6px; white-space: nowrap; color: var(--muted); box-shadow: inset 0 0 0 1px var(--faint); }
   .more { background: none; border: 0; color: var(--active); font: 12px var(--mono); cursor: pointer; padding: 8px 10px; }
-  .calm { color: var(--faint); font-size: 13px; padding: 10px 0; }
+  .calm { color: var(--subtle); font-size: 13px; padding: 10px 0; }
 
   /* Needs you, running */
   .b-sec { margin-bottom: 34px; }
@@ -284,13 +303,13 @@
   .attn .sec-h h2 { color: var(--human); }
   .attn.calm-box { border-color: var(--line); background: none; padding: 10px 16px; }
   .attn-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
-  .prow { display: grid; grid-template-columns: minmax(220px, 1.2fr) minmax(360px, 2fr) minmax(170px, .8fr); gap: 20px; align-items: center;
+  .prow { display: grid; grid-template-columns: minmax(220px, 1.2fr) minmax(400px, 2fr) minmax(170px, .8fr); gap: 20px; align-items: center;
     background: var(--card); border: 1px solid color-mix(in srgb, var(--active) 30%, var(--line)); border-radius: 10px;
     padding: 14px 16px; margin-bottom: 8px; cursor: pointer; }
   .prow:hover { background: var(--card-hover); }
   .segs { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
   .seg { height: 6px; border-radius: 3px; background: var(--line); position: relative; }
-  .seg span { position: absolute; top: 9px; left: 0; font-size: 10px; color: var(--faint); font-family: var(--mono); }
+  .seg span { position: absolute; top: 10px; left: 0; font-size: 12px; color: var(--subtle); font-family: var(--mono); }
   .seg.done { background: color-mix(in srgb, var(--active) 45%, var(--line)); }
   .seg.skip { background: repeating-linear-gradient(45deg, var(--line) 0 3px, transparent 3px 6px); }
   .seg.cur { background: var(--active); animation: breathe 1.6s infinite; }
@@ -301,13 +320,13 @@
   .seg.slices i.done { background: color-mix(in srgb, var(--active) 45%, var(--line)); }
   .seg.slices i.running { background: var(--active); animation: breathe 1.6s infinite; }
   .seg.slices i.blocked { background: var(--human); }
-  .pnow { margin-top: 26px; font: 11.5px var(--mono); color: var(--muted); }
+  .pnow { margin-top: 30px; font: 12px var(--mono); color: var(--muted); }
   .pnow b { color: var(--text); font-weight: 600; }
   .pside .meta { margin-top: 8px; }
 
   /* Costs view */
   .cv h2 { margin: 30px 0 4px; }
-  .cv .sub { color: var(--faint); font-size: 12px; margin: 0 0 12px; }
+  .cv .sub { color: var(--subtle); font-size: 12px; margin: 0 0 12px; }
   .bcol .fee { position: absolute; left: -2px; right: -2px; border-top: 2px solid var(--text); pointer-events: none; }
   .legend i.fee-key { height: 0; border-top: 2px solid var(--text); border-radius: 0; vertical-align: 3px; }
   .tile.click { cursor: pointer; } .tile.click:hover { background: var(--card-hover); }
@@ -317,7 +336,7 @@
   .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
   .chart { position: relative; height: 240px; margin: 0 92px 0 44px; border-bottom: 1px solid var(--muted); }
   .chart .gl { position: absolute; left: 0; right: 0; border-top: 1px solid var(--line); }
-  .chart .gl span { position: absolute; right: calc(100% + 8px); top: -8px; font: 10.5px var(--mono); color: var(--faint); }
+  .chart .gl span { position: absolute; right: calc(100% + 8px); top: -8px; font: 10.5px var(--mono); color: var(--subtle); }
   .chart .med { position: absolute; left: 0; right: 0; border-top: 1px dashed var(--text); opacity: .55; z-index: 1; pointer-events: none; }
   .chart .med span { position: absolute; left: calc(100% + 8px); top: -8px; font: 10.5px/1.3 var(--mono); color: var(--text); white-space: pre; }
   .bars { position: absolute; inset: 0; display: flex; align-items: flex-end; gap: 4px; }
@@ -326,7 +345,7 @@
   .bstack { width: 100%; display: flex; flex-direction: column-reverse; gap: 2px; }
   .bstack i { display: block; min-height: 0; }
   .bstack i:last-child { border-radius: 4px 4px 0 0; }
-  .bx { position: absolute; top: calc(100% + 5px); left: 50%; transform: translateX(-50%); font: 10px var(--mono); color: var(--faint); }
+  .bx { position: absolute; top: calc(100% + 5px); left: 50%; transform: translateX(-50%); font: 10px var(--mono); color: var(--subtle); }
   .cv .grid2 { margin-top: 10px; }
   /* The directory column takes what the numbers leave and cuts long paths short. */
   .cv table.costs.fill { width: 100%; }
@@ -343,8 +362,8 @@
   .tag.notag { background: none; }
   .rangebar { margin-bottom: 16px; }
   .bx { white-space: nowrap; }
-  .cv .sub { color: var(--faint); font-size: 12px; margin: 0 0 12px; line-height: 1.5; }
-  .heat td.nil { color: var(--faint); background: none; }
+  .cv .sub { color: var(--subtle); font-size: 12px; margin: 0 0 12px; line-height: 1.5; }
+  .heat td.nil { color: var(--subtle); background: none; }
   .trend svg { width: 100%; height: auto; display: block; }
   details.old { margin-top: 34px; border-top: 1px solid var(--line); padding-top: 14px; }
   details.old summary { cursor: pointer; color: var(--muted); font-size: 13px; }
@@ -367,7 +386,7 @@
     .grid2 { grid-template-columns: 1fr; }
     footer { padding: 0 16px 24px; }
     .d-head { padding: 16px; }
-    .d-body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+    .d-body { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
     .files {
       border-right: 0; border-bottom: 1px solid var(--line); display: flex; gap: 4px;
       overflow-x: auto; padding: 8px;
@@ -377,11 +396,33 @@
     .file .rn { display: inline; white-space: pre; }
     .doc { padding: 18px 16px 48px; }
   }
+
+  /* Under a hub: the repo name opens a menu of every repo. */
+  .switch { background: none; border: 1px solid transparent; border-radius: 8px; padding: 0 8px; margin: 0 -8px; font: inherit; font-weight: 600; letter-spacing: inherit; color: inherit; cursor: pointer; anchor-name: --sw; }
+  .switch:hover, .switch[aria-expanded="true"] { background: var(--panel); border-color: var(--line); }
+  .switch .car { color: var(--muted); font-size: 12px; margin-left: 2px; }
+  #repomenu { margin: 6px 0 0; padding: 6px; min-width: min(320px, calc(100vw - 24px)); max-width: calc(100vw - 24px); max-height: min(60vh, 460px); overflow-y: auto; border: 1px solid var(--line); border-radius: 10px;
+    background: var(--panel); color: var(--text); box-shadow: 0 16px 40px rgba(0, 0, 0, .55); inset: auto; position-anchor: --sw; position-area: block-end span-inline-end; position-try-fallbacks: flip-block, flip-inline; }
+  @supports not (position-area: block-end) { #repomenu { inset: 64px auto auto 16px; margin: 0; } }
+  #repomenu a { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 8px 10px; border-radius: 6px; text-decoration: none; color: var(--text); font-size: 13px; min-height: 40px; }
+  #repomenu a:hover { background: var(--card); }
+  #repomenu a[aria-current] { background: var(--card-hover); box-shadow: inset 2px 0 0 var(--active); }
+  #repomenu .rn2 { overflow-wrap: anywhere; } #repomenu .rn2 .dim { color: var(--subtle); }
+  #repomenu .cnt { display: flex; gap: 10px; font: 12px var(--mono); color: var(--muted); white-space: nowrap; }
+  #repomenu .cnt .run { color: var(--active); } #repomenu .cnt .att { color: var(--human); }
+  #repomenu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
+  #repomenu .note { padding: 8px 10px; font-size: 13px; }
+  @media (pointer: coarse), (max-width: 640px) {
+    .back, .switch { min-height: 44px; display: inline-flex; align-items: center; }
+    .seg-btn, .more { min-height: 44px; } .drow, .file { min-height: 44px; }
+    #repomenu a { min-height: 48px; }
+    .seg:not(.cur) span { display: none; } .pnow { margin-top: 22px; }
+  }
 </style>
 </head>
 <body>
 <header>
-  <h1>Software factory</h1>
+  <h1><a class="back" id="back" href="/" hidden>← All repos</a><span id="title">Software factory</span></h1>
   <nav class="views"><a href="#board" id="v-board">Board</a><a href="#costs" id="v-costs">Costs</a><a href="#plan" id="v-plan">Subscription</a></nav>
   <div class="status" id="status">connecting…</div>
 </header>
@@ -412,6 +453,7 @@
   </aside>
 </div>
 
+<div id="repomenu" popover aria-label="Repos"></div>
 <div id="tip"></div>
 
 <script>
@@ -568,18 +610,34 @@ async function render() {
     + ` (claude $${part('claude').toFixed(2)} · codex $${part('codex').toFixed(2)})`
 }
 
+let lastOk = Date.now()
+let hub = null
+
+// The tab icon grows a red badge while a job waits on a human.
+function setFavicon(n) {
+  const badge = n > 0 ? '<circle cx="24" cy="8" r="7.5" fill="#ff5555" stroke="#14151b" stroke-width="2"/>' : ''
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#20222c"/><path d="M6 25V15l7 4v-4l7 4V8h4v17z" fill="#8be9fd"/>${badge}</svg>`
+  const href = `data:image/svg+xml,${encodeURIComponent(svg)}`
+  if ($('fav').getAttribute('href') !== href) $('fav').setAttribute('href', href)
+}
+
 async function poll() {
   const status = $('status')
   try {
     jobs = await loadJobs()
     await render()
+    routeJob()
     if (openJobId) await refreshDrawer()
+    lastOk = Date.now()
     status.className = 'status'
-    status.innerHTML = `<span class="dot"></span>jobs/ · ${new Date().toLocaleTimeString()}`
+    // Under a hub the status reads like the overview's: live, then the time of the last refresh.
+    status.innerHTML = `<span class="dot"></span>${hub ? 'live · updated' : 'jobs/ ·'} ${new Date().toLocaleTimeString()}`
   } catch (err) {
-    status.className = 'status error'
-    status.innerHTML = `<span class="dot"></span>${esc(err.message)}`
+    const quiet = Date.now() - lastOk
+    status.className = hub ? 'status wait' : 'status error'
+    status.innerHTML = `<span class="dot"></span>${hub ? (quiet < 60000 ? 'reconnecting…' : `stale since ${Math.round(quiet / 60000)} min`) + ' · ' : ''}${esc(err.message)}`
   }
+  setFavicon(jobs.filter((j) => ATTN.has(j.stage)).length)
 }
 
 // factory/bin/job writes each jobs/<id>/job.json.
@@ -656,7 +714,7 @@ async function refreshDrawer() {
   if (openPath === COSTS) {
     text = costTable(job)
   } else if (openPath === TICKET) {
-    text = await fetchText('/' + job.issue_url).catch(() =>
+    text = await fetchText(job.issue_url).catch(() =>
       `Can't load ${job.issue_url}.\n\nStart the dashboard with \`factory/bin/dashboard\`: plain \`python3 -m http.server\` serves only factory/, not the tickets in .scratch/.`)
   } else if (openPath) {
     text = await fetchText(base + openPath)
@@ -884,11 +942,14 @@ function costsTables() {
       Click a job to open it, a column to sort.</p>`
 }
 
+let returnFocus = null
 async function openDrawer(id) {
   openJobId = id
   openPath = null
   openText = undefined
+  returnFocus = document.activeElement
   document.body.classList.add('open')
+  $('overlay').querySelector('.close').focus({ preventScroll: true })
   try {
     await refreshDrawer()
   } catch (err) {
@@ -897,8 +958,11 @@ async function openDrawer(id) {
 }
 
 function closeDrawer() {
+  if (openJobId && location.hash.startsWith('#job=')) history.replaceState(null, '', '#board')
   openJobId = null
   document.body.classList.remove('open')
+  if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true })
+  returnFocus = null
 }
 
 document.addEventListener('click', (e) => {
@@ -1089,7 +1153,7 @@ function doneRow(j) {
   const risk = j.intake?.risk || ''
   return `<div class="drow ${esc(j.stage)}" data-job="${esc(j.id)}" tabindex="0">
     <span class="sd ${esc(j.stage)}" data-tip="${esc(j.stage)}"></span><span class="num">${esc(numOf(j))}</span>
-    <span class="dt" title="${esc(j.title)}">${esc(j.title)}</span>
+    <span class="dt" title="${esc(j.title)}">${j.stage === 'rejected' ? '<span class="stg">rejected</span>' : ''}${esc(j.title)}</span>
     ${f ? `<span class="tag" title="${esc(f)}">${esc(f.replace(/^feature\//, ''))}</span>` : '<span class="tag notag"></span>'}
     ${roundDots(j)}<span class="risk-${esc(risk)}">${esc(risk)}</span>
     <span class="n">${money(j.cost_usd)}</span><span class="n">${elapsed(j)}</span></div>`
@@ -1392,7 +1456,7 @@ async function loadPlan() {
   if (Date.now() - plan.at < (scanning ? 3000 : 30000)) return
   plan.at = Date.now()
   try {
-    const res = await fetch('/_subscriptions.json', { cache: 'no-store' })
+    const res = await fetch('_subscriptions.json', { cache: 'no-store' })
     plan.data = res.ok ? await res.json() : null
     plan.err = !res.ok ? (res.status === 404 ? 'old-server' : `HTTP ${res.status}: ${await res.text()}`)
       : plan.data.configured === false ? 'missing' : null
@@ -1537,7 +1601,61 @@ function planPage() {
       This month's fees count pro rata.</p></div>`
 }
 
-window.addEventListener('hashchange', () => render())
+// #job=<id> opens that job's drawer (the hub's overview deep-links here). Needs the jobs loaded.
+function routeJob() {
+  const m = location.hash.match(/^#job=(.+)$/)
+  if (!m) return
+  const id = decodeURIComponent(m[1])
+  if (openJobId !== id && jobs.some((j) => j.id === id)) openDrawer(id)
+}
+
+// Under the hub, `hub` answers {repo, overview}; run locally it 404s and nothing changes.
+fetch('hub', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).then((h) => {
+  if (!h || !h.overview) return
+  hub = h
+  $('back').href = h.overview
+  $('back').hidden = false
+  $('title').innerHTML = `Software Factory · <button type="button" class="switch" id="switch" commandfor="repomenu" command="toggle-popover" aria-haspopup="true" aria-expanded="false" aria-controls="repomenu">${esc(h.repo)} <span class="car" aria-hidden="true">▾</span></button>`
+  document.title = h.repo
+  // Older browsers lack invoker commands: the button toggles the popover itself.
+  if (!('commandForElement' in HTMLButtonElement.prototype)) $('switch').addEventListener('click', () => $('repomenu').togglePopover())
+  $('repomenu').addEventListener('toggle', (e) => {
+    $('switch')?.setAttribute('aria-expanded', String(e.newState === 'open'))
+    if (e.newState === 'open') loadRepos()
+  })
+}).catch(() => {})
+
+// The repo list comes from the overview, fetched once, the first time the menu opens.
+let repoList = null
+async function loadRepos() {
+  if (repoList) return
+  repoList = 'loading'
+  const menu = $('repomenu')
+  menu.innerHTML = '<div class="note">Loading…</div>'
+  try {
+    const res = await fetch(new URL('api/overview', new URL(hub.overview, location.href)), { cache: 'no-store' })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const d = await res.json()
+    const rank = (r) => [r.counts?.needs_you ? 1 : 0, r.counts?.running ? 1 : 0]
+    const repos = [...d.repos].sort((a, b) => { const x = rank(a), y = rank(b); return y[0] - x[0] || y[1] - x[1] || a.repo.localeCompare(b.repo) })
+    const safe = (h) => /^\/(?!\/)/.test(String(h || ''))
+    const item = (r) => {
+      const [o, ...n] = String(r.repo).split('/')
+      const c = r.counts || {}
+      return `<a href="${safe(r.href) ? esc(r.href) : '#'}" ${r.repo === hub.repo ? 'aria-current="page"' : ''}>
+        <span class="rn2">${n.length ? `<span class="dim">${esc(o)}/</span>${esc(n.join('/'))}` : esc(o)}</span>
+        <span class="cnt">${c.running ? `<span class="run">${c.running} running</span>` : ''}${c.needs_you ? `<span class="att">${c.needs_you} needs you</span>` : ''}${!c.running && !c.needs_you ? '<span>idle</span>' : ''}</span></a>`
+    }
+    const all = esc(new URL('all/dashboard.html', new URL(hub.overview, location.href)).pathname)
+    menu.innerHTML = repos.map(item).join('') + `<hr><a href="${all}"><span class="rn2">All repos together</span></a>`
+    repoList = repos
+  } catch (err) {
+    repoList = null
+    menu.innerHTML = `<div class="note">Can't load the repos: ${esc(err.message)}</div>`
+  }
+}
+
+window.addEventListener('hashchange', () => { render(); routeJob() })
 poll()
 setInterval(poll, POLL_MS)
 </script>
