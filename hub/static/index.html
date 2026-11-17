@@ -47,26 +47,6 @@
 
   .wrap { max-width: 1400px; margin: 0 auto; padding: 0 32px; }
 
-  /* Top banner: slim, never dims the page */
-  .topbar { position: sticky; top: 0; z-index: 20; padding: 5px 32px; font: 12px/1.6 var(--mono); text-align: center;
-    color: var(--changes); background: color-mix(in srgb, var(--changes) 14%, var(--bg)); border-bottom: 1px solid color-mix(in srgb, var(--changes) 45%, var(--line)); }
-  .topbar.err { color: var(--human); background: color-mix(in srgb, var(--human) 12%, var(--bg)); border-bottom-color: color-mix(in srgb, var(--human) 45%, var(--line)); }
-
-  /* Header */
-  header { display: flex; align-items: center; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; padding: 24px 0 4px; }
-  h1 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
-  .hright { display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap; }
-  .kbdbtn { display: inline-flex; align-items: center; gap: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
-    padding: 4px 10px; font-size: 13px; color: var(--muted); transition: background-color .18s, border-color .18s, color .18s; }
-  .kbdbtn:hover { color: var(--text); border-color: var(--muted); background: var(--card); }
-  .status { font-family: var(--mono); font-size: 12px; color: var(--muted); }
-  .status .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--pass); margin-right: 6px; vertical-align: 0; }
-  .status.wait { color: var(--changes); }
-  .status.wait .dot { background: var(--changes); }
-  .status.error { color: var(--human); }
-  .status.error .dot { background: var(--human); }
-  .totals { font-family: var(--mono); font-size: 12px; color: var(--muted); margin: 0; padding-bottom: 6px; min-height: 22px; }
-
   main { padding: 12px 0 40px; outline: none; }
   section { margin-bottom: 34px; }
   .sec-h { display: flex; align-items: baseline; gap: 10px; margin: 0 0 12px; }
@@ -157,6 +137,23 @@
   .btn.primary:hover { filter: brightness(1.12); }
   .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--active); animation: pulse 1.6s ease-in-out infinite; flex: none; }
 
+  .rounds { margin-top: 8px; display: grid; gap: 5px; }
+  .round { display: flex; align-items: center; gap: 4px; }
+  .round .r { font: 12px var(--mono); color: var(--subtle); width: 22px; }
+  .chip { flex: 1; text-align: center; font: 12px var(--mono); padding: 2px 0; border-radius: 4px; border: 1px dashed var(--faint); color: var(--subtle); }
+  .chip.PASS { border: 1px solid transparent; color: var(--pass); background: color-mix(in srgb, var(--pass) 14%, transparent); }
+  .chip.CHANGES { border: 1px solid transparent; color: var(--changes); background: color-mix(in srgb, var(--changes) 16%, transparent); }
+  .chip.FAIL { border: 1px solid transparent; color: var(--human); background: color-mix(in srgb, var(--human) 16%, transparent); }
+  .chip.bad { border: 1px solid var(--human); color: var(--human); }
+  .card .todo code { font-weight: 400; }
+  #needs-you { scroll-margin-top: 84px; outline: none; }
+  .idle-repos { margin: 12px 0 0; font-size: 13px; color: var(--subtle); overflow-wrap: anywhere; }
+  .idle-repos a { color: var(--muted); text-decoration: underline; text-decoration-color: var(--faint); text-underline-offset: 3px; transition: color .18s; }
+  .idle-repos a:hover { color: var(--text); }
+  .idle-repos a { display: inline-block; padding: 2px 0; }
+  .help { margin: 0; padding: 14px 0 32px; border-top: 1px solid var(--line); font-size: 13px; color: var(--subtle); display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+  .help code { background: none; border: 1px solid var(--line); color: var(--muted); }
+
   /* Running */
   .prow {
     display: grid; grid-template-columns: minmax(220px, 1.2fr) minmax(400px, 2fr) minmax(150px, .6fr); gap: 20px; align-items: center;
@@ -191,8 +188,6 @@
   .rcard.has-run { border-color: color-mix(in srgb, var(--active) 35%, var(--line)); }
   .rcard.picked { outline: 2px solid var(--active); outline-offset: 2px; }
   .rcard.stale { border-style: dashed; }
-  .rcard.all { justify-content: center; border-style: dashed; background: none; }
-  .rcard.all:hover { background: var(--card); }
   .rtop { display: flex; align-items: flex-start; gap: 8px; justify-content: space-between; }
   .rname { margin: 0; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; line-height: 1.3; }
   .rname .dim { font-weight: 400; }
@@ -222,8 +217,6 @@
   .spark .day:last-of-type .bar { fill: var(--active); }
   .spark .day:hover .bar, .spark .day.on .bar { fill: var(--text); }
   .sp-cap { font: 12px var(--mono); color: var(--subtle); white-space: nowrap; }
-  .rcard .all-t { font-size: 15px; font-weight: 600; }
-  .rcard .all-s { font-size: 13px; color: var(--muted); }
 
   /* Activity and recent */
   .two { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 0 32px; align-items: start; }
@@ -255,7 +248,7 @@
   .sdot.s-rejected { background: var(--faint); }
 
   /* Machines */
-  .mtable { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .mtable { width: auto; min-width: min(520px, 100%); max-width: 100%; border-collapse: collapse; font-size: 13px; }
   .mtable th, .mtable td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); }
   .mtable th { font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: .06em; color: var(--subtle); }
   .mtable td.n, .mtable th.n { text-align: right; font-family: var(--mono); font-size: 12px; }
@@ -266,27 +259,6 @@
   .welcome h2 { margin: 0 0 8px; font-size: 15px; }
   .welcome p { margin: 0 0 10px; color: var(--muted); }
   .welcome p:last-child { margin: 0; }
-
-  /* Quick jump */
-  dialog.pal { padding: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--text); width: min(640px, calc(100vw - 24px));
-    max-width: none; margin: 12vh auto auto; box-shadow: 0 24px 64px rgba(0, 0, 0, .6); }
-  dialog.pal::backdrop { background: rgba(5, 6, 10, .6); overflow: hidden; overscroll-behavior: contain; }
-  dialog.pal:modal { overscroll-behavior: contain; }
-  .pal-in { display: flex; flex-direction: column; max-height: min(520px, 76vh); }
-  #pal-q { background: none; border: 0; border-bottom: 1px solid var(--line); color: var(--text); font: 16px/1.4 inherit; padding: 16px 18px; outline: none; width: 100%; border-radius: 12px 12px 0 0; }
-  #pal-q::placeholder { color: var(--subtle); }
-  #pal-q:focus { border-bottom-color: var(--active); }
-  #pal-list { list-style: none; margin: 0; padding: 6px; overflow-y: auto; min-height: 0; }
-  #pal-list li { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px 10px; border-radius: 8px; cursor: pointer; min-height: 44px; }
-  #pal-list li:hover { background: var(--card); }
-  #pal-list li[aria-selected="true"] { background: var(--card-hover); box-shadow: inset 2px 0 0 var(--active); }
-  #pal-list .kind { font: 12px var(--mono); color: var(--subtle); text-transform: uppercase; letter-spacing: .04em; }
-  #pal-list .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
-  #pal-list .sub { display: block; font: 12px var(--mono); color: var(--subtle); overflow: hidden; text-overflow: ellipsis; }
-  #pal-list mark { background: none; color: var(--active); font-weight: 600; }
-  .pal-empty { padding: 18px; color: var(--subtle); font-size: 13px; }
-  .pal-foot { display: flex; gap: 14px; flex-wrap: wrap; padding: 8px 14px; border-top: 1px solid var(--line); font: 12px var(--mono); color: var(--subtle); }
-  .pal-foot span:last-child { margin-left: auto; }
 
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
   @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
@@ -302,19 +274,15 @@
   }
   /* Touch: every control is at least 44 px tall. Small chips grow their hit area, not their look. */
   @media (pointer: coarse), (max-width: 640px) {
-    .btn, .kbdbtn, .more-btn { min-height: 44px; }
+    .btn, .more-btn { min-height: 44px; }
     .fpill button { width: 44px; height: 44px; }
     .rchip, .fbtn, .ev .xbtn { position: relative; }
     .rchip::after, .fbtn::after, .ev .xbtn::after { content: ""; position: absolute; inset: -13px -6px; }
     .ev, .rec { min-height: 44px; }
-    #pal-list li { min-height: 48px; }
   }
   @media (max-width: 640px) {
     .wrap { padding: 0 16px; }
-    .topbar { padding: 5px 16px; }
-    header { padding-top: 16px; }
     main { padding-top: 12px; }
-    .kbdbtn kbd { display: none; }
     .rec { grid-template-columns: 8px minmax(0, 1fr) auto; grid-template-areas: "d c c" ". t t" ". x n"; row-gap: 2px; }
     .rec .sdot { grid-area: d; } .rec > .rchip { grid-area: c; justify-self: start; }
     .rec .tt { grid-area: t; white-space: normal; }
@@ -331,34 +299,16 @@
     .seg:not(.cur) span { display: none; }
     .pnow { margin-top: 22px; }
     .spark { width: 140px; }
-    dialog.pal { margin-top: 8vh; }
-    .pal-foot .hide-s { display: none; }
   }
 </style>
 </head>
 <body>
-<div class="topbar" id="topbar" role="status" hidden></div>
 <div class="wrap">
-  <header>
-    <h1>Software Factory</h1>
-    <div class="hright">
-      <button type="button" class="kbdbtn" id="pal-open" aria-keyshortcuts="/ Control+K Meta+K"><kbd>/</kbd><span>Jump to repo or job</span></button>
-      <div class="status wait" id="status" role="status"><span class="dot"></span><span id="conn">connecting…</span><span id="upd"></span></div>
-    </div>
-  </header>
-  <p class="totals" id="totals"></p>
   <main id="main" tabindex="-1"></main>
+  <footer class="help"><span>Start work from your agent session:</span> <code>/factory run</code> <code>/factory run 11-14</code> <code>/factory &lt;anything&gt;</code></footer>
 </div>
 
-<dialog class="pal" id="pal" aria-label="Jump to a repo or job" closedby="any">
-  <div class="pal-in">
-    <input id="pal-q" type="text" role="combobox" aria-expanded="true" aria-controls="pal-list" aria-autocomplete="list" aria-activedescendant=""
-      aria-label="Search repos and jobs" placeholder="Jump to a repo or job: name, #number, title" autocomplete="off" spellcheck="false" autofocus>
-    <ul id="pal-list" role="listbox" aria-label="Results"></ul>
-    <div class="pal-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> move</span><span><kbd>↵</kbd> open</span><span class="hide-s"><kbd>esc</kbd> close</span><span id="pal-n" aria-live="polite"></span></div>
-  </div>
-</dialog>
-
+<script src="/static/nav.js"></script>
 <script>
 const LIVE = new Set(['intake', 'spec', 'build', 'gate', 'review', 'approve', 'merging'])
 const ATTN = new Set(['needs-human', 'paused', 'needs-info'])
@@ -366,6 +316,7 @@ const TRACK = [['intake', 'intake'], ['spec', 'spec'], ['build', 'build'], ['gat
 const STALE_S = 900        // a machine silent this long makes its repos stale
 const BURST_S = 10         // `new` events of one repo and machine this close together are one sync
 
+const nav = window.FactoryNav
 const $ = (id) => document.getElementById(id)
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
@@ -436,40 +387,13 @@ function tick() {
     const sig = data.repos.map((r) => (staleInfo(r) ? 1 : 0)).join('')
     if (sig !== tick.sig) { tick.sig = sig; render() }
   }
-  showHealth()
 }
 const T = (iso, k = 'ago', cls = '') => `<span ${cls ? `class="${cls}" ` : ''}data-t="${esc(iso || '')}" data-k="${k}"></span>`
 
-// ---- Live / stale honesty ------------------------------------------------
-
-function health() {
-  const age = sync.at ? Date.now() - sync.at : Infinity
-  if (!data && !sync.err) return { s: 'wait', label: 'connecting…' }
-  if (sync.err && age >= 60000) return { s: 'error', label: `offline since ${gap(age)}`, bar: `Can't reach the hub (${sync.err}). Showing data from ${gap(age)} ago.`, err: true }
-  if (sync.conn === 'error') return { s: 'wait', label: 'reconnecting…', bar: `Live updates are paused, reconnecting. What you see is from ${gap(age)} ago.` }
-  if (age >= 60000) return { s: 'wait', label: `stale since ${gap(age)}`, bar: `This page has not been refreshed for ${gap(age)}. Numbers may be out of date.` }
-  if (sync.conn !== 'live') return { s: 'wait', label: 'connecting…' }
-  return { s: 'ok', label: 'live' }
-}
-function showHealth() {
-  const h = health()
-  const s = $('status')
-  const cls = `status ${h.s === 'ok' ? '' : h.s === 'error' ? 'error' : 'wait'}`.trim()
-  if (s.className !== cls) s.className = cls
-  if ($('conn').textContent !== h.label) $('conn').textContent = h.label
-  const bar = $('topbar')
-  bar.hidden = !h.bar
-  if (h.bar && bar.textContent !== h.bar) bar.textContent = h.bar
-  bar.classList.toggle('err', !!h.err)
-  if (sync.at) {
-    const u = ` · updated ${new Date(sync.at).toLocaleTimeString()}`
-    if ($('upd').textContent !== u) $('upd').textContent = u
-  }
-}
-
 // ---- Pieces --------------------------------------------------------------
 
-const numOf = (id) => String(id).split('-')[0]
+const numOf = (id) => String(id).split('~').pop().split('-')[0]
+const ref = (e) => (e.job.issue ? `#${e.job.issue}` : `#${numOf(e.id)}`)
 const rshort = (repo) => String(repo).split('/').pop()
 function repoChip(repo) {
   const [o, ...n] = String(repo).split('/')
@@ -490,24 +414,63 @@ function who(j) {
   return { intake: 'intake', 'needs-info': 'author', spec: 'spec-writer', approve: 'approver', merging: 'merge' }[j.stage] || ''
 }
 
-// What the person has to do, said plainly.
-function todo(j) {
-  if (j.stage === 'needs-human') return j.pr ? `Merge PR #${j.pr} or give feedback` : 'Open the job to approve or give feedback'
-  if (j.stage === 'paused') return `Paused after ${(j.paused || {}).after || 'a stage'}: open to continue`
-  return 'Waiting for the issue author'
+// What the person has to do, said plainly. The same words as the dashboard's board.
+const cmd = '<code>/factory &lt;anything&gt;</code>'
+function flagOf(j) {
+  return j.stage === 'needs-human' ? 'Your call' : j.stage === 'paused' ? `Paused after ${(j.paused || {}).after || 'a stage'}` : 'Waiting for author'
+}
+function todoOf(j) {
+  if (j.stage === 'needs-human') return j.pr ? `Merge PR #${esc(j.pr)} or give feedback with ${cmd}` : `Open the job to approve, or give feedback with ${cmd}`
+  if (j.stage === 'paused') return 'Open the job to continue'
+  return 'Waiting for the issue author to answer'
+}
+
+// Round verdict chips, read from the job's own files through the hub (gate first, then each reviewer).
+const SHORT = { code: 'code', ux: 'ux', ui: 'ui', security: 'sec' }
+const verdicts = new Map()   // "href|stage|round" -> {gate, reviews}
+const asking = new Set()
+async function firstLine(u) {
+  try { const r = await fetch(u, { cache: 'no-store' }); return r.ok ? (await r.text()).split('\n')[0].trim() : null } catch { return null }
+}
+const verdictOf = (l) => (l === null ? 'pending' : (l.match(/^(?:VERDICT|GATE):\s*(PASS|CHANGES|FAIL)$/) || [])[1] || 'invalid')
+function jobBase(e) {
+  const m = String(e.href).match(/^(.*\/)dashboard\.html#job=(.+)$/)
+  return m && safe(m[1]) ? `${m[1]}jobs/${encodeURIComponent(decodeURIComponent(m[2]))}/` : null
+}
+async function askRound(e, key) {
+  const base = jobBase(e)
+  const dir = `${base}round-${e.job.round}/`
+  const v = { gate: verdictOf(await firstLine(`${dir}checks.md`)), reviews: {} }
+  if (v.gate === 'PASS') {
+    await Promise.all(Object.keys(e.job.agents?.reviewers || {}).map(async (r) => { v.reviews[r] = verdictOf(await firstLine(`${dir}review-${r}.md`)) }))
+  }
+  verdicts.set(key, v)
+  asking.delete(key)
+  render()
+}
+const chip = (label, v, title) => `<span class="chip ${['PASS', 'CHANGES', 'FAIL'].includes(v) ? v : v === 'pending' ? '' : 'bad'}" title="${esc(title)}: ${esc(v)}">${esc(label)}</span>`
+function roundsOf(e) {
+  const j = e.job
+  if (!j.round || !jobBase(e)) return ''
+  const key = `${e.href}|${j.stage}|${j.round}`
+  const v = verdicts.get(key)
+  if (!v) { if (!asking.has(key)) { asking.add(key); askRound(e, key) } return '' }
+  const cells = [chip('gate', v.gate, 'gate')]
+  if (v.gate === 'PASS') for (const r of Object.keys(j.agents?.reviewers || {})) cells.push(chip(SHORT[r] || r, v.reviews[r], r))
+  return `<div class="rounds"><div class="round"><span class="r">R${esc(j.round)}</span>${cells.join('')}</div></div>`
 }
 
 function needCard(e) {
   const j = e.job
   const human = j.stage === 'needs-human'
-  const flag = j.stage === 'paused' ? `review ${esc((j.paused || {}).after || '')}`.trim() : j.stage === 'needs-info' ? 'needs info' : 'needs you'
   const pr = j.pr_url && safe(j.pr_url) ? `<a class="btn above" href="${esc(j.pr_url)}" target="_blank" rel="noopener">PR #${esc(j.pr)} ↗</a>` : ''
   const issue = j.stage === 'needs-info' && safe(j.issue_url) && /^https?:/.test(j.issue_url)
     ? `<a class="btn above" href="${esc(j.issue_url)}" target="_blank" rel="noopener">Issue #${esc(j.issue)} ↗</a>` : ''
   return `<article class="card box ${human ? 'human' : ''}">
-    <div class="card-top">${repoChip(e.repo)}<span class="num">${esc(numOf(e.id))}</span><span class="flag ${human ? '' : 'wait'}">${flag}</span></div>
+    <div class="card-top">${repoChip(e.repo)}<span class="num">${esc(ref(e))}</span><span class="flag ${human ? '' : 'wait'}">${esc(flagOf(j))}</span></div>
     <p class="feature">${esc(j.title)}</p>
-    <p class="todo">${esc(todo(j))}</p>
+    <p class="todo">${todoOf(j)}</p>
+    ${roundsOf(e)}
     <div class="meta"><span>${esc(j.stage)}</span><span>waiting ${T(lastAt(j), 'dur')}</span><span>${money(j.cost_usd)}</span></div>
     <div class="acts"><a class="btn primary stretch" href="${url(e.href)}">Open job →</a>${pr}${issue}</div></article>`
 }
@@ -532,7 +495,7 @@ function liveRow(e) {
   }).join('')
   const risk = j.intake?.risk
   return `<article class="prow box">
-    <div><div class="card-top"><span class="pulse"></span>${repoChip(e.repo)}<span class="num">${esc(numOf(e.id))}</span></div>
+    <div><div class="card-top"><span class="pulse"></span>${repoChip(e.repo)}<span class="num">${esc(ref(e))}</span></div>
       <p class="feature"><a class="stretch" href="${url(e.href)}">${esc(j.title)}</a></p><div class="where">on ${esc(e.machine)}</div></div>
     <div><div class="segs">${segs}</div>
       <div class="pnow"><b>${esc(j.stage)}</b>${j.round ? ` · round ${esc(j.round)}` : ''}${sliceNote} · for ${T(lastAt(j), 'dur')} · ${esc(who(j))}</div></div>
@@ -646,19 +609,11 @@ function paint(html) {
   }
 }
 
-function setFavicon(n) {
-  const badge = n > 0 ? '<circle cx="24" cy="8" r="7.5" fill="#ff5555" stroke="#14151b" stroke-width="2"/>' : ''
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#20222c"/><path d="M6 25V15l7 4v-4l7 4V8h4v17z" fill="#8be9fd"/>${badge}</svg>`
-  const href = `data:image/svg+xml,${encodeURIComponent(svg)}`
-  if ($('fav').getAttribute('href') !== href) $('fav').setAttribute('href', href)
-}
-
 function render() {
   const d = data
   if (!d) return
   if (!d.machines.length && !d.repos.length) {
-    document.title = 'Software Factory'
-    $('totals').textContent = ''
+    nav.setSub('')
     paint(`<div class="welcome"><h2>No factory has reported yet</h2>
       <p>On each machine that runs the factory, put the hub's address and token in <code>~/.config/factory/hub.json</code>.</p>
       <p>Then run <code>factory/bin/report --install-service</code> there: it starts the reporter, and this page fills in within seconds.</p></div>`)
@@ -675,9 +630,7 @@ function render() {
   const times = subs > 0 ? `${(api / subs).toFixed(1)}×` : '—'
   const by = m.by_agent || {}
   const needs = d.needs_you.length, running = d.live.length
-  document.title = needs ? `(${needs}) Software Factory` : 'Software Factory'
-  setFavicon(needs)
-  $('totals').textContent = `${plural(d.repos.length, 'repo')} · ${plural(d.machines.length, 'machine')} · ${running} running · ${needs} waiting on you`
+  nav.setSub( `${plural(d.repos.length, 'repo')} · ${plural(d.machines.length, 'machine')} · ${running} running · ${needs} waiting on you`)
 
   const kpis = `<div class="kpis">
     <div class="tile run"><div class="k">Running now</div><div class="v">${running}</div><div class="s">${running ? `across ${new Set(d.live.map((e) => e.repo)).size} repo(s)` : 'idle'}</div></div>
@@ -695,7 +648,7 @@ function render() {
   const mine = d.needs_you.filter((e) => inF(e.repo))
   // Nothing waiting: the KPI tile says so, there is no section. A filtered view says it for that repo.
   const need = mine.length
-    ? `<section class="attn" aria-labelledby="h-need"><div class="sec-h"><h2 id="h-need">Needs you</h2><span class="count">${mine.length}</span></div>
+    ? `<section class="attn" id="needs-you" tabindex="-1" aria-labelledby="h-need"><div class="sec-h"><h2 id="h-need">Needs you</h2><span class="count">${mine.length}</span></div>
         <div class="attn-grid">${mine.map(needCard).join('')}</div></section>`
     : filter && needs ? `<p class="calm">✓ Nothing is waiting on you in ${esc(filter)}. ${needs} wait${needs === 1 ? 's' : ''} elsewhere.</p>` : ''
 
@@ -705,10 +658,10 @@ function render() {
 
   const rank = (r) => [r.counts?.needs_you ? 1 : 0, r.counts?.running ? 1 : 0, t(r.last_activity) || 0]
   const repos = [...d.repos].sort((a, b) => { const x = rank(a), y = rank(b); return y[0] - x[0] || y[1] - x[1] || y[2] - x[2] })
-  const all = `<a class="rcard all" href="/all/dashboard.html"><div class="all-t">All repos together →</div>
-    <div class="all-s">One board for every job, the combined costs and the subscription view.</div></a>`
+  const busy = repos.filter((r) => r.counts?.total), idle = repos.filter((r) => !r.counts?.total)
   const reposHtml = `<section aria-labelledby="h-repos"><div class="sec-h"><h2 id="h-repos">Repos</h2><span class="count">${repos.length}</span></div>
-    <div class="rgrid">${repos.map(repoCard).join('')}${all}</div></section>`
+    <div class="rgrid">${busy.map(repoCard).join('')}</div>
+    ${idle.length ? `<p class="idle-repos">No jobs yet: ${idle.map((r) => `<a href="${url(r.href)}">${esc(r.repo)}</a>`).join(', ')}</p>` : ''}</section>`
 
   const evs = d.events.filter((e) => inF(e.repo))
   const lines = groupEvents(evs)
@@ -730,6 +683,7 @@ function render() {
   paint(pill + kpis + need + run + reposHtml + `<section class="two">${feed}${rec}</section>` + mach)
   freshKeys = new Set()
   tick()
+  if (!jumped) jumpHash()
 }
 
 // ---- Repo filter (the URL keeps it: ?repo=owner/name) --------------------
@@ -743,59 +697,41 @@ function setFilter(repo, focus) {
   render()
   if (focus) (document.querySelector('[data-clear]') || $('main')).focus({ preventScroll: true })
 }
-addEventListener('popstate', () => { filter = new URLSearchParams(location.search).get('repo') || ''; render() })
+addEventListener('popstate', () => { filter = new URLSearchParams(location.search).get('repo') || ''; render(); jumpHash() })
+addEventListener('hashchange', jumpHash)
+// The bar's needs-you badge links to /#needs-you: bring that section into view once it is on the page.
+let jumped = false
+function jumpHash() {
+  if (location.hash !== '#needs-you') return
+  const el = $('needs-you')
+  if (!el) return
+  jumped = true
+  el.scrollIntoView({ block: 'start' })
+  el.focus({ preventScroll: true })
+}
 
 // ---- Data ----------------------------------------------------------------
 
-async function load() {
-  try {
-    const res = await fetch('/api/overview', { cache: 'no-store' })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const next = await res.json()
-    for (const e of next.events || []) {
-      const k = evKey(e)
-      if (!seen.has(k)) { seen.add(k); if (!firstLoad) freshKeys.add(k) }
-    }
-    firstLoad = false
-    data = next
-    sync.at = Date.now()
-    sync.err = null
-    render()
-  } catch (err) {
-    sync.err = err.message
+// The hub connection (overview + live stream) lives in nav.js; this page reacts to it.
+nav.on('data', (next) => {
+  for (const e of next.events || []) {
+    const k = evKey(e)
+    if (!seen.has(k)) { seen.add(k); if (!firstLoad) freshKeys.add(k) }
   }
-  showHealth()
-}
-let debounce = null
-const reload = () => { clearTimeout(debounce); debounce = setTimeout(load, 300) }
-
-function connect() {
-  if (!('EventSource' in window)) return
-  const es = new EventSource('/api/stream')
-  es.onopen = () => { const was = sync.conn; sync.conn = 'live'; showHealth(); if (was === 'error') reload() }
-  es.onerror = () => { sync.conn = 'error'; showHealth() }
-  es.addEventListener('job', (ev) => {
-    let e; try { e = JSON.parse(ev.data) } catch { return }
-    if (data) {
-      const k = evKey(e)
-      if (!seen.has(k)) {
-        seen.add(k); freshKeys.add(k)
-        data.events = [e, ...data.events].slice(0, 100)
-        render()
-      }
-    }
-    reload()
-  })
-  es.addEventListener('seen', (ev) => {
-    let e; try { e = JSON.parse(ev.data) } catch { return }
-    if (!data) return
-    const mc = data.machines.find((x) => x.machine === e.machine)
-    if (mc) mc.last_seen = e.at
-    for (const r of data.repos) if ((r.machines || []).includes(e.machine) && t(e.at) > t(r.last_seen)) r.last_seen = e.at
-    sync.at = Date.now()
+  firstLoad = false
+  data = next
+  render()
+})
+nav.on('job', (e) => {
+  if (!data) return
+  const k = evKey(e)
+  if (!seen.has(k)) {
+    seen.add(k); freshKeys.add(k)
+    data.events = [e, ...data.events].slice(0, 100)
     render()
-  })
-}
+  }
+})
+nav.on('seen', () => { if (data) render() })
 
 // ---- Sparkline readout: hover a day, or focus the chart and use the arrow keys ----
 
@@ -818,94 +754,6 @@ document.addEventListener('keydown', (e) => {
   readDay(svg, days[next])
 })
 
-// ---- Quick jump (/ or Ctrl/Cmd+K) -----------------------------------------
-
-const pal = { items: [], shown: [], at: 0 }
-function palItems() {
-  if (!data) return []
-  const repos = data.repos.map((r) => ({ kind: 'repo', label: r.repo, sub: `${r.counts?.running || 0} running · ${r.counts?.needs_you || 0} needs you · ${r.counts?.total || 0} jobs`, href: r.href, hay: r.repo,
-    rank: (r.counts?.needs_you ? 2 : 0) + (r.counts?.running ? 1 : 0) }))
-  const jobs = new Map()
-  for (const [list, rank] of [[data.needs_you, 3], [data.live, 2], [data.recent, 0]]) {
-    for (const e of list) {
-      const k = `${e.repo}|${e.id}`
-      if (!jobs.has(k)) jobs.set(k, { kind: 'job', label: `#${numOf(e.id)} ${e.job.title}`, sub: `${e.repo} · ${e.job.stage}`, href: e.href, hay: `${e.repo} ${e.id} #${numOf(e.id)} ${e.job.title}`, rank })
-    }
-  }
-  return [...repos, ...jobs.values()].filter((x) => safe(x.href))
-}
-// Every word of the query must match: as a substring (best) or as scattered letters.
-function fuzzy(q, hay) {
-  hay = hay.toLowerCase()
-  let score = 0
-  for (const tok of q.toLowerCase().split(/\s+/).filter(Boolean)) {
-    const i = hay.indexOf(tok)
-    if (i >= 0) { score += 100 - Math.min(i, 60) + (i === 0 || /[\s/#_-]/.test(hay[i - 1]) ? 30 : 0); continue }
-    let p = -1, last = -1, holes = 0
-    for (const ch of tok) { p = hay.indexOf(ch, p + 1); if (p < 0) return -1; if (last >= 0) holes += p - last - 1; last = p }
-    if (tok.length < 3 || holes > 3) return -1   // scattered letters count only when they sit nearly together
-    score += Math.max(1, 40 - holes)
-  }
-  return score
-}
-const mark = (s, q) => {
-  const tok = q.toLowerCase().split(/\s+/).filter(Boolean)
-  const lo = s.toLowerCase()
-  const hit = new Array(s.length).fill(false)
-  for (const k of tok) { const i = lo.indexOf(k); if (i >= 0) for (let c = i; c < i + k.length; c++) hit[c] = true }
-  let out = '', open = false
-  for (let c = 0; c < s.length; c++) {
-    if (hit[c] !== open) { out += hit[c] ? '<mark>' : '</mark>'; open = hit[c] }
-    out += esc(s[c])
-  }
-  return out + (open ? '</mark>' : '')
-}
-function palRender() {
-  const q = $('pal-q').value.trim()
-  pal.shown = (q
-    ? pal.items.map((x) => ({ x, s: fuzzy(q, x.hay) })).filter((r) => r.s >= 0).sort((a, b) => b.s - a.s || b.x.rank - a.x.rank).map((r) => r.x)
-    : [...pal.items].sort((a, b) => b.rank - a.rank)).slice(0, q ? 30 : 12)
-  pal.at = Math.min(pal.at, Math.max(0, pal.shown.length - 1))
-  $('pal-list').innerHTML = pal.shown.length ? pal.shown.map((x, i) => `<li role="option" id="opt-${i}" data-i="${i}" aria-selected="${i === pal.at}">
-      <span class="kind">${x.kind}</span><span><span class="lbl" style="display:block">${mark(x.label, q)}</span><span class="sub">${esc(x.sub)}</span></span></li>`).join('')
-    : `<li class="pal-empty" role="presentation">${data ? 'Nothing matches.' : 'Still loading…'}</li>`
-  $('pal-q').setAttribute('aria-activedescendant', pal.shown.length ? `opt-${pal.at}` : '')
-  $('pal-n').textContent = pal.shown.length ? plural(pal.shown.length, 'result') : 'no results'
-}
-function palMove(by) {
-  if (!pal.shown.length) return
-  pal.at = (pal.at + by + pal.shown.length) % pal.shown.length
-  for (const li of $('pal-list').children) li.setAttribute('aria-selected', String(li.dataset.i === String(pal.at)))
-  $('pal-q').setAttribute('aria-activedescendant', `opt-${pal.at}`)
-  $(`opt-${pal.at}`).scrollIntoView({ block: 'nearest' })
-}
-function palGo(i) { const x = pal.shown[i]; if (x) { $('pal').close(); location.href = x.href } }
-function palOpen() {
-  if ($('pal').open) return
-  pal.items = palItems(); pal.at = 0
-  $('pal-q').value = ''
-  palRender()
-  $('pal').showModal()
-}
-$('pal-open').addEventListener('click', palOpen)
-$('pal-q').addEventListener('input', () => { pal.at = 0; palRender() })
-$('pal-q').addEventListener('keydown', (e) => {
-  if (e.key === 'ArrowDown') { e.preventDefault(); palMove(1) }
-  else if (e.key === 'ArrowUp') { e.preventDefault(); palMove(-1) }
-  else if (e.key === 'Enter') { e.preventDefault(); palGo(pal.at) }
-})
-$('pal-list').addEventListener('click', (e) => { const li = e.target.closest('li[data-i]'); if (li) palGo(Number(li.dataset.i)) })
-$('pal-list').addEventListener('pointermove', (e) => { const li = e.target.closest('li[data-i]'); if (li && Number(li.dataset.i) !== pal.at) palMove(Number(li.dataset.i) - pal.at) })
-// Safari has no closedby="any": a click on the backdrop reports the dialog itself.
-$('pal').addEventListener('click', (e) => { if (e.target === $('pal')) $('pal').close() })
-document.addEventListener('keydown', (e) => {
-  const typing = e.target.closest?.('input, textarea, select, [contenteditable]')
-  const k = e.key.toLowerCase()
-  if (((e.ctrlKey || e.metaKey) && k === 'k') || (e.key === '/' && !typing && !e.ctrlKey && !e.metaKey && !e.altKey)) {
-    e.preventDefault(); palOpen()
-  }
-})
-
 // ---- Clicks ----------------------------------------------------------------
 
 document.addEventListener('click', (e) => {
@@ -916,11 +764,6 @@ document.addEventListener('click', (e) => {
   if (b) { const k = b.dataset.burst; opened.has(k) ? opened.delete(k) : opened.add(k); return render() }
   if (e.target.closest('[data-more]')) { feedLimit += 20; render() }
 })
-document.addEventListener('visibilitychange', () => { if (!document.hidden) load() })
-showHealth()
-load()
-connect()
-setInterval(load, 30000)
 setInterval(tick, 1000)
 </script>
 </body>

@@ -46,10 +46,6 @@
     flex-wrap: wrap; padding: 24px 32px 8px;
   }
   h1 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
-  .back { font-size: 13px; font-weight: 400; color: var(--muted); text-decoration: none; margin-right: 14px; white-space: nowrap; }
-  .back:hover { color: var(--active); }
-  .back:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; border-radius: 4px; }
-  .back[hidden] { display: none; }
   .status { font-family: var(--mono); font-size: 12px; color: var(--muted); }
   .status.wait { color: var(--changes); }
   .status.wait .dot { background: var(--changes); }
@@ -88,7 +84,10 @@
   .card.done { opacity: .72; }
   .card.rejected .feature { text-decoration: line-through; text-decoration-color: var(--subtle); }
   .flag.wait { color: var(--changes); }
-  .card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .card-top .rchip { max-width: 45%; }
+  .card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; flex-wrap: wrap; min-width: 0; }
+  .prow > * { min-width: 0; }
+  .pnow { overflow-wrap: anywhere; }
   .num { font-family: var(--mono); font-size: 12px; color: var(--muted); }
   .card-top .num { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .pulse {
@@ -100,6 +99,8 @@
     text-transform: uppercase; color: var(--human); white-space: nowrap;
   }
   .feature { font-size: 13px; line-height: 1.4; margin: 0 0 6px; }
+  .todo { font-size: 13px; font-weight: 600; margin: 2px 0 6px; }
+  .todo code { font: 12px var(--mono); font-weight: 400; background: var(--panel); border-radius: 4px; padding: 0 5px; }
   .links { display: flex; gap: 10px; font-family: var(--mono); font-size: 12px; }
   .links a { color: var(--active); text-decoration: none; }
   .links a:hover { text-decoration: underline; }
@@ -248,6 +249,7 @@
   .tile .s { color: var(--subtle); font-size: 12px; font-family: var(--mono); }
   .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(560px, 1fr)); gap: 0 28px; }
   .grid2 > * { min-width: 0; }
+  .grid2 > div { overflow-x: auto; }
   .costs-view table.costs th, .costs-view table.costs td { white-space: nowrap; }
   .md table.costs th[data-sort] { cursor: pointer; user-select: none; }
   .md table.costs th[data-sort].on { color: var(--active); }
@@ -259,9 +261,11 @@
   .md table.costs .stage-human { color: var(--human); }
 
   footer {
-    padding: 0 32px 32px; font-family: var(--mono); font-size: 12px; color: var(--subtle);
-    display: flex; gap: 20px; flex-wrap: wrap;
+    margin: 0 32px; padding: 14px 0 32px; border-top: 1px solid var(--line); font-family: var(--mono); font-size: 12px; color: var(--muted);
+    display: flex; gap: 8px 24px; flex-wrap: wrap; align-items: center; justify-content: space-between;
   }
+  .help { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif; color: var(--subtle); }
+  .help code { font: 12px var(--mono); color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; background: none; }
 
   /* Sections and the done list */
   .sec-h { display: flex; align-items: baseline; gap: 10px; margin: 0 0 12px; }
@@ -280,6 +284,9 @@
   .rd.pass { background: var(--pass); } .rd.changes { background: var(--changes); } .rd.fail { background: var(--human); }
   .rd.human { background: none; box-shadow: inset 0 0 0 2px var(--human); } .rd.live { background: var(--active); animation: pulse 1.6s infinite; }
   .rd.muted { background: var(--faint); }
+  .rlegend { display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: center; font-size: 12px; color: var(--muted); margin: -4px 0 6px; }
+  .rlegend > span { display: inline-flex; align-items: center; gap: 6px; }
+  .rlegend > span:first-child { color: var(--subtle); }
   .risk-high { color: var(--human); } .risk-medium { color: var(--changes); } .risk-low { color: var(--muted); }
   .day { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--subtle); margin: 14px 0 4px; }
   .drow { display: grid; grid-template-columns: 8px 32px minmax(0, 1fr) auto auto 56px 62px 52px; gap: 10px; align-items: center;
@@ -330,22 +337,22 @@
   .bcol .fee { position: absolute; left: -2px; right: -2px; border-top: 2px solid var(--text); pointer-events: none; }
   .legend i.fee-key { height: 0; border-top: 2px solid var(--text); border-radius: 0; vertical-align: 3px; }
   .tile.click { cursor: pointer; } .tile.click:hover { background: var(--card-hover); }
-  .tile .k2 { color: var(--text); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tile .k2 { color: var(--text); font-size: 12px; line-height: 1.4; margin-top: 2px; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow-wrap: anywhere; }
   .up { color: var(--changes); } .down { color: var(--pass); }
   .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-bottom: 10px; }
   .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
   .chart { position: relative; height: 240px; margin: 0 92px 0 44px; border-bottom: 1px solid var(--muted); }
   .chart .gl { position: absolute; left: 0; right: 0; border-top: 1px solid var(--line); }
-  .chart .gl span { position: absolute; right: calc(100% + 8px); top: -8px; font: 10.5px var(--mono); color: var(--subtle); }
+  .chart .gl span { position: absolute; right: calc(100% + 8px); top: -8px; font: 11px var(--mono); color: var(--muted); }
   .chart .med { position: absolute; left: 0; right: 0; border-top: 1px dashed var(--text); opacity: .55; z-index: 1; pointer-events: none; }
-  .chart .med span { position: absolute; left: calc(100% + 8px); top: -8px; font: 10.5px/1.3 var(--mono); color: var(--text); white-space: pre; }
+  .chart .med span { position: absolute; left: calc(100% + 8px); top: -8px; font: 11px/1.3 var(--mono); color: var(--text); white-space: pre; }
   .bars { position: absolute; inset: 0; display: flex; align-items: flex-end; gap: 4px; }
   .bcol { flex: 1; height: 100%; display: flex; align-items: flex-end; cursor: pointer; position: relative; }
   .bcol:hover .bstack { filter: brightness(1.25); }
   .bstack { width: 100%; display: flex; flex-direction: column-reverse; gap: 2px; }
   .bstack i { display: block; min-height: 0; }
   .bstack i:last-child { border-radius: 4px 4px 0 0; }
-  .bx { position: absolute; top: calc(100% + 5px); left: 50%; transform: translateX(-50%); font: 10px var(--mono); color: var(--subtle); }
+  .bx { position: absolute; top: calc(100% + 5px); left: 50%; transform: translateX(-50%); font: 11px var(--mono); color: var(--muted); }
   .cv .grid2 { margin-top: 10px; }
   /* The directory column takes what the numbers leave and cuts long paths short. */
   .cv table.costs.fill { width: 100%; }
@@ -358,7 +365,7 @@
   .heat { border-collapse: separate; border-spacing: 3px; font-size: 12px; }
   .heat th { font-weight: 500; color: var(--muted); padding: 4px 8px; text-align: left; border: 0; font-size: 11.5px; }
   .heat td { border: 0; border-radius: 6px; padding: 10px 12px; min-width: 92px; font-family: var(--mono); font-size: 12px; }
-  .heat td small { display: block; color: var(--text); opacity: .75; font-size: 10.5px; }
+  .heat td small { display: block; color: var(--text); opacity: .8; font-size: 11px; }
   .tag.notag { background: none; }
   .rangebar { margin-bottom: 16px; }
   .bx { white-space: nowrap; }
@@ -384,7 +391,7 @@
     .drow .tag, .drow > span:nth-child(6), .drow > span:nth-child(8) { display: none; }
     .costs-view { padding: 16px 16px 32px; }
     .grid2 { grid-template-columns: 1fr; }
-    footer { padding: 0 16px 24px; }
+    footer { margin: 0 16px; padding-bottom: 24px; }
     .d-head { padding: 16px; }
     .d-body { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
     .files {
@@ -397,32 +404,30 @@
     .doc { padding: 18px 16px 48px; }
   }
 
-  /* Under a hub: the repo name opens a menu of every repo. */
-  .switch { background: none; border: 1px solid transparent; border-radius: 8px; padding: 0 8px; margin: 0 -8px; font: inherit; font-weight: 600; letter-spacing: inherit; color: inherit; cursor: pointer; anchor-name: --sw; }
-  .switch:hover, .switch[aria-expanded="true"] { background: var(--panel); border-color: var(--line); }
-  .switch .car { color: var(--muted); font-size: 12px; margin-left: 2px; }
-  #repomenu { margin: 6px 0 0; padding: 6px; min-width: min(320px, calc(100vw - 24px)); max-width: calc(100vw - 24px); max-height: min(60vh, 460px); overflow-y: auto; border: 1px solid var(--line); border-radius: 10px;
-    background: var(--panel); color: var(--text); box-shadow: 0 16px 40px rgba(0, 0, 0, .55); inset: auto; position-anchor: --sw; position-area: block-end span-inline-end; position-try-fallbacks: flip-block, flip-inline; }
-  @supports not (position-area: block-end) { #repomenu { inset: 64px auto auto 16px; margin: 0; } }
-  #repomenu a { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 8px 10px; border-radius: 6px; text-decoration: none; color: var(--text); font-size: 13px; min-height: 40px; }
-  #repomenu a:hover { background: var(--card); }
-  #repomenu a[aria-current] { background: var(--card-hover); box-shadow: inset 2px 0 0 var(--active); }
-  #repomenu .rn2 { overflow-wrap: anywhere; } #repomenu .rn2 .dim { color: var(--subtle); }
-  #repomenu .cnt { display: flex; gap: 10px; font: 12px var(--mono); color: var(--muted); white-space: nowrap; }
-  #repomenu .cnt .run { color: var(--active); } #repomenu .cnt .att { color: var(--human); }
-  #repomenu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
-  #repomenu .note { padding: 8px 10px; font-size: 13px; }
+  /* Under a hub the app bar (hub/static/nav.js) replaces this header and its view tabs; standalone keeps both. */
+  html.hub:not(.nav-on) body::before { content: ""; display: block; height: 52px; }
+  html.hub body > header { display: none; }
+  html.hub .board, html.hub .costs-view { max-width: 1400px; width: 100%; margin-inline: auto; padding-top: 12px; }
+  html.hub #banner { max-width: 1400px; margin-inline: auto; }
+  html.hub footer { max-width: 1336px; width: calc(100% - 64px); margin-inline: auto; }
+  .rchip { font: 12px/1.5 var(--mono); color: var(--muted); background: var(--panel); border: 1px solid var(--line); padding: 0 8px; border-radius: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; min-width: 0; display: inline-block; vertical-align: bottom; }
+  .rchip .dim { color: var(--subtle); } .rchip b { font-weight: 500; color: var(--text); }
+  .d-ref { display: flex; align-items: center; gap: 8px; margin: 0 40px 6px 0; min-width: 0; }
+  .d-ref[hidden] { display: none; }
+  .d-ref .num { color: var(--text); font-weight: 600; font-size: 13px; }
+  .drawer .md table.costs th, .drawer .md table.costs td { white-space: nowrap; }
   @media (pointer: coarse), (max-width: 640px) {
-    .back, .switch { min-height: 44px; display: inline-flex; align-items: center; }
     .seg-btn, .more { min-height: 44px; } .drow, .file { min-height: 44px; }
-    #repomenu a { min-height: 48px; }
+    .search { min-height: 44px; }
     .seg:not(.cur) span { display: none; } .pnow { margin-top: 22px; }
   }
+  @media (max-width: 640px) { html.hub footer { width: calc(100% - 32px); } }
 </style>
+<script>if (/^\/(r|all)\//.test(location.pathname)) document.documentElement.classList.add('hub')</script>
 </head>
 <body>
 <header>
-  <h1><a class="back" id="back" href="/" hidden>← All repos</a><span id="title">Software factory</span></h1>
+  <h1 id="title">Software factory</h1>
   <nav class="views"><a href="#board" id="v-board">Board</a><a href="#costs" id="v-costs">Costs</a><a href="#plan" id="v-plan">Subscription</a></nav>
   <div class="status" id="status">connecting…</div>
 </header>
@@ -431,9 +436,7 @@
 <main class="costs-view md" id="costsview" hidden></main>
 <main class="costs-view md" id="planview" hidden></main>
 <footer>
-  <span>/factory run</span>
-  <span>/factory run 11-14</span>
-  <span>/factory &lt;anything&gt;</span>
+  <p class="help"><span>Start work from your agent session:</span> <code>/factory run</code> <code>/factory run 11-14</code> <code>/factory &lt;anything&gt;</code></p>
   <span id="totals"></span>
 </footer>
 
@@ -441,6 +444,7 @@
   <div class="scrim" data-close></div>
   <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="d-title">
     <div class="d-head">
+      <div class="d-ref" id="d-ref" hidden></div>
       <div class="num" id="d-num"></div>
       <h3 id="d-title"></h3>
       <div class="links" id="d-links"></div>
@@ -453,7 +457,6 @@
   </aside>
 </div>
 
-<div id="repomenu" popover aria-label="Repos"></div>
 <div id="tip"></div>
 
 <script>
@@ -546,34 +549,45 @@ function links(job) {
   return out.join('')
 }
 
+// What the person has to do, said plainly. The overview's cards use the same words.
+const CMD = '<code>/factory &lt;anything&gt;</code>'
+function flagOf(job) {
+  return job.stage === 'needs-human' ? 'Your call'
+    : job.stage === 'paused' ? `Paused after ${(job.paused || {}).after || 'a stage'}`
+    : job.stage === 'needs-info' ? 'Waiting for author' : job.stage === 'rejected' ? 'Rejected' : ''
+}
+function todoOf(job) {
+  if (job.stage === 'needs-human') return job.pr ? `Merge PR #${esc(job.pr)} or give feedback with ${CMD}` : `Open the job to approve, or give feedback with ${CMD}`
+  if (job.stage === 'paused') return 'Open the job to continue'
+  if (job.stage === 'needs-info') return 'Waiting for the issue author to answer'
+  return ''
+}
+
 function card(job, rounds) {
   const live = LIVE.has(job.stage)
   const human = job.stage === 'needs-human'
   const done = job.stage === 'merged' || job.stage === 'rejected'
-  const [num, ...slug] = job.id.split('-')
-  const flag = job.stage === 'paused' ? `<span class="flag">review ${esc((job.paused || {}).after || '')}</span>`
-    : human ? '<span class="flag">your call</span>'
-    : job.stage === 'needs-info' ? '<span class="flag wait">asked author</span>'
-    : job.stage === 'rejected' ? '<span class="flag wait">rejected</span>' : ''
+  const flag = flagOf(job)
   const risk = job.intake?.risk
   const meta = [
     risk ? `<span class="risk-${esc(risk)}">${esc(risk)}</span>` : '',
     `<span>$${Number(job.cost_usd).toFixed(2)}</span>`,
     `<span>${elapsed(job)}</span>`,
   ].join('')
+  const todo = todoOf(job)
   return `
     <article class="card ${live ? 'live' : ''} ${human ? 'human' : ''} ${done ? 'done' : ''} ${job.stage}"
              data-job="${esc(job.id)}" tabindex="0">
       <div class="card-top">
         ${live ? '<span class="pulse" aria-label="running"></span>' : ''}
-        <span class="num">${esc(num)} · ${esc(slug.join('-'))}</span>
-        ${flag}
+        ${repoChip(job)}<span class="num">${esc(ref(job))}</span>
+        ${flag ? `<span class="flag ${human || job.stage === 'paused' ? '' : 'wait'}">${esc(flag)}</span>` : ''}
       </div>
       <p class="feature">${esc(job.title)}</p>
+      ${todo ? `<p class="todo">${todo}</p>` : ''}
       <div class="links">${links(job)}</div>
       ${rounds.length ? `<div class="rounds">${rounds.join('')}</div>` : ''}
       <div class="meta">${meta}</div>
-      ${human ? `<div class="hint">${job.pr ? `merge PR #${job.pr} to approve<br>` : ''}or give feedback: /factory &lt;anything&gt;</div>` : ''}
     </article>`
 }
 
@@ -630,14 +644,15 @@ async function poll() {
     if (openJobId) await refreshDrawer()
     lastOk = Date.now()
     status.className = 'status'
-    // Under a hub the status reads like the overview's: live, then the time of the last refresh.
-    status.innerHTML = `<span class="dot"></span>${hub ? 'live · updated' : 'jobs/ ·'} ${new Date().toLocaleTimeString()}`
+    status.innerHTML = `<span class="dot"></span>jobs/ · ${new Date().toLocaleTimeString()}`
+    window.FactoryNav?.pageError(null)
   } catch (err) {
     const quiet = Date.now() - lastOk
     status.className = hub ? 'status wait' : 'status error'
     status.innerHTML = `<span class="dot"></span>${hub ? (quiet < 60000 ? 'reconnecting…' : `stale since ${Math.round(quiet / 60000)} min`) + ' · ' : ''}${esc(err.message)}`
+    window.FactoryNav?.pageError(err.message)
   }
-  setFavicon(jobs.filter((j) => ATTN.has(j.stage)).length)
+  if (!window.FactoryNav) setFavicon(jobs.filter((j) => ATTN.has(j.stage)).length)
 }
 
 // factory/bin/job writes each jobs/<id>/job.json.
@@ -698,7 +713,10 @@ const firstLines = new Map()
 async function refreshDrawer() {
   const job = jobs.find((j) => j.id === openJobId)
   if (!job) return
-  $('d-num').textContent = `${job.id} · ${job.stage}${job.round ? ` · round ${job.round}` : ''} · $${Number(job.cost_usd).toFixed(2)} · ${elapsed(job)}`
+  const tail = `${job.stage}${job.round ? ` · round ${job.round}` : ''} · $${Number(job.cost_usd).toFixed(2)} · ${elapsed(job)}`
+  $('d-ref').hidden = !hub
+  if (hub) $('d-ref').innerHTML = `${repoChip(job, true)}<span class="num">${esc(ref(job))}</span>`
+  $('d-num').textContent = hub ? tail : `${job.id} · ${tail}`
   $('d-title').textContent = job.title
   $('d-links').innerHTML = links(job)
 
@@ -810,6 +828,7 @@ function costTable(job) {
 // ---- Costs tables (every job, under "All tables") -------------------------
 
 const WAIT = new Set(['needs-human', 'paused', 'needs-info'])
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`
 const money = (n) => `$${Number(n || 0).toFixed(2)}`
 const pct = (part, whole) => (whole ? Math.round((100 * part) / whole) : 0)
 const bar = (share) => `<span class="bar" style="--w:${share}%"></span>${share}%`
@@ -994,7 +1013,7 @@ document.addEventListener('click', (e) => {
   if (e.target.closest('[data-close]')) closeDrawer()
 })
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') return closeDrawer()
+  if (e.key === 'Escape') return document.querySelector('dialog[open], .nb-menu:popover-open') ? undefined : closeDrawer()
   const cardEl = e.target.closest?.('[data-job]')
   if (cardEl && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openDrawer(cardEl.dataset.job) }
 })
@@ -1106,7 +1125,23 @@ const ui = { filter: 'all', q: '', group: 'day', limit: 0, old: false, range: '3
 for (const k of ['range', 'per']) { const v = new URLSearchParams(location.search).get(k); if (v) ui[k] = v }
 
 const feature = (j) => (j.base && !/^(main|master)$/.test(j.base) ? j.base : null)
-const numOf = (j) => j.id.split('-')[0]
+const numOf = (j) => String(j.id).split('~').pop().split('-')[0]
+const ref = (j) => (j.issue ? `#${j.issue}` : `#${numOf(j)}`)
+// Under /all/ a job id reads <repo>~<id>; a repo's own page needs no repo chip.
+const repoOf = (j, forced = false) => {
+  if (!hub) return null
+  if (hub.repo !== 'all') return forced ? hub.repo : null
+  const p = String(j.id).split('~')
+  if (p.length < 2) return null
+  const known = (window.FactoryNav?.data?.repos || []).map((r) => r.repo).filter((r) => r.split('/').pop() === p[0])
+  return known.length === 1 ? known[0] : p[0]
+}
+function repoChip(j, forced = false) {
+  const r = repoOf(j, forced)
+  if (!r) return ''
+  const [o, ...n] = r.split('/')
+  return `<span class="rchip" title="${esc(r)}">${n.length ? `${forced ? `<span class="dim">${esc(o)}/</span>` : ''}<b>${esc(n.join('/'))}</b>` : `<b>${esc(o)}</b>`}</span>`
+}
 
 function since(j) {
   const h = j.history || []
@@ -1126,7 +1161,7 @@ function who(j) {
 // failed the gate (no review in it) or got CHANGES from a reviewer.
 function roundDots(j) {
   const h = j.history || []
-  const out = []
+  const out = [], said = []
   for (let n = 1; n <= j.round; n++) {
     let cls, label
     if (n < j.round) {
@@ -1137,8 +1172,9 @@ function roundDots(j) {
     else if (j.stage === 'rejected') { cls = 'muted'; label = 'rejected' }
     else { cls = 'live'; label = 'running' }
     out.push(`<i class="rd ${cls}" data-tip="R${n}: ${label}"></i>`)
+    said.push(`round ${n} ${label}`)
   }
-  return `<span class="rdots">${out.join('')}</span>`
+  return `<span class="rdots" role="img" aria-label="${esc(`${plural(j.round, 'round')}: ${said.join(', ')}`)}">${out.join('')}</span>`
 }
 
 function dayKey(j) { return new Date(j.ended || j.started).toDateString() }
@@ -1153,7 +1189,7 @@ function doneRow(j) {
   const risk = j.intake?.risk || ''
   return `<div class="drow ${esc(j.stage)}" data-job="${esc(j.id)}" tabindex="0">
     <span class="sd ${esc(j.stage)}" data-tip="${esc(j.stage)}"></span><span class="num">${esc(numOf(j))}</span>
-    <span class="dt" title="${esc(j.title)}">${j.stage === 'rejected' ? '<span class="stg">rejected</span>' : ''}${esc(j.title)}</span>
+    <span class="dt" title="${esc(j.title)}">${hub && hub.repo === 'all' ? repoChip(j) + ' ' : ''}${j.stage === 'rejected' ? '<span class="stg">rejected</span>' : ''}${esc(j.title)}</span>
     ${f ? `<span class="tag" title="${esc(f)}">${esc(f.replace(/^feature\//, ''))}</span>` : '<span class="tag notag"></span>'}
     ${roundDots(j)}<span class="risk-${esc(risk)}">${esc(risk)}</span>
     <span class="n">${money(j.cost_usd)}</span><span class="n">${elapsed(j)}</span></div>`
@@ -1187,8 +1223,9 @@ function doneSection() {
   const rest = list.length - shown.length
   const more = (rest > 0 ? `<button class="more" data-ui="limit" data-val="${limit + 50}">${rest > 50 ? `show 50 more of ${rest}` : `show ${rest} more`} →</button>` : '')
     + (ui.limit ? `<button class="more" data-ui="limit" data-val="0">show fewer</button>` : '')
+  const legend = `<div class="rlegend"><span>Rounds</span><span><i class="rd fail"></i>gate failed</span><span><i class="rd changes"></i>changes requested</span><span><i class="rd pass"></i>passed</span><span><i class="rd muted"></i>rejected</span></div>`
   return `<div class="sec-h"><h2>Done</h2><span class="count">${all.length}</span>${tools}</div>
-    ${body || '<div class="calm">Nothing matches.</div>'}${more}`
+    ${all.length ? legend : ''}${body || '<div class="calm">Nothing matches.</div>'}${more}`
 }
 
 async function currentRound(j) {
@@ -1222,7 +1259,7 @@ async function boardPage() {
     const f = feature(j)
     const risk = j.intake?.risk
     return `<article class="prow" data-job="${esc(j.id)}" tabindex="0">
-      <div><div class="card-top"><span class="pulse"></span><span class="num">${esc(numOf(j))}</span>
+      <div><div class="card-top"><span class="pulse"></span>${repoChip(j)}<span class="num">${esc(ref(j))}</span>
         ${f ? `<span class="tag">${esc(f.replace(/^feature\//, ''))}</span>` : ''}</div>
         <p class="feature">${esc(j.title)}</p><div class="links">${links(j)}</div></div>
       <div><div class="segs">${segs}</div>
@@ -1345,7 +1382,7 @@ function costsFor(jobs) {
   const grid = []
   for (let v = step; v <= ceil + 1e-9; v += step) grid.push(`<div class="gl" style="bottom:${(100 * v) / ceil}%"><span>$${v % 1 ? v.toFixed(1) : v}</span></div>`)
   const med = median(list.filter((b) => b.jobs.length).map((b) => b.total))
-  const every = Math.ceil(list.length / 20)
+  const every = Math.ceil(list.length / (innerWidth < 640 ? 7 : 20))
   const unit = { job: 'job', day: 'day', week: 'week' }[per]
   const bars = list.map((b, i) => {
     const roles = ROLE_GROUPS.filter(([k]) => b.by.get(k) > 0.005).map(([k, l]) => `  ${l.padEnd(19)}${money(b.by.get(k))}`).join('\n')
@@ -1369,6 +1406,7 @@ function costsFor(jobs) {
 
   // Chart 2: merged jobs in order, with a rolling mean whose window grows with the count.
   const W = 640, H = 190, P = 30
+  const fs = Math.round((11 * W) / Math.max(320, Math.min(innerWidth - 32, W)))   // 11 px on screen at any width
   const jStep = niceStep(Math.max(...mc, 0.01) / 3)
   const jCeil = Math.ceil(Math.max(...mc, 0.01) / jStep) * jStep
   const win = Math.max(5, Math.round(mc.length / 15))
@@ -1381,9 +1419,9 @@ function costsFor(jobs) {
       data-job="${esc(j.id)}" data-tip="${esc(`${numOf(j)} · ${j.title}\n${money(mc[i])} · rolling mean ${money(roll[i])}`)}" style="cursor:pointer"/>`).join('')
   const step2 = jStep, ceil2 = jCeil
   const chart2 = `<div class="trend"><h2>Is it getting cheaper?</h2><p class="sub">Merged jobs in the order they finished; the line is the mean of the last ${win}.</p>
-    <svg viewBox="0 0 ${W} ${H}">${[step2, step2 * 2, step2 * 3].filter((v) => v <= ceil2).map((v) => `<line x1="${P}" x2="${W - P}" y1="${ys(v)}" y2="${ys(v)}" stroke="var(--line)"/><text x="${P - 6}" y="${ys(v) + 4}" fill="var(--faint)" font-size="10" text-anchor="end" font-family="monospace">$${v}</text>`).join('')}<line x1="${P}" x2="${W - P}" y1="${ys(0)}" y2="${ys(0)}" stroke="var(--muted)"/>
+    <svg viewBox="0 0 ${W} ${H}">${[step2, step2 * 2, step2 * 3].filter((v) => v <= ceil2).map((v) => `<line x1="${P}" x2="${W - P}" y1="${ys(v)}" y2="${ys(v)}" stroke="var(--line)"/><text x="${P - 6}" y="${ys(v) + 4}" fill="var(--muted)" font-size="${fs}" text-anchor="end" font-family="monospace">$${v}</text>`).join('')}<line x1="${P}" x2="${W - P}" y1="${ys(0)}" y2="${ys(0)}" stroke="var(--muted)"/>
       <path d="${path}" fill="none" stroke="#3987e5" stroke-width="2"/>${dots}
-      <text x="${W - P}" y="${ys(roll[roll.length - 1] || 0) - 8}" fill="var(--text)" font-size="11" text-anchor="end" font-family="monospace">${money(roll[roll.length - 1])}</text></svg></div>`
+      <text x="${W - P}" y="${ys(roll[roll.length - 1] || 0) - 8}" fill="var(--text)" font-size="${fs}" text-anchor="end" font-family="monospace">${money(roll[roll.length - 1])}</text></svg></div>`
 
   // Risk × size matrix.
   const RISK = ['high', 'medium', 'low'], SIZE = ['small', 'medium', 'large']
@@ -1609,51 +1647,19 @@ function routeJob() {
   if (openJobId !== id && jobs.some((j) => j.id === id)) openDrawer(id)
 }
 
-// Under the hub, `hub` answers {repo, overview}; run locally it 404s and nothing changes.
+// Under the hub, `hub` answers {repo, overview}; run locally it 404s and nothing changes. Then the hub's
+// app bar (hub/static/nav.js) replaces this page's header, view tabs, repo switcher, search and status.
 fetch('hub', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).then((h) => {
-  if (!h || !h.overview) return
+  const root = document.documentElement
+  if (!h || !h.overview) { root.classList.remove('hub'); return }
   hub = h
-  $('back').href = h.overview
-  $('back').hidden = false
-  $('title').innerHTML = `Software Factory · <button type="button" class="switch" id="switch" commandfor="repomenu" command="toggle-popover" aria-haspopup="true" aria-expanded="false" aria-controls="repomenu">${esc(h.repo)} <span class="car" aria-hidden="true">▾</span></button>`
-  document.title = h.repo
-  // Older browsers lack invoker commands: the button toggles the popover itself.
-  if (!('commandForElement' in HTMLButtonElement.prototype)) $('switch').addEventListener('click', () => $('repomenu').togglePopover())
-  $('repomenu').addEventListener('toggle', (e) => {
-    $('switch')?.setAttribute('aria-expanded', String(e.newState === 'open'))
-    if (e.newState === 'open') loadRepos()
-  })
-}).catch(() => {})
-
-// The repo list comes from the overview, fetched once, the first time the menu opens.
-let repoList = null
-async function loadRepos() {
-  if (repoList) return
-  repoList = 'loading'
-  const menu = $('repomenu')
-  menu.innerHTML = '<div class="note">Loading…</div>'
-  try {
-    const res = await fetch(new URL('api/overview', new URL(hub.overview, location.href)), { cache: 'no-store' })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const d = await res.json()
-    const rank = (r) => [r.counts?.needs_you ? 1 : 0, r.counts?.running ? 1 : 0]
-    const repos = [...d.repos].sort((a, b) => { const x = rank(a), y = rank(b); return y[0] - x[0] || y[1] - x[1] || a.repo.localeCompare(b.repo) })
-    const safe = (h) => /^\/(?!\/)/.test(String(h || ''))
-    const item = (r) => {
-      const [o, ...n] = String(r.repo).split('/')
-      const c = r.counts || {}
-      return `<a href="${safe(r.href) ? esc(r.href) : '#'}" ${r.repo === hub.repo ? 'aria-current="page"' : ''}>
-        <span class="rn2">${n.length ? `<span class="dim">${esc(o)}/</span>${esc(n.join('/'))}` : esc(o)}</span>
-        <span class="cnt">${c.running ? `<span class="run">${c.running} running</span>` : ''}${c.needs_you ? `<span class="att">${c.needs_you} needs you</span>` : ''}${!c.running && !c.needs_you ? '<span>idle</span>' : ''}</span></a>`
-    }
-    const all = esc(new URL('all/dashboard.html', new URL(hub.overview, location.href)).pathname)
-    menu.innerHTML = repos.map(item).join('') + `<hr><a href="${all}"><span class="rn2">All repos together</span></a>`
-    repoList = repos
-  } catch (err) {
-    repoList = null
-    menu.innerHTML = `<div class="note">Can't load the repos: ${esc(err.message)}</div>`
-  }
-}
+  root.classList.add('hub')
+  const bar = document.createElement('script')
+  bar.src = new URL('static/nav.js', new URL(h.overview, location.href)).href
+  bar.onload = () => { if (window.FactoryNav?.fail) { hub = null; root.classList.remove('hub') } else { lastRender = ''; lastCosts = ''; render() } }
+  bar.onerror = () => { hub = null; root.classList.remove('hub') }
+  document.head.append(bar)
+}).catch(() => { document.documentElement.classList.remove('hub') })
 
 window.addEventListener('hashchange', () => { render(); routeJob() })
 poll()
