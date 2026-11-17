@@ -295,6 +295,12 @@
   .seg.skip { background: repeating-linear-gradient(45deg, var(--line) 0 3px, transparent 3px 6px); }
   .seg.cur { background: var(--active); animation: breathe 1.6s infinite; }
   .seg.cur span { color: var(--active); font-weight: 600; }
+  /* A split job's build: one bar per slice instead of one segment. */
+  .seg.slices { display: flex; gap: 2px; background: none; animation: none; }
+  .seg.slices i { flex: 1; height: 6px; border-radius: 3px; background: var(--line); }
+  .seg.slices i.done { background: color-mix(in srgb, var(--active) 45%, var(--line)); }
+  .seg.slices i.running { background: var(--active); animation: breathe 1.6s infinite; }
+  .seg.slices i.blocked { background: var(--human); }
   .pnow { margin-top: 26px; font: 11.5px var(--mono); color: var(--muted); }
   .pnow b { color: var(--text); font-weight: 600; }
   .pside .meta { margin-top: 8px; }
@@ -1127,9 +1133,20 @@ async function boardPage() {
     : `<section class="b-sec attn calm-box"><span class="calm">✓ Nothing is waiting on you.</span></section>`
   const rows = await Promise.all(live.map(async (j) => {
     const cur = TRACK.findIndex(([s]) => s === j.stage)
+    const slices = j.slices || []
+    const sliceDone = slices.filter((x) => x.state === 'done').length
+    const count = (st) => slices.filter((x) => x.state === st).length
+    const sliceNote = slices.length && j.stage === 'build'
+      ? ` · slices ${sliceDone}/${slices.length} done${[['running', 'running'], ['blocked', 'blocked'], ['pending', 'waiting'], ['resume', 'to resume']]
+        .map(([st, word]) => (count(st) ? ` · ${count(st)} ${word}` : '')).join('')}`
+      : ''
     const skipped = j.spec_skipped || (cur > 1 && (j.history || []).length && !(j.history || []).some((e) => e.stage === 'spec'))
-    const segs = TRACK.map(([s, l], i) =>
-      `<div class="seg ${i < cur ? 'done' : i === cur ? 'cur' : ''} ${s === 'spec' && skipped ? 'skip' : ''}"><span>${l}</span></div>`).join('')
+    const segs = TRACK.map(([s, l], i) => {
+      const cls = `${i < cur ? 'done' : i === cur ? 'cur' : ''} ${s === 'spec' && skipped ? 'skip' : ''}`
+      if (s !== 'build' || !slices.length) return `<div class="seg ${cls}"><span>${l}</span></div>`
+      const bars = slices.map((x) => `<i class="${esc(x.state)}" title="${esc(`slice ${x.n} ${x.state}: ${x.title}`)}"></i>`).join('')
+      return `<div class="seg ${cls} slices">${bars}<span>${l} ${sliceDone}/${slices.length}</span></div>`
+    }).join('')
     const f = feature(j)
     const risk = j.intake?.risk
     return `<article class="prow" data-job="${esc(j.id)}" tabindex="0">
@@ -1137,7 +1154,7 @@ async function boardPage() {
         ${f ? `<span class="tag">${esc(f.replace(/^feature\//, ''))}</span>` : ''}</div>
         <p class="feature">${esc(j.title)}</p><div class="links">${links(j)}</div></div>
       <div><div class="segs">${segs}</div>
-        <div class="pnow"><b>${esc(j.stage)}</b>${j.round ? ` · round ${j.round}` : ''} · for ${since(j)} · ${esc(who(j))}</div></div>
+        <div class="pnow"><b>${esc(j.stage)}</b>${j.round ? ` · round ${j.round}` : ''}${sliceNote} · for ${since(j)} · ${esc(who(j))}</div></div>
       <div class="pside"><div class="rounds">${(await currentRound(j)).join('')}</div>
         <div class="meta">${risk ? `<span class="risk-${esc(risk)}">${esc(risk)}</span>` : ''}<span>${money(j.cost_usd)}</span><span>${elapsed(j)} total</span></div></div>
     </article>`
