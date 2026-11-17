@@ -1,6 +1,6 @@
 /* Factory hub app bar. One implementation, loaded by the overview and, once the `hub` probe
  * answers, by dashboard.html. It owns what both pages share: the bar (mark, scope switcher, view
- * tabs, search, needs-you badge, live status), the quick-jump palette, the page title and the
+ * tabs, search, needs-you badge, live status), the machines popover (freshness per source), the quick-jump palette, the page title and the
  * connection to the hub (/api/overview + /api/stream).
  *
  *   FactoryNav.data            latest /api/overview (null until the first answer)
@@ -119,7 +119,23 @@
     if (age >= 60000) return { s: 'wait', label: `stale ${gap(age)}`, bar: `This page has not been refreshed for ${gap(age)}. Numbers may be out of date.` }
     if (nav.pageErr) return { s: 'wait', label: 'reconnecting…', bar: `This view could not be refreshed (${nav.pageErr}). Showing what was loaded before.` }
     if (sync.conn !== 'live') return { s: 'wait', label: 'connecting…' }
-    return { s: 'ok', label: 'live' }
+    return source()
+  }
+  // Freshness of the data itself: when a machine last reported, not when this page was drawn.
+  function source() {
+    const ms = nav.data.machines || []
+    if (!ms.length) return { s: 'wait', label: 'no data yet' }
+    const ages = ms.map((m) => ({ m: m.machine, age: Date.now() - t(m.last_seen) }))
+    const best = Math.min(...ages.map((a) => a.age))
+    const stale = ages.filter((a) => a.age > STALE_S * 1000)
+    const sec = best / 1000
+    if (sec >= 600) {
+      const a = ages.reduce((x, y) => (x.age < y.age ? x : y))
+      return { s: 'error', label: `stale: ${a.m} ${gap(a.age)}` }
+    }
+    const base = best < 5000 ? 'data just now' : `data ${gap(best)} ago`
+    const extra = stale.length ? ` · ${stale.length === 1 ? stale[0].m : `${stale.length} machines`} stale` : ''
+    return { s: sec < 60 && !stale.length ? 'ok' : 'wait', label: base + extra }
   }
 
   // ---- Chrome -------------------------------------------------------------------------------
@@ -153,6 +169,7 @@ html.nav-on body::before { display: none !important; }
 .nb-tabs a { display: inline-flex; align-items: center; gap: 7px; padding: 0 12px; color: var(--muted); text-decoration: none; white-space: nowrap; font-size: 14px; border-radius: 0; box-shadow: inset 0 -2px 0 transparent; }
 .nb-tabs a:hover { color: var(--text); background: color-mix(in srgb, var(--card) 70%, transparent); }
 .nb-tabs a[aria-current="page"] { color: var(--text); font-weight: 600; box-shadow: inset 0 -2px 0 var(--active); }
+.nb-wrap .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .nb-hint { font-size: 11px; font-weight: 400; color: var(--subtle); border: 1px solid var(--line); border-radius: 999px; padding: 0 7px; line-height: 1.6; }
 .nb-search { grid-area: search; display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 8px 0 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; color: var(--muted); font-size: 13px; cursor: pointer; }
 .nb-search:hover { color: var(--text); border-color: var(--muted); background: var(--card); }
@@ -162,7 +179,8 @@ html.nav-on body::before { display: none !important; }
 .nb-need:hover { background: color-mix(in srgb, var(--human) 22%, var(--bg)); border-color: var(--human); }
 .nb-need[hidden] { display: none; }
 .nb-n { min-width: 24px; height: 24px; padding: 0 6px; border-radius: 12px; background: var(--human); color: var(--bg); font: 700 12px var(--mono); display: inline-grid; place-items: center; }
-.nb-live { grid-area: live; display: inline-flex; align-items: center; gap: 6px; font: 12px var(--mono); color: var(--muted); white-space: nowrap; min-height: 36px; }
+.nb-live { grid-area: live; display: inline-flex; align-items: center; gap: 7px; font: 12px var(--mono); color: var(--muted); white-space: nowrap; min-height: 36px; padding: 0 8px; background: none; border: 1px solid transparent; border-radius: 8px; cursor: pointer; }
+.nb-live:hover, .nb-live[aria-expanded="true"] { border-color: var(--line); background: var(--panel); color: var(--text); }
 .nb-live .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--pass); flex: none; }
 .nb-live.wait { color: var(--changes); } .nb-live.wait .dot { background: var(--changes); }
 .nb-live.error { color: var(--human); } .nb-live.error .dot { background: var(--human); }
@@ -175,7 +193,7 @@ html.nav-on body::before { display: none !important; }
 .nb-crumb h1 .sep { color: var(--subtle); font-weight: 400; margin: 0 .35em; }
 .nb-crumb h1 .v { color: var(--muted); font-weight: 500; }
 .nb-crumb p { margin: 2px 0 0; min-height: 22px; font: 12px var(--mono); color: var(--muted); }
-.nb-wrap :focus-visible, .nb-menu :focus-visible, .nb-pal :focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
+.nb-wrap :focus-visible, .nb-menu :focus-visible, .nb-mach :focus-visible, .nb-pal :focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
 .nb-tabs a:focus-visible { outline-offset: -3px; border-radius: 6px; }
 
 /* Scope popover */
@@ -193,6 +211,20 @@ html.nav-on body::before { display: none !important; }
 .nb-it .fd { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
 .nb-it .fd.ok { background: var(--pass); } .nb-it .fd.warn { background: var(--changes); } .nb-it .fd.bad { background: var(--human); }
 .nb-menu .note { padding: 10px; color: var(--subtle); font-size: 13px; }
+
+/* Machines popover: opens from the freshness indicator */
+.nb-mach { position: fixed; inset: auto; margin: 0; padding: 8px; width: min(400px, calc(100vw - 16px)); max-height: 70vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--text); box-shadow: 0 18px 48px rgba(0, 0, 0, .55); }
+.nb-mach h2 { margin: 4px 6px 6px; font: 500 12px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--subtle); }
+.nb-mach ul { list-style: none; margin: 0; padding: 0; }
+.nb-mc { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; gap: 2px 10px; align-items: baseline; padding: 8px 6px; border-radius: 8px; }
+.nb-mc + .nb-mc { border-top: 1px solid var(--line); }
+.nb-mc .fd { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); align-self: center; }
+.nb-mc .fd.ok { background: var(--pass); } .nb-mc .fd.warn { background: var(--changes); } .nb-mc .fd.bad { background: var(--human); }
+.nb-mc .nm { font-weight: 600; overflow-wrap: anywhere; }
+.nb-mc .when { font: 12px var(--mono); color: var(--muted); white-space: nowrap; }
+.nb-mc .when.warn { color: var(--changes); } .nb-mc .when.bad { color: var(--human); }
+.nb-mc .rp { grid-column: 2 / -1; font: 12px var(--mono); color: var(--subtle); overflow-wrap: anywhere; }
+.nb-mach .note { margin: 6px 6px 2px; padding-top: 8px; border-top: 1px solid var(--line); font: 12px/1.5 var(--mono); color: var(--subtle); }
 
 /* Palette */
 dialog.nb-pal { padding: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--text); width: min(640px, calc(100vw - 24px));
@@ -218,7 +250,6 @@ dialog.nb-pal::backdrop { background: rgba(5, 6, 10, .6); overflow: hidden; over
 @media (max-width: 1000px) {
   .nb-search .l, .nb-search kbd { display: none; }
   .nb-search { padding: 0 10px; }
-  .nb-upd { display: none; }
 }
 @media (max-width: 860px) {
   .nb-need .l { display: none; }
@@ -232,7 +263,8 @@ dialog.nb-pal::backdrop { background: rgba(5, 6, 10, .6); overflow: hidden; over
   .nb-scope { height: 44px; max-width: none; justify-self: start; }
   .nb-scope .o { display: none; }
   .nb-search, .nb-need { height: 44px; min-width: 44px; justify-content: center; }
-  .nb-live { min-width: 28px; min-height: 44px; justify-content: center; }
+  .nb-live { min-width: 44px; min-height: 44px; justify-content: center; padding: 0 6px; }
+  .nb-live #nb-lt { display: none; }
   .nb-tabs { margin: 2px 0 8px; padding: 2px; gap: 2px; align-self: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
   .nb-tabs a { min-height: 44px; padding: 0 16px; border-radius: 9px; box-shadow: none; flex: 1 0 auto; justify-content: center; }
   .nb-tabs a[aria-current="page"] { background: var(--card-hover); box-shadow: inset 0 0 0 1px var(--muted); }
@@ -263,7 +295,8 @@ dialog.nb-pal::backdrop { background: rgba(5, 6, 10, .6); overflow: hidden; over
       <nav class="nb-tabs" id="nb-tabs" aria-label="Views">${tabs.map(([v, h]) => `<a href="${esc(h)}" data-v="${v}">${VIEWS[v]}${v === 'plan' && at.scope === 'repo' ? '<small class="nb-hint">all repos</small>' : ''}</a>`).join('')}</nav>
       <button type="button" class="nb-search" id="nb-open" aria-keyshortcuts="/ Control+K Meta+K" aria-label="Search repos, jobs and views">${ICON.search}<span class="l">Search</span><kbd>/</kbd></button>
       <a class="nb-need" id="nb-need" href="${ROOT}#needs-you" hidden><span class="nb-n" id="nb-nn">0</span><span class="l">needs you</span></a>
-      <div class="nb-live wait" id="nb-live" role="status"><span class="dot"></span><span id="nb-lt">connecting…</span><span class="nb-upd" id="nb-upd" aria-hidden="true"></span></div>
+      <button type="button" class="nb-live wait" id="nb-live" popovertarget="nb-mach" aria-controls="nb-mach" aria-expanded="false"><span class="dot" aria-hidden="true"></span><span id="nb-lt">connecting…</span></button>
+      <span class="sr" id="nb-ls" role="status"></span>
     </header>
     <div class="nb-banner" id="nb-banner" role="status" hidden></div>`
     document.body.prepend(wrap)
@@ -292,10 +325,17 @@ dialog.nb-pal::backdrop { background: rgba(5, 6, 10, .6); overflow: hidden; over
       <div class="foot"><span><kbd>↑</kbd> <kbd>↓</kbd> move</span><span><kbd>↵</kbd> open</span><span class="hide-s"><kbd>esc</kbd> close</span><span id="nb-pal-n" aria-live="polite"></span></div></div>`
     crumb.after(pal)
 
+    const mach = document.createElement('div')
+    mach.className = 'nb-mach'
+    mach.id = 'nb-mach'
+    mach.setAttribute('popover', 'auto')
+    mach.setAttribute('aria-label', 'Machines and data freshness')
+    wrap.after(mach)
+
     document.documentElement.classList.add('nav-on')
     els = {
       wrap, menu, crumb, pal, scope: $('#nb-scope'), sl: $('#nb-sl'), tabs: $('#nb-tabs'), need: $('#nb-need'), nn: $('#nb-nn'),
-      live: $('#nb-live'), lt: $('#nb-lt'), upd: $('#nb-upd'), banner: $('#nb-banner'), h1: $('#nb-h1'),
+      live: $('#nb-live'), lt: $('#nb-lt'), ls: $('#nb-ls'), mach, banner: $('#nb-banner'), h1: $('#nb-h1'),
     }
   }
 
@@ -307,10 +347,12 @@ dialog.nb-pal::backdrop { background: rgba(5, 6, 10, .6); overflow: hidden; over
     const cls = `nb-live ${h.s === 'ok' ? '' : h.s === 'error' ? 'error' : 'wait'}`.trim()
     if (els.live.className !== cls) els.live.className = cls
     if (els.lt.textContent !== h.label) els.lt.textContent = h.label
-    const upd = nav.sync.at ? `updated ${new Date(nav.sync.at).toLocaleTimeString()}` : ''
-    if (els.live.title !== upd) els.live.title = upd
-    const u = upd ? ` · ${upd.slice(8)}` : ''
-    if (els.upd.textContent !== u) els.upd.textContent = u
+    const al = `Data freshness: ${h.label}. Show machines`
+    if (els.live.getAttribute('aria-label') !== al) els.live.setAttribute('aria-label', al)
+    // Screen readers hear a change of state, not the ticking seconds.
+    const st = `${h.s}|${h.label.replace(/\d+ ?(s|min|h)\b/g, '#')}`
+    if (els.ls.dataset.k !== st) { els.ls.dataset.k = st; els.ls.textContent = h.label }
+    if (els.mach.matches(':popover-open')) paintMachines()
     els.banner.hidden = !h.bar
     if (h.bar && els.banner.textContent !== h.bar) els.banner.textContent = h.bar
     els.banner.classList.toggle('err', !!h.err)
@@ -354,9 +396,33 @@ dialog.nb-pal::backdrop { background: rgba(5, 6, 10, .6); overflow: hidden; over
     paintView()
   }
 
+  // ---- Machines popover ---------------------------------------------------------------------
+
+  function paintMachines() {
+    const d = nav.data
+    if (!d) { els.mach.innerHTML = '<div class="note">Waiting for the hub…</div>'; return }
+    const ago = (iso) => { const s = Date.now() - t(iso); return s < 5000 ? 'just now' : `${gap(s)} ago` }
+    const rows = [...d.machines].sort((a, b) => t(b.last_seen) - t(a.last_seen)).map((m) => {
+      const c = freshCls(m.last_seen)
+      const rs = d.repos.filter((r) => (r.machines || []).includes(m.machine)).map((r) => rshort(r.repo))
+      return `<li class="nb-mc"><span class="fd ${c}" aria-hidden="true"></span><span class="nm">${esc(m.machine)}</span><span class="when ${c}">${c === 'bad' ? 'stale · ' : ''}seen ${ago(m.last_seen)}</span><span class="rp">${plural(m.repos, 'repo')}${rs.length ? `: ${esc(rs.join(', '))}` : ''}</span></li>`
+    }).join('')
+    const page = nav.sync.at ? `Page refreshed ${ago(new Date(nav.sync.at).toISOString())}` : 'Page not refreshed yet'
+    const html = `<h2>Machines · ${d.machines.length}</h2><ul>${rows || '<li class="note">No machine has reported.</li>'}</ul>
+      <p class="note">${page}. Live updates ${nav.sync.conn === 'live' ? 'connected' : 'not connected'}. A machine is stale after ${STALE_S / 60} min of silence.</p>`
+    if (els.mach.innerHTML !== html) els.mach.innerHTML = html
+  }
+  function placeMach() {
+    const r = els.live.getBoundingClientRect()
+    const w = Math.min(400, innerWidth - 16)
+    els.mach.style.left = `${Math.max(8, Math.min(r.right - w, innerWidth - w - 8))}px`
+    els.mach.style.top = `${r.bottom + 6}px`
+    els.mach.style.maxHeight = `${Math.max(160, innerHeight - r.bottom - 18)}px`
+  }
+
   // ---- Scope menu ---------------------------------------------------------------------------
 
-  const freshCls = (iso) => { const s = (Date.now() - t(iso)) / 1000; return s < 120 ? 'ok' : s < STALE_S ? 'warn' : 'bad' }
+  const freshCls = (iso) => { const s = (Date.now() - t(iso)) / 1000; return s < 60 ? 'ok' : s < 600 ? 'warn' : 'bad' }
   const rank = (r) => [r.counts?.needs_you ? 1 : 0, r.counts?.running ? 1 : 0]
   // Switching scope keeps the view where the new scope has it.
   const hrefIn = (scope) => href(scope, scope !== 'all' && viewNow() === 'plan' ? 'board' : viewNow())
@@ -506,7 +572,9 @@ dialog.nb-pal::backdrop { background: rgba(5, 6, 10, .6); overflow: hidden; over
       e.preventDefault()
       items[(to + items.length) % items.length].focus()
     })
-    addEventListener('resize', () => { if (els.menu.matches(':popover-open')) placeMenu() })
+    els.mach.addEventListener('beforetoggle', (e) => { if (e.newState === 'open') { paintMachines(); placeMach() } })
+    els.mach.addEventListener('toggle', (e) => els.live.setAttribute('aria-expanded', String(e.newState === 'open')))
+    addEventListener('resize', () => { if (els.menu.matches(':popover-open')) placeMenu(); if (els.mach.matches(':popover-open')) placeMach() })
 
     // The needs-you badge on the overview scrolls to the section instead of reloading the page.
     els.need.addEventListener('click', (e) => {

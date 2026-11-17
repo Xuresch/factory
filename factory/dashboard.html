@@ -23,6 +23,14 @@
     --changes: #ffb86c;
     --human: #ff5555;
     --merged: #bd93f9;
+    /* agents: identity only, never status. "soft" = outside the factory: tint + 1.5px stroke in the agent colour */
+    --claude: #3987e5; --claude-ink: #6da7ec; --claude-soft: #213d62;
+    --codex: #0ea594; --codex-ink: #4cc3b3; --codex-soft: #124745;
+    --other: #8a8fa6; --other-soft: #2f3242;
+    /* role = lightness inside the agent hue (darkest first: builder, spec, review, intake/approver) */
+    --claude-r1: #256abf; --claude-r2: #3987e5; --claude-r3: #6da7ec; --claude-r4: #9ec5f4;
+    --codex-r1: #0a8577; --codex-r2: #0ea594; --codex-r3: #3dbfae; --codex-r4: #6fd3c6;
+    --viz-grid: #2b2e3b; --viz-axis: #5b6075; --viz-median: #a3a8bd; --viz-ghost: #3a3e50;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   * { box-sizing: border-box; }
@@ -210,7 +218,7 @@
   .md table.costs td.n, .md table.costs th.n { text-align: right; font-family: var(--mono); font-size: 12px; white-space: nowrap; }
   .md table.costs tfoot td { font-weight: 600; }
   .md table.costs .bar { display: inline-block; width: 40px; height: 6px; margin-right: 6px; vertical-align: middle;
-    border-radius: 3px; background: linear-gradient(90deg, var(--muted) var(--w), var(--line) var(--w)); }
+    border-radius: 3px; background: linear-gradient(90deg, var(--c, var(--muted)) var(--w), var(--line) var(--w)); }
   .md th, .md td { border: 1px solid var(--line); padding: 5px 9px; text-align: left; }
   .verdict {
     display: inline-block; font-family: var(--mono); font-size: 12px; font-weight: 600;
@@ -242,7 +250,7 @@
   .costs-view { padding: 20px 32px 40px; max-width: 1400px; }
   .costs-view[hidden], .board[hidden] { display: none; }
   .costs-view h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 28px 0 10px; }
-  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
   .tile { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
   .tile .v { font-family: var(--mono); font-size: 20px; font-weight: 600; }
   .tile .k { color: var(--muted); font-size: 12px; }
@@ -308,7 +316,8 @@
   .attn { border: 1px solid color-mix(in srgb, var(--human) 45%, var(--line)); border-radius: 12px; padding: 14px 16px 6px;
     background: color-mix(in srgb, var(--human) 5%, var(--bg)); }
   .attn .sec-h h2 { color: var(--human); }
-  .attn.calm-box { border-color: var(--line); background: none; padding: 10px 16px; }
+  .attn.calm-box { border-color: var(--line); background: none; padding: 4px 14px; border-radius: 8px; }
+  .b-sec.calm-box { margin-bottom: 22px; }
   .attn-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
   .prow { display: grid; grid-template-columns: minmax(220px, 1.2fr) minmax(400px, 2fr) minmax(170px, .8fr); gap: 20px; align-items: center;
     background: var(--card); border: 1px solid color-mix(in srgb, var(--active) 30%, var(--line)); border-radius: 10px;
@@ -333,54 +342,159 @@
 
   /* Costs view */
   .cv h2 { margin: 30px 0 4px; }
-  .cv .sub { color: var(--subtle); font-size: 12px; margin: 0 0 12px; }
-  .bcol .fee { position: absolute; left: -2px; right: -2px; border-top: 2px solid var(--text); pointer-events: none; }
-  .legend i.fee-key { height: 0; border-top: 2px solid var(--text); border-radius: 0; vertical-align: 3px; }
+  .cv .sub { color: var(--subtle); font-size: 12px; margin: 0 0 12px; line-height: 1.5; }
   .tile.click { cursor: pointer; } .tile.click:hover { background: var(--card-hover); }
   .tile .k2 { color: var(--text); font-size: 12px; line-height: 1.4; margin-top: 2px; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow-wrap: anywhere; }
-  .up { color: var(--changes); } .down { color: var(--pass); }
-  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-bottom: 10px; }
-  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
-  .chart { position: relative; height: 240px; margin: 0 92px 0 44px; border-bottom: 1px solid var(--muted); }
-  .chart .gl { position: absolute; left: 0; right: 0; border-top: 1px solid var(--line); }
-  .chart .gl span { position: absolute; right: calc(100% + 8px); top: -8px; font: 11px var(--mono); color: var(--muted); }
-  .chart .med { position: absolute; left: 0; right: 0; border-top: 1px dashed var(--text); opacity: .55; z-index: 1; pointer-events: none; }
-  .chart .med span { position: absolute; left: calc(100% + 8px); top: -8px; font: 11px/1.3 var(--mono); color: var(--text); white-space: pre; }
-  .bars { position: absolute; inset: 0; display: flex; align-items: flex-end; gap: 4px; }
-  .bcol { flex: 1; height: 100%; display: flex; align-items: flex-end; cursor: pointer; position: relative; }
-  .bcol:hover .bstack { filter: brightness(1.25); }
-  .bstack { width: 100%; display: flex; flex-direction: column-reverse; gap: 2px; }
-  .bstack i { display: block; min-height: 0; }
-  .bstack i:last-child { border-radius: 4px 4px 0 0; }
-  .bx { position: absolute; top: calc(100% + 5px); left: 50%; transform: translateX(-50%); font: 11px var(--mono); color: var(--muted); }
+  .tile .split { margin: 8px 0 2px; }
+  /* Deltas are direction, not verdict: neutral, amber only past +50%. Green is for savings figures. */
+  .dl { color: var(--muted); font-family: var(--mono); } .dl.warn { color: var(--changes); }
+  .sav { color: var(--pass); }
+
+  /* Agent swatches and the claude | codex | other split bar */
+  .sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; flex: none; }
+  .sw.claude { background: var(--claude); } .sw.codex { background: var(--codex); } .sw.other { background: var(--other); }
+  .sw.out.claude { background: var(--claude-soft); box-shadow: inset 0 0 0 1.5px var(--claude); }
+  .sw.out.codex { background: var(--codex-soft); box-shadow: inset 0 0 0 1.5px var(--codex); }
+  .sw.hatch { background: repeating-linear-gradient(45deg, var(--viz-median) 0 1px, transparent 1px 3px); box-shadow: inset 0 0 0 1px var(--viz-median); }
+  .sw.wait { background: repeating-linear-gradient(135deg, var(--viz-median) 0 1px, transparent 1px 3px); box-shadow: inset 0 0 0 1px var(--faint); }
+  .sw.fee { background: none; height: 0; border-top: 2px dashed var(--text); border-radius: 0; width: 14px; vertical-align: 3px; }
+  .split { display: inline-flex; gap: 1px; width: 48px; height: 4px; border-radius: 2px; overflow: hidden; vertical-align: middle; background: var(--line); }
+  .split > i { display: block; min-width: 2px; }
+  .split.full { display: flex; width: 100%; height: 6px; }
+  .split.big { display: flex; height: 10px; }
+  .split.dsplit { width: 220px; height: 6px; display: flex; }
+  .d-split { margin-top: 6px; } .d-split:empty { display: none; }
+  .split.wide { height: 14px; border-radius: 3px; }
+  .drow .cell { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }
+  .drow.rejected .split { opacity: .4; }
+  .meta .split { align-self: center; }
+  .legend { display: flex; gap: 6px 16px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+  .legend > span { display: inline-flex; align-items: center; }
+  .legend .sw { width: 10px; height: 10px; }
+  .legend .sw.fee { height: 0; }
+  .legend .ramp { display: inline-flex; gap: 2px; margin-left: 6px; }
+  .legend .ramp .sw { margin: 0; }
+
+  /* Chart contract: every SVG chart has the same text and grid (chartFrame). */
+  svg.ch { display: block; max-width: 100%; height: auto; overflow: visible; }
+  svg.ch text { font: 11px var(--mono); fill: var(--muted); }
+  svg.ch .ax { fill: var(--subtle); }
+  svg.ch .lab { fill: var(--text); }
+  svg.ch .lab.sav { fill: var(--pass); }
+  svg.ch .gl { stroke: var(--viz-grid); stroke-width: 1; opacity: .6; }
+  svg.ch .base { stroke: var(--viz-axis); stroke-width: 1; }
+  svg.ch .ref { stroke: var(--viz-median); stroke-width: 1.5; stroke-dasharray: 5 4; }
+  svg.ch .feeline { stroke: var(--text); stroke-width: 2; stroke-dasharray: 5 3; }
+  svg.ch .hit { fill: transparent; cursor: default; outline: none; }
+  svg.ch .hit[data-job] { cursor: pointer; }
+  svg.ch .hit:hover { fill: rgba(255, 255, 255, .05); }
+  svg.ch .hit:focus-visible { fill: rgba(139, 233, 253, .08); stroke: var(--active); stroke-width: 2; }
+  svg.ch circle.hit { fill: transparent; }
+  svg.ch .pt { fill: var(--muted); stroke: var(--bg); }
+  .chart-row { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
+  .chart-row > aside { flex: 1 1 240px; min-width: 220px; max-width: 420px; font-size: 13px; color: var(--muted); line-height: 1.55; }
+  .chart-row > aside p { margin: 0 0 10px; }
+  .grid2 .trend, .cv .trend { min-width: 0; }
   .cv .grid2 { margin-top: 10px; }
   /* The directory column takes what the numbers leave and cuts long paths short. */
   .cv table.costs.fill { width: 100%; }
   .cv table.costs.fill td.t { max-width: 0; width: 100%; }
+  .mach { font: 12px var(--mono); color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; margin-right: 8px; }
   @media (max-width: 760px) {
     .costs-view .cv table.costs th, .costs-view .cv table.costs th.n { white-space: normal; }
     .costs-view .cv table.costs th, .costs-view .cv table.costs td { padding-left: 5px; padding-right: 5px; }
     .costs-view .cv table.costs td.n { font-size: 11px; }
+    .cv table.costs.fill td.t { min-width: 150px; }
+    .cv table.costs td.t .mach { display: none; }
   }
   .heat { border-collapse: separate; border-spacing: 3px; font-size: 12px; }
-  .heat th { font-weight: 500; color: var(--muted); padding: 4px 8px; text-align: left; border: 0; font-size: 11.5px; }
+  .heat th { font-weight: 500; color: var(--muted); padding: 4px 8px; text-align: left; border: 0; font-size: 12px; }
   .heat td { border: 0; border-radius: 6px; padding: 10px 12px; min-width: 92px; font-family: var(--mono); font-size: 12px; }
-  .heat td small { display: block; color: var(--text); opacity: .8; font-size: 11px; }
+  .heat td small { display: block; color: inherit; font-size: 11px; }
+  .heat td.nil { color: var(--subtle); background: none; }
   .tag.notag { background: none; }
   .rangebar { margin-bottom: 16px; }
-  .bx { white-space: nowrap; }
-  .cv .sub { color: var(--subtle); font-size: 12px; margin: 0 0 12px; line-height: 1.5; }
-  .heat td.nil { color: var(--subtle); background: none; }
-  .trend svg { width: 100%; height: auto; display: block; }
+  .rangebar .tools .gap { width: 10px; }
   details.old { margin-top: 34px; border-top: 1px solid var(--line); padding-top: 14px; }
   details.old summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  .cache-sav { margin: 0 0 10px; font-size: 13px; color: var(--muted); }
+  .cache-sav b { font: 600 18px var(--mono); color: var(--text); margin-right: 6px; }
+
+  /* Cost per role: one bar per role on one scale, claude | codex */
+  .rbars { display: grid; gap: 6px; }
+  .rb { display: grid; grid-template-columns: 120px minmax(0, 1fr) auto; gap: 10px; align-items: center; font-size: 12px; }
+  .rb .rl { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rb .rt { display: block; min-width: 0; }
+  .rb .rv { font-family: var(--mono); color: var(--muted); white-space: nowrap; text-align: right; min-width: 92px; }
+
+  /* Subscription */
+  .plan-top { display: grid; grid-template-columns: minmax(280px, 420px) minmax(0, 1fr); gap: 16px; align-items: stretch; }
+  .hero, .bullets { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; min-width: 0; }
+  .hero .hk, .bullets h3 { margin: 0; color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; }
+  .hero .hv { font: 600 44px/1.15 var(--mono); margin: 6px 0 4px; letter-spacing: -.02em; }
+  .hero .hv small { font-size: 18px; color: var(--muted); font-weight: 500; letter-spacing: 0; margin-left: 8px; }
+  .hero .hs { font-size: 13px; color: var(--muted); line-height: 1.55; margin-top: 2px; }
+  .hero .hs b { color: var(--text); font-weight: 600; }
+  .bullets { display: grid; gap: 16px; align-content: start; }
+  .bl-head { display: flex; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; font-size: 13px; margin-bottom: 6px; }
+  .bl-head .nm { display: inline-flex; align-items: center; color: var(--text); }
+  .bl-head .nm b { font-weight: 600; margin-left: 8px; font-family: var(--mono); }
+  .bl-head .gl2 { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+  .bl-track { position: relative; height: 24px; border-radius: 3px; overflow: visible; background: linear-gradient(90deg, rgba(163,168,189,.22) var(--b1), rgba(163,168,189,.13) var(--b1) var(--b2), rgba(163,168,189,.06) var(--b2)); }
+  .bl-bar { position: absolute; left: 0; top: 7px; height: 10px; display: flex; gap: 2px; }
+  .bl-bar i { display: block; min-width: 2px; height: 10px; }
+  .bl-bar i:last-child { border-radius: 0 4px 4px 0; }
+  .bl-bar i.out { box-sizing: border-box; }
+  .bl-fee { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--text); border-radius: 1px; }
+  .bl-axis { position: relative; height: 16px; font: 11px var(--mono); color: var(--subtle); margin-top: 3px; }
+  .bl-axis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+  .bl-axis span:first-child { transform: none; }
+  .bl-axis span:last-child { transform: translateX(-100%); }
+  .bl-sub { font-size: 12px; color: var(--muted); font-family: var(--mono); margin-top: 2px; }
+  @media (max-width: 900px) { .plan-top { grid-template-columns: 1fr; } }
+  @media (max-width: 640px) { .hero .hv { font-size: 38px; } }
+
+  /* Drawer: timeline waterfall and the cost block */
+  .wf { margin: 6px 0 14px; }
+  .wf-sum { display: flex; gap: 2px; height: 24px; border-radius: 4px; overflow: hidden; margin: 6px 0 8px; }
+  .wf-sum i { display: block; min-width: 2px; }
+  .wf-sum i.wait, .wf-b.wait { background: repeating-linear-gradient(135deg, var(--faint) 0 2px, transparent 2px 6px); box-shadow: inset 0 0 0 1px var(--faint); }
+  .wf-sum i.claude, .wf-b.claude { background: var(--claude); } .wf-sum i.codex, .wf-b.codex { background: var(--codex); }
+  .wf-sum i.other, .wf-b.other { background: var(--other); }
+  .wf-tot { font: 12px/1.6 var(--mono); color: var(--muted); margin: 0 0 12px; }
+  .wf-tot b { color: var(--text); font-weight: 600; }
+  .wf-row { display: grid; grid-template-columns: 116px minmax(0, 1fr) 54px; gap: 10px; align-items: center; min-height: 22px; font: 12px var(--mono); }
+  .wf-row.rnd { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 4px; }
+  .wf-row:first-child { margin-top: 0; border-top: 0; padding-top: 0; }
+  .wf-l { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .wf-l.waitl { color: var(--changes); }
+  .wf-l .r { color: var(--subtle); margin-left: 6px; }
+  .wf-t { position: relative; height: 14px; background: linear-gradient(var(--line), var(--line)) 0 50% / 100% 1px no-repeat; }
+  .wf-b { position: absolute; top: 0; bottom: 0; min-width: 3px; border-radius: 3px; }
+  .wf-d { text-align: right; color: var(--muted); white-space: nowrap; }
+  .wf-axis { display: grid; grid-template-columns: 116px minmax(0, 1fr) 54px; gap: 10px; font: 11px var(--mono); color: var(--subtle); margin-top: 4px; }
+  .wf-axis > div { display: flex; justify-content: space-between; }
+  .cost-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 0 0 6px; }
+  .cost-head b { font: 600 24px var(--mono); }
+  .cost-head span { color: var(--muted); font-size: 13px; }
+  .cost-leg { font: 12px/1.6 var(--mono); color: var(--muted); margin: 6px 0 14px; display: flex; flex-wrap: wrap; gap: 4px 16px; }
+  .cost-leg > span { display: inline-flex; align-items: center; }
+  .md table.costs td.mdl { white-space: nowrap; }
+  .md table.costs td.mdl .sw { margin-right: 6px; }
+
   #tip { position: fixed; z-index: 50; pointer-events: none; background: #0d0e12; border: 1px solid var(--line); border-radius: 8px;
-    padding: 8px 10px; font: 11.5px/1.55 var(--mono); color: var(--text); white-space: pre; display: none; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+    padding: 8px 10px; font: 12px/1.55 var(--mono); color: var(--text); white-space: pre; display: none; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+  #tip .sw { width: 8px; height: 8px; margin-right: 6px; }
+
+  /* Rounds legend: always shown on desktop, behind a "?" on a phone. */
+  .qbtn { display: none; width: 24px; height: 24px; padding: 0; border-radius: 50%; border: 1px solid var(--faint); background: none; color: var(--muted);
+    font: 600 12px var(--mono); cursor: pointer; align-items: center; justify-content: center; }
+  .qbtn[aria-expanded="true"] { color: var(--text); background: var(--card); border-color: var(--muted); }
+  .qbtn::after { content: ""; position: absolute; inset: -10px; }
+  .qbtn { position: relative; }
 
   @media (max-width: 1100px) {
     .prow { grid-template-columns: 1fr; gap: 12px; }
-    .chart { margin-right: 0; }
-    .chart .med span { left: auto; right: 0; top: -30px; }
   }
   @media (max-width: 640px) {
     header { padding: 20px 16px 4px; }
@@ -389,6 +503,13 @@
     .sec-h { flex-wrap: wrap; } .search { width: 100%; }
     .drow { grid-template-columns: 8px 32px minmax(0, 1fr) auto 56px; }
     .drow .tag, .drow > span:nth-child(6), .drow > span:nth-child(8) { display: none; }
+    .qbtn { display: inline-flex; }
+    .rlegend[data-collapsed] { display: none; }
+    .attn.calm-box { padding: 2px 2px; border: 0; background: none; }
+    .b-sec.calm-box { margin-bottom: 14px; }
+    .rb { grid-template-columns: 88px minmax(0, 1fr) auto; }
+    .rb .rv { min-width: 0; }
+    .wf-row, .wf-axis { grid-template-columns: 84px minmax(0, 1fr) 46px; gap: 8px; }
     .costs-view { padding: 16px 16px 32px; }
     .grid2 { grid-template-columns: 1fr; }
     footer { margin: 0 16px; padding-bottom: 24px; }
@@ -446,6 +567,7 @@
     <div class="d-head">
       <div class="d-ref" id="d-ref" hidden></div>
       <div class="num" id="d-num"></div>
+      <div class="d-split" id="d-split"></div>
       <h3 id="d-title"></h3>
       <div class="links" id="d-links"></div>
       <button class="close" data-close aria-label="Close">×</button>
@@ -571,7 +693,7 @@ function card(job, rounds) {
   const risk = job.intake?.risk
   const meta = [
     risk ? `<span class="risk-${esc(risk)}">${esc(risk)}</span>` : '',
-    `<span>$${Number(job.cost_usd).toFixed(2)}</span>`,
+    `<span>${money(job.cost_usd)}</span>${splitBar(partsOf(job))}`,
     `<span>${elapsed(job)}</span>`,
   ].join('')
   const todo = todoOf(job)
@@ -613,6 +735,7 @@ async function render() {
       const focus = document.activeElement?.id === 'q' ? $('q').selectionStart : null
       lastRender = html + banner
       $('board').innerHTML = html
+      applyLegend()
       $('banner').innerHTML = banner
       if (focus !== null && $('q')) { $('q').focus(); $('q').setSelectionRange(focus, focus) }
     }
@@ -620,8 +743,8 @@ async function render() {
   const running = jobs.filter((j) => LIVE.has(j.stage)).length
   const cost = jobs.reduce((sum, j) => sum + Number(j.cost_usd), 0)
   const part = (a) => jobs.reduce((sum, j) => sum + Number((j.cost_by_agent || {})[a] || 0), 0)
-  $('totals').textContent = `${running} running · $${cost.toFixed(2)} API-equivalent`
-    + ` (claude $${part('claude').toFixed(2)} · codex $${part('codex').toFixed(2)})`
+  $('totals').textContent = `${running} running · ${money(cost)} API-equivalent`
+    + ` (claude ${money(part('claude'))} · codex ${money(part('codex'))})`
 }
 
 let lastOk = Date.now()
@@ -713,10 +836,11 @@ const firstLines = new Map()
 async function refreshDrawer() {
   const job = jobs.find((j) => j.id === openJobId)
   if (!job) return
-  const tail = `${job.stage}${job.round ? ` · round ${job.round}` : ''} · $${Number(job.cost_usd).toFixed(2)} · ${elapsed(job)}`
+  const tail = `${job.stage}${job.round ? ` · round ${job.round}` : ''} · ${money(job.cost_usd)} · ${elapsed(job)}`
   $('d-ref').hidden = !hub
   if (hub) $('d-ref').innerHTML = `${repoChip(job, true)}<span class="num">${esc(ref(job))}</span>`
   $('d-num').textContent = hub ? tail : `${job.id} · ${tail}`
+  $('d-split').innerHTML = splitBar(partsOf(job), 'dsplit')
   $('d-title').textContent = job.title
   $('d-links').innerHTML = links(job)
 
@@ -778,49 +902,82 @@ function mins(ms) {
   return m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m` : `${m}m`
 }
 
-// One row per stage the job passed through, from job.history (factory/bin/job advance).
+// Who ran a stage: the agent whose priced session carries that role, else the one the job was routed to.
+function stageAgent(job, stage) {
+  const role = { intake: 'intake', spec: 'spec-writer', build: 'builder', review: 'reviewer', approve: 'approver' }[stage]
+  if (!role) return 'other' // gate, merging: checks.sh and git, no agent
+  const row = (job.cost_breakdown || []).find((r) => String(r.role).startsWith(role))
+  let a = row?.agent
+  if (!a && stage === 'build') a = job.agents?.builder?.agent
+  if (!a && stage === 'review') a = Object.values(job.agents?.reviewers || {})[0]?.agent
+  return a === 'claude' || a === 'codex' ? a : 'other'
+}
+
+const dur = (ms) => (ms > 0 && ms < 60000 ? '<1m' : ms > 0 ? mins(ms) : '–')
+
+// The job's wall clock as a waterfall, from job.history (factory/bin/job advance): one row per stage,
+// bar offset = start, length = duration. Time spent waiting on a human is hatched, work wears its agent's colour.
 function timelineTable(job) {
   const h = job.history || []
   if (!h.length) return '<p class="note">No timeline: this job started before the factory recorded one.</p>'
+  const t0 = Date.parse(h[0].at)
   const end = job.ended ? Date.parse(job.ended) : Date.now()
-  const total = end - Date.parse(h[0].at)
+  const total = Math.max(1, end - t0)
+  const by = { claude: 0, codex: 0, other: 0, wait: 0 }
+  let lastRound = null
   const rows = h.map((e, i) => {
     const from = Date.parse(e.at)
-    const to = i + 1 < h.length ? Date.parse(h[i + 1].at) : (DONE.has(e.stage) ? from : end)
-    const share = total ? Math.round((100 * (to - from)) / total) : 0
-    return `<tr><td>${esc(e.stage)}</td><td class="n">${e.round || '-'}</td>
-      <td class="n">${esc(new Date(from).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}</td>
-      <td class="n">${to > from ? mins(to - from) : '–'}</td>
-      <td class="n"><span class="bar" style="--w:${share}%"></span>${share}%</td></tr>`
+    const to = i + 1 < h.length ? Date.parse(h[i + 1].at) : (TERMINAL_STAGES.has(e.stage) ? from : end)
+    const waiting = WAIT.has(e.stage)
+    const kind = waiting ? 'wait' : stageAgent(job, e.stage)
+    by[kind] += Math.max(0, to - from)
+    const newRound = e.round && e.round !== lastRound && lastRound !== null
+    if (e.round) lastRound = e.round
+    const at = new Date(from).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    const what = waiting ? 'waiting on you' : kind === 'other' ? 'checks / git' : kind
+    const tip = `${e.stage}${e.round ? ` · round ${e.round}` : ''}\n${at} · ${dur(to - from)}\n${what}`
+    return `<div class="wf-row ${newRound ? 'rnd' : ''}" data-tip="${esc(tip)}">
+      <span class="wf-l ${waiting ? 'waitl' : ''}">${esc(e.stage)}${e.round ? `<span class="r">R${e.round}</span>` : ''}</span>
+      <span class="wf-t"><i class="wf-b ${kind}" style="left:${(100 * (from - t0)) / total}%;width:${Math.max(0, (100 * (to - from)) / total)}%"></i></span>
+      <span class="wf-d">${dur(to - from)}</span></div>`
   }).join('')
-  return `<table class="costs"><thead><tr><th>stage</th><th class="n">round</th><th class="n">from</th>
-    <th class="n">time</th><th class="n">share</th></tr></thead><tbody>${rows}</tbody>
-    <tfoot><tr><td colspan="3">total</td><td class="n">${mins(total)}</td><td></td></tr></tfoot></table>`
+  const work = by.claude + by.codex + by.other
+  const seg = (k) => (by[k] > 0 ? `<i class="${k}" style="flex:${by[k]} 1 0"></i>` : '')
+  const part = (k, label) => (by[k] > 0 ? `<span>${k === 'wait' ? '<i class="sw wait"></i>' : sw(k)}${label} ${mins(by[k])}</span>` : '')
+  return `<div class="wf">
+    <div class="wf-sum" role="img" aria-label="${esc(`Agents working ${mins(work)}, waiting on you ${mins(by.wait)}, total ${mins(total)}`)}">${['claude', 'codex', 'other', 'wait'].map(seg).join('')}</div>
+    <p class="wf-tot"><b>${mins(work)}</b> agents working · <b>${mins(by.wait)}</b> waiting on you · ${mins(total)} total</p>
+    <div class="legend">${part('claude', 'claude')}${part('codex', 'codex')}${part('other', 'checks and merge')}${part('wait', 'waiting on you (paused, needs-human, needs-info)')}</div>
+    ${rows}
+    <div class="wf-axis"><span></span><div><span>start</span><span>${mins(total / 2)}</span><span>${mins(total)}</span></div><span></span></div></div>`
 }
 
 // One row per role, agent and model, from job.cost_breakdown (factory/bin/job sync).
 function costTable(job) {
   const rows = job.cost_breakdown || []
   const total = rows.reduce((sum, r) => sum + Number(r.cost_usd), 0)
-  const by = job.cost_by_agent || {}
+  const parts = rows.length ? rows.reduce((p, r) => { p[agentKey(r.agent)] += Number(r.cost_usd); return p }, { claude: 0, codex: 0, other: 0 }) : partsOf(job)
   const share = (c) => (total ? Math.round((100 * c) / total) : 0)
   const body = rows.map((r) => `<tr>
-      <td>${esc(r.role)}</td><td>${esc(r.agent)} · ${esc(r.model || '?')}</td>
+      <td>${esc(r.role)}</td><td class="mdl" title="${esc(`${r.agent} · ${r.model || '?'}`)}">${sw(agentKey(r.agent))}${esc(shortModel(r.model))}</td>
       <td class="n">${r.sessions}</td><td class="n">${tokens(r.input_tokens)}</td>
       <td class="n">${tokens(r.cached_tokens)}</td><td class="n">${tokens(r.output_tokens)}</td>
-      <td class="n">$${Number(r.cost_usd).toFixed(2)}</td>
-      <td class="n"><span class="bar" style="--w:${share(r.cost_usd)}%"></span>${share(r.cost_usd)}%</td>
+      <td class="n">${money(r.cost_usd)}</td>
+      <td class="n">${bar(share(r.cost_usd), agentKey(r.agent))}</td>
     </tr>`).join('')
   const followUps = (job.follow_ups || []).map((f) => `<li>${esc(f.issue)}: ${esc(f.title)}</li>`).join('')
+  const pt = partsTotal(parts)
   return `<h2>Timeline</h2>${timelineTable(job)}
     ${followUps ? `<h2>Follow-ups filed</h2><ul>${followUps}</ul>` : ''}
     <h2>Costs</h2>
-    <p class="head">claude $${Number(by.claude || 0).toFixed(2)} · codex $${Number(by.codex || 0).toFixed(2)} · total $${total.toFixed(2)}</p>
+    <div class="cost-head"><b>${money(total || job.cost_usd)}</b><span>API-equivalent</span></div>
+    ${splitBar(parts, 'big')}
+    <p class="cost-leg">${AGENT_KEYS.filter((k) => parts[k] > 0.004).map((k) => `<span>${sw(k)}${k} ${money(parts[k])} · ${pct(parts[k], pt)}%</span>`).join('')}</p>
     ${rows.length ? `<table class="costs">
-      <thead><tr><th>role</th><th>agent · model</th><th class="n">sessions</th><th class="n">input</th>
+      <thead><tr><th>role</th><th>model</th><th class="n">sessions</th><th class="n">input</th>
         <th class="n">cached</th><th class="n">output</th><th class="n">cost</th><th class="n">share</th></tr></thead>
       <tbody>${body}</tbody>
-      <tfoot><tr><td colspan="6">total</td><td class="n">$${total.toFixed(2)}</td><td></td></tr></tfoot>
+      <tfoot><tr><td colspan="6">total</td><td class="n">${money(total)}</td><td></td></tr></tfoot>
     </table>` : '<p class="note">No priced sessions yet. The breakdown fills in as workers run.</p>'}
     <p class="note">API-equivalent at factory/config.json prices. A builder keeps one session across rounds, so its row covers every round. Input is uncached input plus cache writes.</p>`
 }
@@ -829,9 +986,11 @@ function costTable(job) {
 
 const WAIT = new Set(['needs-human', 'paused', 'needs-info'])
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`
-const money = (n) => `$${Number(n || 0).toFixed(2)}`
+// $12.34 below $100, $1,349 above: cents stop mattering.
+const money = (n) => { n = Number(n || 0); return n >= 100 ? `$${Math.round(n).toLocaleString('en-US')}` : `$${n.toFixed(2)}` }
 const pct = (part, whole) => (whole ? Math.round((100 * part) / whole) : 0)
-const bar = (share) => `<span class="bar" style="--w:${share}%"></span>${share}%`
+const agentKey = (a) => (a === 'claude' || a === 'codex' ? a : 'other')
+const bar = (share, agent) => `<span class="bar" style="--w:${share}%${agent ? `;--c:var(--${agentKey(agent)})` : ''}"></span>${share}%`
 const shortModel = (m) => String(m || '?').replace(/^claude-/, '').replace(/-\d+(-\d+)*$/, '')
 
 // Time a job spent working and waiting on a human, from job.history.
@@ -1121,8 +1280,8 @@ function markdown(src) {
 const ATTN = new Set(['needs-human', 'paused', 'needs-info'])
 const FINISHED = new Set(['merged', 'rejected'])
 const TRACK = [['intake', 'intake'], ['spec', 'spec'], ['build', 'build'], ['gate', 'gate'], ['review', 'review'], ['approve', 'approve'], ['merging', 'merge']]
-const ui = { filter: 'all', q: '', group: 'day', limit: 0, old: false, range: '30d', per: 'auto' }
-for (const k of ['range', 'per']) { const v = new URLSearchParams(location.search).get(k); if (v) ui[k] = v }
+const ui = { filter: 'all', q: '', group: 'day', limit: 0, old: false, range: '30d', per: 'auto', shade: 'agent', legend: false, dirs: 'top' }
+for (const k of ['range', 'per', 'shade']) { const v = new URLSearchParams(location.search).get(k); if (v) ui[k] = v }
 
 const feature = (j) => (j.base && !/^(main|master)$/.test(j.base) ? j.base : null)
 const numOf = (j) => String(j.id).split('~').pop().split('-')[0]
@@ -1192,7 +1351,7 @@ function doneRow(j) {
     <span class="dt" title="${esc(j.title)}">${hub && hub.repo === 'all' ? repoChip(j) + ' ' : ''}${j.stage === 'rejected' ? '<span class="stg">rejected</span>' : ''}${esc(j.title)}</span>
     ${f ? `<span class="tag" title="${esc(f)}">${esc(f.replace(/^feature\//, ''))}</span>` : '<span class="tag notag"></span>'}
     ${roundDots(j)}<span class="risk-${esc(risk)}">${esc(risk)}</span>
-    <span class="n">${money(j.cost_usd)}</span><span class="n">${elapsed(j)}</span></div>`
+    <span class="n cell">${money(j.cost_usd)}${splitBar(partsOf(j))}</span><span class="n">${elapsed(j)}</span></div>`
 }
 
 function doneSection() {
@@ -1223,8 +1382,9 @@ function doneSection() {
   const rest = list.length - shown.length
   const more = (rest > 0 ? `<button class="more" data-ui="limit" data-val="${limit + 50}">${rest > 50 ? `show 50 more of ${rest}` : `show ${rest} more`} →</button>` : '')
     + (ui.limit ? `<button class="more" data-ui="limit" data-val="0">show fewer</button>` : '')
-  const legend = `<div class="rlegend"><span>Rounds</span><span><i class="rd fail"></i>gate failed</span><span><i class="rd changes"></i>changes requested</span><span><i class="rd pass"></i>passed</span><span><i class="rd muted"></i>rejected</span></div>`
-  return `<div class="sec-h"><h2>Done</h2><span class="count">${all.length}</span>${tools}</div>
+  const legend = `<div class="rlegend" id="rlegend" data-collapsed><span>Rounds</span><span><i class="rd fail"></i>gate failed</span><span><i class="rd changes"></i>changes requested</span><span><i class="rd pass"></i>passed</span><span><i class="rd muted"></i>rejected</span></div>`
+  const qbtn = all.length ? `<button class="qbtn" id="rl-btn" aria-expanded="false" aria-controls="rlegend" aria-label="What the round dots mean">?</button>` : ''
+  return `<div class="sec-h"><h2>Done</h2><span class="count">${all.length}</span>${qbtn}${tools}</div>
     ${all.length ? legend : ''}${body || '<div class="calm">Nothing matches.</div>'}${more}`
 }
 
@@ -1265,7 +1425,7 @@ async function boardPage() {
       <div><div class="segs">${segs}</div>
         <div class="pnow"><b>${esc(j.stage)}</b>${j.round ? ` · round ${j.round}` : ''}${sliceNote} · for ${since(j)} · ${esc(who(j))}</div></div>
       <div class="pside"><div class="rounds">${(await currentRound(j)).join('')}</div>
-        <div class="meta">${risk ? `<span class="risk-${esc(risk)}">${esc(risk)}</span>` : ''}<span>${money(j.cost_usd)}</span><span>${elapsed(j)} total</span></div></div>
+        <div class="meta">${risk ? `<span class="risk-${esc(risk)}">${esc(risk)}</span>` : ''}<span>${money(j.cost_usd)}</span>${splitBar(partsOf(j))}<span>${elapsed(j)} total</span></div></div>
     </article>`
   }))
   const liveHtml = `<section class="b-sec"><div class="sec-h"><h2>Running</h2><span class="count">${live.length}</span></div>
@@ -1273,14 +1433,177 @@ async function boardPage() {
   return attnHtml + liveHtml + `<section class="b-sec">${doneSection()}</section>`
 }
 
+// ---- Agents, split bars and the chart contract -----------------------------
+// Colour means who ran it: --claude and --codex (--other for anything else), nowhere else.
+// Role is lightness inside the agent hue. Status colours never colour a series.
+
+const AGENT_KEYS = ['claude', 'codex', 'other']
+const sw = (k, extra = '') => `<i class="sw ${k} ${extra}"></i>`
+
+// A job's money by agent. Older jobs have no cost_by_agent: all of it was Claude's.
+function partsOf(j) {
+  const total = Number(j.cost_usd || 0), by = j.cost_by_agent
+  if (!by) return { claude: total, codex: 0, other: 0 }
+  const other = Object.entries(by).filter(([k]) => k !== 'claude' && k !== 'codex').reduce((s, [, v]) => s + Number(v || 0), 0)
+  return { claude: Number(by.claude || 0), codex: Number(by.codex || 0), other }
+}
+const addParts = (list) => list.reduce((a, p) => ({ claude: a.claude + p.claude, codex: a.codex + p.codex, other: a.other + p.other }), { claude: 0, codex: 0, other: 0 })
+const partsTotal = (p) => p.claude + p.codex + p.other
+const splitText = (p) => AGENT_KEYS.filter((k) => p[k] > 0.004).map((k) => `${k} ${money(p[k])} (${pct(p[k], partsTotal(p))}%)`).join(' · ')
+
+// claude | codex | other as proportional segments with a 1px gap; the text is the aria-label and the tooltip.
+function splitBar(p, cls = '') {
+  if (partsTotal(p) <= 0.004) return ''
+  const text = splitText(p)
+  return `<span class="split ${cls}" role="img" aria-label="${esc(text)}" data-tip="${esc(text)}">${AGENT_KEYS.filter((k) => p[k] > 0.004)
+    .map((k) => `<i style="flex:${p[k]} 1 0;background:var(--${k})"></i>`).join('')}</span>`
+}
+
+// Tooltip rows: swatch, agent, amount, share.
+const tipAgents = (p) => AGENT_KEYS.filter((k) => p[k] > 0.004)
+  .map((k) => `{${k}} ${k.padEnd(7)}${money(p[k]).padStart(9)} ${String(pct(p[k], partsTotal(p))).padStart(3)}%`).join('\n')
+
+// Delta against a previous period: direction as an arrow, amber only past +50%.
+const deltaHtml = (p) => (p === null || p === undefined || Number.isNaN(p) ? ''
+  : `<span class="dl${p > 50 ? ' warn' : ''}">${p > 0 ? '↑ +' : p < 0 ? '↓ ' : '→ '}${p}%</span>`)
+
+// One axis rule: the max sits just above the data (x1.08) on a 1/2/2.5/5/10 step, at most five gridlines.
+function niceAxis(maxV) {
+  const v = Math.max(maxV * 1.08, 0.01)
+  const p = 10 ** Math.floor(Math.log10(v / 5))
+  for (const m of [1, 2, 2.5, 5, 10, 20, 25, 50]) {
+    const step = m * p, n = Math.ceil(v / step - 1e-9)
+    if (n <= 5) return { max: n * step, step }
+  }
+  return { max: v, step: v }
+}
+const axisFmt = (v) => (v >= 100 ? `$${Math.round(v).toLocaleString('en-US')}` : Number.isInteger(v) ? `$${v}` : `$${v.toFixed(2)}`)
+const topPath = (x, y, w, h, r) => {
+  r = Math.max(0, Math.min(r, w / 2, h))
+  const f = (n) => +n.toFixed(2)
+  return `M${f(x)},${f(y + h)}V${f(y + r)}${r ? `Q${f(x)},${f(y)} ${f(x + r)},${f(y)}` : ''}H${f(x + w - r)}${r ? `Q${f(x + w)},${f(y)} ${f(x + w)},${f(y + r)}` : ''}V${f(y + h)}Z`
+}
+
+// The frame every SVG chart shares: padding, y axis and gridlines at 11px, a baseline, a title and a description.
+// Text is set in CSS (svg.ch text), the SVG is drawn at its real pixel width, so it never scales down.
+let chartSeq = 0
+function chartFrame({ W, H, max, step, title, desc, left, right = 12, top = 16, bottom = 24 }) {
+  const id = `ch${++chartSeq}`
+  const x0 = left ?? Math.max(38, axisFmt(max).length * 7 + 12), x1 = W - right, y0 = top, y1 = H - bottom
+  const y = (v) => y1 - ((y1 - y0) * Math.min(Math.max(v, 0), max)) / max
+  let grid = ''
+  for (let v = step; v <= max + 1e-9; v += step) {
+    grid += `<line class="gl" x1="${x0}" x2="${x1}" y1="${y(v)}" y2="${y(v)}"/><text class="ax" x="${x0 - 6}" y="${y(v) + 4}" text-anchor="end">${axisFmt(v)}</text>`
+  }
+  grid += `<line class="base" x1="${x0}" x2="${x1}" y1="${y1}" y2="${y1}"/><text class="ax" x="${x0 - 6}" y="${y1 + 4}" text-anchor="end">$0</text>`
+  // x labels, thinned so they never touch; the last one always stays.
+  const xlabels = (list) => {
+    const keep = []
+    let edge = Infinity
+    for (const l of [...list].reverse()) {
+      const w = String(l.text).length * 6.8 + 10
+      if (l.x + w / 2 <= edge) { keep.push(l); edge = l.x - w / 2 }
+    }
+    return keep.map((l) => `<text class="ax" x="${l.x}" y="${y1 + 16}" text-anchor="middle"${l.bold ? ' font-weight="700" style="fill:var(--text)"' : ''}>${esc(l.text)}</text>`).join('')
+  }
+  const hatch = `<pattern id="${id}h" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="none"/><line x1="0" y1="0" x2="0" y2="6" stroke="var(--viz-ghost)" stroke-width="3"/></pattern>`
+  return {
+    id, x0, x1, y0, y1, y, grid, xlabels,
+    open: `<svg class="ch" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="group" aria-labelledby="${id}t ${id}d"><title id="${id}t">${esc(title)}</title><desc id="${id}d">${esc(desc)}</desc><defs>${hatch}</defs>`,
+    close: '</svg>',
+  }
+}
+
+// Stacked columns on one frame. item: {label, segs:[{v, fill, stroke}], total, tip, job, dim, ghost, note, mark}.
+// Outliers are clipped at the axis with a break marker and their value; the biggest bar is labelled with its id.
+function barChart({ W, H, items, title, desc, maxBar = 64, line, labelAll = false, right = 12, noteCls = '' }) {
+  const tops = items.map((i) => Math.max(i.total, i.ghost || 0))
+  const nz = tops.filter((v) => v > 0).sort((a, b) => a - b)
+  const biggest = nz[nz.length - 1] || 0.01
+  let cap = biggest
+  if (nz.length >= 8) { const p90 = nz[Math.min(nz.length - 1, Math.floor(nz.length * 0.9))]; if (biggest > 2.5 * p90) cap = p90 * 1.35 }
+  const { max, step } = niceAxis(cap)
+  const F = chartFrame({ W, H, max, step, title, desc, right: line ? Math.max(right, 80) : right })
+  const n = items.length, band = (F.x1 - F.x0) / Math.max(n, 1)
+  const bw = Math.max(2, Math.min(maxBar, band * 0.66))
+  const gap = 2
+  const maxI = tops.indexOf(biggest)
+  let bars = '', hits = '', labels = '', notes = ''
+  items.forEach((it, i) => {
+    const cx = F.x0 + band * (i + 0.5), x = cx - bw / 2
+    let cum = 0
+    const drawn = it.segs.filter((s) => s.v > 0)
+    let svg = ''
+    drawn.forEach((s, k) => {
+      const yTop = F.y(cum + s.v)
+      let yBot = F.y(cum)
+      cum += s.v
+      if (yBot - yTop <= 0.4) return
+      if (k > 0 && yBot - yTop > 4) yBot -= gap // 2px of surface between fills
+      const h = yBot - yTop
+      const last = k === drawn.length - 1 || F.y(cum) <= F.y0 + 0.5
+      const r = last ? Math.min(4, bw / 2) : 0
+      const top = yTop
+      svg += s.stroke
+        ? `<path d="${topPath(x + 0.75, top + 0.75, bw - 1.5, Math.max(h - 1.5, 0.5), r)}" style="fill:${s.fill}" stroke="${s.stroke}" stroke-width="1.5"/>`
+        : `<path d="${topPath(x, top, bw, h, r)}" style="fill:${s.fill}"/>`
+    })
+    if (it.ghost > it.total) {
+      const yg = F.y(it.ghost), yt = F.y(it.total)
+      svg += `<rect x="${x + 0.75}" y="${yg + 0.75}" width="${bw - 1.5}" height="${Math.max(yt - yg - 1.5, 0)}" fill="url(#${F.id}h)" stroke="var(--viz-median)" stroke-width="1" stroke-dasharray="3 3"/>`
+    }
+    bars += `<g${it.dim ? ' opacity=".55"' : ''}>${svg}</g>`
+    const topV = Math.max(it.total, it.ghost || 0)
+    if (topV > max) { // clipped: a break in the bar and the value above it
+      const yb = F.y0 + 7
+      bars += `<path d="M${x - 2},${yb + 3}L${x + bw + 2},${yb - 3}M${x - 2},${yb + 8}L${x + bw + 2},${yb + 2}" stroke="var(--bg)" stroke-width="2.5" fill="none"/>`
+    }
+    const txt = it.note || (labelAll || i === maxI || topV > max ? `${i === maxI && !labelAll && it.id ? `${it.id} ` : ''}${money(it.total)}` : '')
+    if (txt) {
+      const ty = Math.max(F.y(topV), F.y0) - 5
+      const anchor = cx > F.x1 - 56 ? 'end' : cx < F.x0 + 36 ? 'start' : 'middle'
+      notes += `<text class="lab ${it.noteCls || noteCls}" x="${anchor === 'end' ? Math.min(cx + bw / 2, F.x1) : anchor === 'start' ? Math.max(cx - bw / 2, F.x0) : cx}" y="${ty}" text-anchor="${anchor}">${esc(txt)}</text>`
+    }
+    if (it.mark) {
+      const ym = F.y(it.mark.v)
+      notes += `<line class="feeline" x1="${cx - bw / 2 - 12}" x2="${cx + bw / 2 + 12}" y1="${ym}" y2="${ym}"/>`
+        + (it.mark.label ? `<text class="lab" x="${cx + bw / 2 + 16}" y="${ym + (it.mark.label.length > 1 ? -1 : 4)}">${it.mark.label.map((l, k) => `<tspan x="${cx + bw / 2 + 16}" dy="${k ? 12 : 0}">${esc(l)}</tspan>`).join('')}</text>` : '')
+    }
+    const aria = it.tip.replace(/\{(\w+)\}/g, '$1').replace(/\s*\n\s*/g, ', ').replace(/\s{2,}/g, ' ')
+    hits += `<rect class="hit" x="${band * i + F.x0}" y="${F.y0 - 14}" width="${band}" height="${F.y1 - F.y0 + 14}" data-tip="${esc(it.tip)}" aria-label="${esc(aria)}" role="${it.job ? 'button' : 'img'}"${n <= 45 ? ' tabindex="0"' : ''}${it.job ? ` data-job="${esc(it.job)}"` : ''}/>`
+  })
+  let ref = ''
+  if (line && line.v > 0) {
+    const yl = F.y(line.v)
+    ref = `<line class="ref" x1="${F.x0}" x2="${F.x1}" y1="${yl}" y2="${yl}"/><text class="lab" x="${F.x1 + 8}" y="${yl + 4 - (line.label.length - 1) * 6}">${line.label.map((l, k) => `<tspan x="${F.x1 + 8}" dy="${k ? 12 : 0}">${esc(l)}</tspan>`).join('')}</text>`
+  }
+  const xl = F.xlabels(items.map((it, i) => ({ x: F.x0 + band * (i + 0.5), text: it.label, bold: i === n - 1 })))
+  return `${F.open}${F.grid}${bars}${ref}${notes}${xl}${hits}${F.close}`
+}
+
+// How wide a chart may be: the page's content box, or one column of a two-column row.
+function plotWidth(cols = 1) {
+  const vw = document.documentElement.clientWidth || innerWidth
+  const avail = Math.min(vw, 1400) - (vw <= 640 ? 32 : 64)
+  return cols === 2 && avail >= 1148 ? Math.floor((avail - 28) / 2) : avail
+}
+
+// One time-range control for every view, and the same labels everywhere.
+const RANGES = { '7d': 7, '30d': 30, '90d': 90, all: 0 }
+const segBtn = (key, val, label) => `<button class="seg-btn ${ui[key] === val ? 'on' : ''}" data-ui="${key}" data-val="${val}" aria-pressed="${ui[key] === val}">${label}</button>`
+function rangeControl(count, extra = '') {
+  return `<div class="sec-h rangebar"><span class="count">${count}</span><div class="tools" role="group" aria-label="Time range">
+    ${segBtn('range', '7d', '7 days')}${segBtn('range', '30d', '30 days')}${segBtn('range', '90d', '90 days')}${segBtn('range', 'all', 'all')}${extra}</div></div>`
+}
+
 // ---- Costs view ----------------------------------------------------------
 
 let PRICES = null
 fetchText('config.json').then((t) => { PRICES = JSON.parse(t).prices_usd_per_mtok || null; lastCosts = ''; render() }).catch(() => {})
 
-// Eight roles folded to six series; colors validated for the dark card surface.
+// Eight roles folded to six; each takes a lightness step inside its agent's hue (darkest first).
 const ROLE_GROUPS = [['builder', 'builder'], ['spec-writer', 'spec'], ['intake', 'intake'], ['reviewer-code', 'code review'], ['approver', 'approver'], ['other', 'ux · ui · security']]
-const ROLE_COLORS = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#0ca30c']
+const ROLE_STEP = { builder: 0, 'spec-writer': 1, 'reviewer-code': 2, other: 2, intake: 3, approver: 3 }
 function roleGroup(role) {
   const r = String(role).replace(/-s\d+$/, '')
   return ROLE_GROUPS.some(([k]) => k === r) ? r : 'other'
@@ -1299,14 +1622,15 @@ const median = (xs) => {
   const s = [...xs].sort((a, b) => a - b)
   return s.length ? (s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2) : 0
 }
-function niceStep(x) {
-  const p = 10 ** Math.floor(Math.log10(x || 1))
-  return [1, 2, 2.5, 5, 10].map((m) => m * p).find((s) => s >= x) || p * 10
-}
-const heatBg = (v, max) => `color-mix(in srgb, #3987e5 ${Math.round(12 + 70 * (max ? v / max : 0))}%, var(--card))`
 
-const RANGES = { '7d': 7, '30d': 30, '90d': 90, all: 0 }
-const segBtn = (key, val, label) => `<button class="seg-btn ${ui[key] === val ? 'on' : ''}" data-ui="${key}" data-val="${val}">${label}</button>`
+// A neutral cool ramp for magnitude grids (never an agent hue); lightest is largest, text picks the readable ink.
+function rampBg(v, max) {
+  const f = max ? v / max : 0, a = [0x2b, 0x2e, 0x3b], b = [0xa3, 0xa8, 0xbd]
+  const rgb = a.map((x, i) => Math.round(x + (b[i] - x) * (0.1 + 0.9 * f)))
+  const lum = (c) => { const l = c.map((x) => { x /= 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4 }); return 0.2126 * l[0] + 0.7152 * l[1] + 0.0722 * l[2] }
+  const L = lum(rgb)
+  return { bg: `rgb(${rgb})`, fg: (L + 0.05) / (0.008 + 0.05) > (0.78 + 0.05) / (L + 0.05) ? '#14151b' : '#e4e5ea' }
+}
 
 function rangeJobs() {
   const days = RANGES[ui.range]
@@ -1316,23 +1640,80 @@ function rangeJobs() {
 
 function costsPage() {
   const js = rangeJobs()
-  const bar = `<div class="sec-h rangebar"><span class="count">${js.length} of ${jobs.length} jobs</span><div class="tools">
-    ${segBtn('range', '7d', '7 days')}${segBtn('range', '30d', '30 days')}${segBtn('range', '90d', '90 days')}${segBtn('range', 'all', 'all')}
-    <span style="width:10px"></span>${segBtn('per', 'auto', 'auto')}${segBtn('per', 'job', 'per job')}${segBtn('per', 'day', 'per day')}${segBtn('per', 'week', 'per week')}</div></div>`
-  return `<div class="cv">${bar}${js.length ? costsFor(js) : '<p class="note">No jobs started in this range.</p>'}
+  const extra = `<span class="gap"></span>${segBtn('per', 'auto', 'auto')}${segBtn('per', 'job', 'per job')}${segBtn('per', 'day', 'per day')}${segBtn('per', 'week', 'per week')}
+    <span class="gap"></span>${segBtn('shade', 'agent', 'by agent')}${segBtn('shade', 'role', 'by role')}`
+  return `<div class="cv">${rangeControl(`${js.length} of ${jobs.length} jobs`, extra)}${js.length ? costsFor(js, jobs) : '<p class="note">No jobs started in this range.</p>'}
     <details class="old" ${ui.old ? 'open' : ''} data-old><summary>All tables (every job)</summary>${costsTables()}</details></div>`
 }
 
-// Same as the page above, for the jobs in the chosen range (the parameter shadows the global).
-function costsFor(jobs) {
+// Buckets of jobs (one per job, day or week), each with its stacked segments, bottom-up:
+// claude, codex, other; with "by role" each agent splits into role shades, darkest first.
+function bucketList(js, per, byRole, from, to) {
+  const startOf = (iso) => {
+    const d = new Date(iso); d.setHours(0, 0, 0, 0)
+    if (per === 'week') d.setDate(d.getDate() - ((d.getDay() + 6) % 7))
+    return d
+  }
+  const ordered = [...js].sort((a, b) => String(a.started).localeCompare(String(b.started)))
+  const buckets = new Map()
+  if (per === 'job') {
+    for (const j of ordered) buckets.set(j.id, { jobs: [j], label: `#${numOf(j)}` })
+  } else if (ordered.length || from) {
+    const first = from ? startOf(from) : startOf(ordered[0].started)
+    const last = to ? startOf(to) : startOf(ordered[ordered.length - 1].started)
+    const stepD = per === 'week' ? 7 : 1
+    for (let d = new Date(first); d <= last; d.setDate(d.getDate() + stepD)) {
+      buckets.set(d.getTime(), { start: d.getTime(), jobs: [], label: d.toLocaleDateString([], { month: 'short', day: 'numeric' }) })
+    }
+    for (const j of ordered) buckets.get(startOf(j.started).getTime())?.jobs.push(j)
+  }
+  return [...buckets.values()].map((b) => {
+    const acc = { claude: [0, 0, 0, 0], codex: [0, 0, 0, 0], other: [0, 0, 0, 0] }
+    for (const j of b.jobs) {
+      const rows = j.cost_breakdown || []
+      if (rows.length) for (const r of rows) acc[agentKey(r.agent)][ROLE_STEP[roleGroup(r.role)]] += Number(r.cost_usd || 0)
+      else { const p = partsOf(j); for (const k of AGENT_KEYS) acc[k][1] += p[k] }
+    }
+    const segs = []
+    for (const k of AGENT_KEYS) {
+      if (!byRole || k === 'other') { const v = acc[k].reduce((a, c) => a + c, 0); if (v > 0) segs.push({ v, fill: `var(--${k})` }) }
+      else acc[k].forEach((v, s) => { if (v > 0) segs.push({ v, fill: `var(--${k}-r${s + 1})` }) })
+    }
+    const parts = Object.fromEntries(AGENT_KEYS.map((k) => [k, acc[k].reduce((a, c) => a + c, 0)]))
+    const steps = [0, 1, 2, 3].map((s) => AGENT_KEYS.reduce((a, k) => a + acc[k][s], 0))
+    return { ...b, segs, parts, steps, total: partsTotal(parts) }
+  })
+}
+
+const ROLE_STEP_NAMES = ['builder', 'spec', 'review', 'intake · approver']
+function barItems(list, per, byRole) {
+  return list.map((b, i) => {
+    const j = b.jobs[0]
+    // The newest day or week is still filling up: say so, and draw it lighter.
+    const sofar = b.start !== undefined && i === list.length - 1 && Date.now() - b.start < (per === 'week' ? 7 : 1) * 864e5
+    const roles = byRole ? `\n${b.steps.map((v, s) => (v > 0.004 ? `  ${ROLE_STEP_NAMES[s].padEnd(17)}${money(v)}` : '')).filter(Boolean).join('\n')}` : ''
+    const head = per === 'job'
+      ? `${numOf(j)} · ${j.title}\n${money(b.total)} · ${j.round} round${j.round > 1 ? 's' : ''} · ${j.stage}`
+      : `${per === 'week' ? 'week of ' : ''}${b.label}${sofar ? ' (so far)' : ''} · ${b.jobs.length} job${b.jobs.length === 1 ? '' : 's'}\n${money(b.total)}`
+    return { label: b.label, id: per === 'job' ? `#${numOf(j)}` : b.label, segs: b.segs, total: b.total, dim: sofar,
+      job: per === 'job' ? j.id : b.jobs.length === 1 ? b.jobs[0].id : '', tip: `${head}\n${tipAgents(b.parts)}${roles}` }
+  })
+}
+
+function agentLegend(byRole, hasOther) {
+  if (!byRole) return `<div class="legend"><span>${sw('claude')}claude</span><span>${sw('codex')}codex</span>${hasOther ? `<span>${sw('other')}other</span>` : ''}</div>`
+  const ramp = (k) => `<span class="ramp">${[1, 2, 3, 4].map((i) => `<i class="sw" style="background:var(--${k}-r${i})"></i>`).join('')}</span>`
+  return `<div class="legend"><span>${sw('claude')}claude${ramp('claude')}</span><span>${sw('codex')}codex${ramp('codex')}</span>
+    <span>shade, darkest first: ${ROLE_STEP_NAMES.join(' · ')}</span></div>`
+}
+
+// Same as the page above, for the jobs in the chosen range (the parameter shadows the global; allJobs is every job).
+function costsFor(jobs, allJobs) {
   const rows = jobs.flatMap((j) => (j.cost_breakdown || []).map((r) => ({ ...r, job: j.id })))
   const total = jobs.reduce((s, j) => s + Number(j.cost_usd || 0), 0)
-  const agent = (a) => jobs.reduce((s, j) => s + Number((j.cost_by_agent || {})[a] || 0), 0)
+  const parts = addParts(jobs.map(partsOf))
   const merged = jobs.filter((j) => j.stage === 'merged').sort((a, b) => String(a.ended).localeCompare(String(b.ended)))
   const mc = merged.map((j) => Number(j.cost_usd || 0))
-  const half = Math.floor(mc.length / 2)
-  const avg = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0)
-  const trend = half ? Math.round(100 * (avg(mc.slice(half)) / avg(mc.slice(0, half)) - 1)) : 0
   const rework = jobs.filter((j) => j.round > 1)
   const reworkCost = rework.reduce((s, j) => s + Number(j.cost_usd || 0), 0)
   const saving = rows.reduce((s, r) => s + cacheSaving(r), 0)
@@ -1341,144 +1722,175 @@ function costsFor(jobs) {
   const t = new Map(jobs.map((j) => [j.id, times(j)]))
   const wait = jobs.reduce((s, j) => s + t.get(j.id).wait, 0)
   const top = [...jobs].sort((a, b) => b.cost_usd - a.cost_usd)[0]
-  const tile = (v, k, sub = '', extra = '') => `<div class="tile ${extra}"><div class="v">${v}</div><div class="k">${k}</div>${sub ? `<div class="s">${sub}</div>` : ''}</div>`
+
+  // Cost per merged job against the previous period of the same length; "all" compares the later half with the earlier.
+  const span = RANGES[ui.range]
+  let delta = null, vs = ''
+  if (span) {
+    const now = Date.now()
+    const prev = allJobs.filter((j) => j.stage === 'merged' && Date.parse(j.started || 0) >= now - 2 * span * 864e5 && Date.parse(j.started || 0) < now - span * 864e5)
+    if (prev.length >= 3 && mc.length) { const p = median(prev.map((j) => Number(j.cost_usd || 0))); delta = p ? Math.round(100 * (median(mc) / p - 1)) : null; vs = `vs the previous ${span} days` }
+  } else if (mc.length >= 6) {
+    const half = Math.floor(mc.length / 2), e = median(mc.slice(0, half))
+    delta = e ? Math.round(100 * (median(mc.slice(half)) / e - 1)) : null; vs = 'later half vs earlier half'
+  }
+  const tile = (v, k, sub = '', extra = '', after = '') => `<div class="tile ${extra}"><div class="v">${v}</div><div class="k">${k}</div>${sub ? `<div class="s">${sub}</div>` : ''}${after}</div>`
   const tiles = `<div class="tiles">
-    ${tile(money(total), 'total', `claude ${money(agent('claude'))} · codex ${money(agent('codex'))}`)}
-    ${tile(money(median(mc)), 'median per merged job', half ? `later half <span class="${trend > 0 ? 'up' : 'down'}">${trend > 0 ? '+' : ''}${trend}%</span> vs earlier` : '')}
-    ${tile(`${pct(reworkCost, total)}%`, 'spent on jobs with rework', `${rework.length} of ${jobs.length} jobs needed >1 round`)}
-    ${tile(PRICES ? `~${money(saving)}` : '–', 'saved by the cache', `${pct(cTok, cTok + inTok)}% of input tokens were cache reads`)}
+    ${tile(money(median(mc)), 'per merged job (median)', delta === null ? `${plural(merged.length, 'merged job')}` : `${deltaHtml(delta)} ${vs}`)}
+    ${tile(money(total), 'total', `claude ${money(parts.claude)} · codex ${money(parts.codex)}`, '', splitBar(parts, 'full'))}
+    ${tile(`${pct(rework.length, jobs.length)}%`, 'jobs with rework', `${pct(reworkCost, total)}% of the spend · ${rework.length} of ${jobs.length} needed >1 round`)}
     ${tile(mins(wait), 'waited on you', `across ${jobs.filter((j) => t.get(j.id).wait).length} jobs`)}
-    <div class="tile click" data-job="${esc(top.id)}"><div class="v">${money(top.cost_usd)}</div><div class="k">most expensive job</div><div class="k2">${esc(numOf(top))} · ${esc(top.title)}</div></div>
+    <div class="tile click" data-job="${esc(top.id)}" tabindex="0" role="button"><div class="v">${money(top.cost_usd)}</div><div class="k">most expensive job</div><div class="k2">${esc(numOf(top))} · ${esc(top.title)}</div></div>
   </div>`
 
-  // Chart 1: stacked bars by role. One per job while that stays readable (<= 60),
+  // Chart 1: stacked by agent (role as shade on request). One bar per job while that stays readable (<= 60),
   // then one per day (<= 90 days) or per week; empty days and weeks keep their slot.
+  const byRole = ui.shade === 'role'
   const ordered = [...jobs].sort((a, b) => String(a.started).localeCompare(String(b.started)))
   const spanDays = ordered.length ? (Date.parse(ordered[ordered.length - 1].started) - Date.parse(ordered[0].started)) / 864e5 : 0
   const per = ui.per !== 'auto' ? ui.per : ordered.length <= 60 ? 'job' : spanDays <= 90 ? 'day' : 'week'
-  const startOf = (iso) => {
-    const d = new Date(iso); d.setHours(0, 0, 0, 0)
-    if (per === 'week') d.setDate(d.getDate() - ((d.getDay() + 6) % 7))
-    return d
-  }
-  const buckets = new Map()
-  if (per === 'job') {
-    for (const j of ordered) buckets.set(j.id, { jobs: [j], label: numOf(j) })
-  } else if (ordered.length) {
-    const end = startOf(ordered[ordered.length - 1].started)
-    for (let d = startOf(ordered[0].started); d <= end; d.setDate(d.getDate() + (per === 'week' ? 7 : 1))) {
-      buckets.set(d.getTime(), { start: d.getTime(), jobs: [], label: d.toLocaleDateString([], { day: '2-digit', month: '2-digit' }) })
-    }
-    for (const j of ordered) buckets.get(startOf(j.started).getTime())?.jobs.push(j)
-  }
-  const list = [...buckets.values()].map((b) => {
-    const by = new Map(ROLE_GROUPS.map(([k]) => [k, 0]))
-    for (const j of b.jobs) for (const r of j.cost_breakdown || []) by.set(roleGroup(r.role), by.get(roleGroup(r.role)) + Number(r.cost_usd || 0))
-    return { ...b, by, total: b.jobs.reduce((s, j) => s + Number(j.cost_usd || 0), 0) }
-  })
-  const maxC = Math.max(...list.map((b) => b.total), 0.01)
-  const step = niceStep(maxC / 4)
-  const ceil = Math.ceil(maxC / step) * step
-  const grid = []
-  for (let v = step; v <= ceil + 1e-9; v += step) grid.push(`<div class="gl" style="bottom:${(100 * v) / ceil}%"><span>$${v % 1 ? v.toFixed(1) : v}</span></div>`)
-  const med = median(list.filter((b) => b.jobs.length).map((b) => b.total))
-  const every = Math.ceil(list.length / (innerWidth < 640 ? 7 : 20))
   const unit = { job: 'job', day: 'day', week: 'week' }[per]
-  const bars = list.map((b, i) => {
-    const roles = ROLE_GROUPS.filter(([k]) => b.by.get(k) > 0.005).map(([k, l]) => `  ${l.padEnd(19)}${money(b.by.get(k))}`).join('\n')
-    const j = b.jobs[0]
-    // The newest day or week is still filling up: say so, and draw it lighter.
-    const sofar = b.start !== undefined && i === list.length - 1 && Date.now() - b.start < (per === 'week' ? 7 : 1) * 864e5
-    const tip = per === 'job'
-      ? `${numOf(j)} · ${j.title}\n${money(j.cost_usd)} · ${j.round} round${j.round > 1 ? 's' : ''} · ${j.stage}\n${roles}`
-      : `${per === 'week' ? 'week of ' : ''}${b.label}${sofar ? ' (so far)' : ''} · ${b.jobs.length} job${b.jobs.length === 1 ? '' : 's'} · ${money(b.total)}\n${roles}`
-    const segs = ROLE_GROUPS.map(([k], n) => b.by.get(k) > 0 ? `<i style="flex-grow:${b.by.get(k)};background:${ROLE_COLORS[n]}"></i>` : '').join('')
-    const open = b.jobs.length === 1 ? `data-job="${esc(j.id)}"` : ''
-    return `<div class="bcol" ${open} data-tip="${esc(tip)}"><div class="bstack" style="height:${(100 * b.total) / ceil}%${sofar ? ';opacity:.55' : ''}">${segs}</div>${i % every ? '' : `<span class="bx">${esc(b.label)}</span>`}</div>`
-  }).join('')
-  const gap = list.length > 80 ? 1 : list.length > 40 ? 2 : 4
-  const legend = `<div class="legend">${ROLE_GROUPS.map(([, l], i) => `<span><i style="background:${ROLE_COLORS[i]}"></i>${l}</span>`).join('')}</div>`
-  const chart1 = `<h2>Cost per ${unit}</h2><p class="sub">${per === 'job'
-      ? 'Each bar is one job, oldest left, split by role. Hover for the breakdown, click to open the job.'
-      : `Each bar is one ${unit}, summed over the jobs started in it, split by role. Over 60 jobs the chart groups by ${unit} on its own; the buttons above override it.`}</p>
-    ${legend}<div class="chart">${grid.join('')}<div class="med" style="bottom:${(100 * med) / ceil}%"><span>median\n${money(med)}/${unit}</span></div><div class="bars" style="gap:${gap}px">${bars}</div></div>
-    <div style="height:26px"></div>`
+  const list = bucketList(jobs, per, byRole)
+  const med = median(list.filter((b) => b.jobs.length).map((b) => b.total))
+  const W = plotWidth(), H = W < 640 ? 210 : 250
+  const hasOther = parts.other > 0.004
+  const chart1 = `<h2>Cost per ${unit}${per === 'job' ? ', oldest left' : ''}</h2><p class="sub">${per === 'job'
+      ? 'Each bar is one job, split by agent. Hover or focus for the breakdown, click to open the job.'
+      : `Each bar is one ${unit}, summed over the jobs started in it, split by agent. Over 60 jobs the chart groups by ${unit} on its own; the buttons above override it.`}
+      ${money(total)} in all.</p>
+    ${agentLegend(byRole, hasOther)}${barChart({ W, H, items: barItems(list, per, byRole), title: `Cost per ${unit}`, desc: `${list.length} bars, ${money(total)} in total, median ${money(med)} per ${unit}.`,
+      line: { v: med, label: ['median', `${money(med)}/${unit}`] } })}`
+
+  // Chart 1b: the daily trend, always per day over the chosen range (skipped when chart 1 already is per day).
+  let daily = ''
+  if (per !== 'day' && jobs.length) {
+    const days = span || Math.min(90, Math.max(14, Math.ceil(spanDays) + 1))
+    const to = new Date(), from = new Date(to.getTime() - (days - 1) * 864e5)
+    const dl = bucketList(jobs, 'day', byRole, from.toISOString(), to.toISOString())
+    daily = `<h2>Cost per day</h2><p class="sub">The last ${days} days by day started, split by agent; the newest day is still filling up.</p>
+      ${barChart({ W, H: 190, items: barItems(dl, 'day', byRole), title: 'Cost per day', desc: `${dl.length} days, ${money(dl.reduce((s, b) => s + b.total, 0))} in total.`, maxBar: 28 })}`
+  }
 
   // Chart 2: merged jobs in order, with a rolling mean whose window grows with the count.
-  const W = 640, H = 190, P = 30
-  const fs = Math.round((11 * W) / Math.max(320, Math.min(innerWidth - 32, W)))   // 11 px on screen at any width
-  const jStep = niceStep(Math.max(...mc, 0.01) / 3)
-  const jCeil = Math.ceil(Math.max(...mc, 0.01) / jStep) * jStep
+  const colW = plotWidth(2), H2 = 200
   const win = Math.max(5, Math.round(mc.length / 15))
-  const rad = mc.length > 80 ? 2.5 : mc.length > 40 ? 3.5 : 4.5
-  const xs = (i) => P + (mc.length > 1 ? (i * (W - 2 * P)) / (mc.length - 1) : (W - 2 * P) / 2)
-  const ys = (v) => H - P + 6 - ((H - 2 * P) * v) / jCeil
+  const avg = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0)
   const roll = mc.map((_, i) => avg(mc.slice(Math.max(0, i - win + 1), i + 1)))
-  const path = roll.map((v, i) => `${i ? 'L' : 'M'}${xs(i).toFixed(1)},${ys(v).toFixed(1)}`).join('')
-  const dots = merged.map((j, i) => `<circle cx="${xs(i)}" cy="${ys(mc[i])}" r="${rad}" fill="var(--muted)" stroke="var(--bg)" stroke-width="${rad > 3 ? 2 : 1}"
-      data-job="${esc(j.id)}" data-tip="${esc(`${numOf(j)} · ${j.title}\n${money(mc[i])} · rolling mean ${money(roll[i])}`)}" style="cursor:pointer"/>`).join('')
-  const step2 = jStep, ceil2 = jCeil
-  const chart2 = `<div class="trend"><h2>Is it getting cheaper?</h2><p class="sub">Merged jobs in the order they finished; the line is the mean of the last ${win}.</p>
-    <svg viewBox="0 0 ${W} ${H}">${[step2, step2 * 2, step2 * 3].filter((v) => v <= ceil2).map((v) => `<line x1="${P}" x2="${W - P}" y1="${ys(v)}" y2="${ys(v)}" stroke="var(--line)"/><text x="${P - 6}" y="${ys(v) + 4}" fill="var(--muted)" font-size="${fs}" text-anchor="end" font-family="monospace">$${v}</text>`).join('')}<line x1="${P}" x2="${W - P}" y1="${ys(0)}" y2="${ys(0)}" stroke="var(--muted)"/>
-      <path d="${path}" fill="none" stroke="#3987e5" stroke-width="2"/>${dots}
-      <text x="${W - P}" y="${ys(roll[roll.length - 1] || 0) - 8}" fill="var(--text)" font-size="${fs}" text-anchor="end" font-family="monospace">${money(roll[roll.length - 1])}</text></svg></div>`
+  const ax2 = niceAxis(Math.max(...mc, 0.01))
+  const F2 = chartFrame({ W: colW, H: H2, ...ax2, right: 64, top: 12, title: 'Is it getting cheaper?', desc: `${mc.length} merged jobs in order of finishing, rolling mean of the last ${win}, ${mc.length ? `now ${money(roll[roll.length - 1])}` : ''}.` })
+  const xs = (i) => F2.x0 + 8 + (mc.length > 1 ? (i * (F2.x1 - F2.x0 - 16)) / (mc.length - 1) : (F2.x1 - F2.x0 - 16) / 2)
+  const rad = mc.length > 80 ? 2.5 : mc.length > 40 ? 3 : 4
+  const path = roll.map((v, i) => `${i ? 'L' : 'M'}${xs(i).toFixed(1)},${F2.y(v).toFixed(1)}`).join('')
+  const dots = merged.map((j, i) => `<circle class="pt" cx="${xs(i)}" cy="${F2.y(mc[i])}" r="${rad}" stroke-width="1.5"/>`).join('')
+  const hits = merged.map((j, i) => `<circle class="hit" cx="${xs(i)}" cy="${F2.y(mc[i])}" r="${Math.max(rad + 5, 9)}" data-job="${esc(j.id)}" role="button" aria-label="${esc(`${numOf(j)}: ${money(mc[i])}`)}"
+      data-tip="${esc(`${numOf(j)} · ${j.title}\n${money(mc[i])} · rolling mean ${money(roll[i])}\n${tipAgents(partsOf(j))}`)}"${mc.length <= 40 ? ' tabindex="0"' : ''}/>`).join('')
+  const last = mc.length - 1
+  const chart2 = !mc.length ? '<div class="trend"><h2>Is it getting cheaper?</h2><p class="sub">No merged jobs in this range yet.</p></div>' : `<div class="trend"><h2>Is it getting cheaper?</h2><p class="sub">Dots are merged jobs in the order they finished; the line is the mean of the last ${win}.</p>
+    ${F2.open}${F2.grid}${dots}<path d="${path}" fill="none" stroke="var(--text)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    ${last >= 0 ? `<circle cx="${xs(last)}" cy="${F2.y(roll[last])}" r="5" fill="var(--text)" stroke="var(--bg)" stroke-width="2"/><text class="lab" x="${xs(last) + 11}" y="${F2.y(roll[last]) + 4}">${money(roll[last])}</text>` : ''}
+    ${F2.xlabels([{ x: F2.x0 + 8, text: 'oldest' }, { x: F2.x1 - 8, text: 'latest', bold: true }])}${hits}${F2.close}</div>`
 
-  // Risk × size matrix.
+  // Risk × size matrix: a neutral ramp, the number in every cell.
   const RISK = ['high', 'medium', 'low'], SIZE = ['small', 'medium', 'large']
   const cell = (r, s) => jobs.filter((j) => (j.intake || {}).risk === r && (j.intake || {}).size === s)
   const maxAvg = Math.max(...RISK.flatMap((r) => SIZE.map((s) => avg(cell(r, s).map((j) => Number(j.cost_usd || 0))))))
-  const matrix = `<div><h2>Risk × size</h2><p class="sub">Mean cost per job; darker is more expensive.</p><table class="heat"><tr><th></th>${SIZE.map((s) => `<th>${s}</th>`).join('')}</tr>
+  const matrix = `<div><h2>Risk × size</h2><p class="sub">Mean cost per job; lighter is more expensive.</p><table class="heat"><tr><th></th>${SIZE.map((s) => `<th>${s}</th>`).join('')}</tr>
     ${RISK.map((r) => `<tr><th class="risk-${r}">${r}</th>${SIZE.map((s) => {
       const c = cell(r, s), a = avg(c.map((j) => Number(j.cost_usd || 0)))
-      return c.length ? `<td style="background:${heatBg(a, maxAvg)}" data-tip="${esc(`${r} risk · ${s}\n${c.length} jobs · total ${money(a * c.length)}\nmean rounds ${avg(c.map((j) => j.round)).toFixed(1)}`)}">${money(a)}<small>${c.length} job${c.length > 1 ? 's' : ''}</small></td>` : '<td class="nil">–</td>'
+      const k = rampBg(a, maxAvg)
+      return c.length ? `<td style="background:${k.bg};color:${k.fg}" data-tip="${esc(`${r} risk · ${s}\n${c.length} jobs · total ${money(a * c.length)}\nmean rounds ${avg(c.map((j) => j.round)).toFixed(1)}`)}">${money(a)}<small>${c.length} job${c.length > 1 ? 's' : ''}</small></td>` : '<td class="nil">–</td>'
     }).join('')}</tr>`).join('')}</table></div>`
 
-  // Role × model heatmap.
-  const models = [...new Set(rows.map((r) => `${r.agent} · ${shortModel(r.model)}`))]
-  const rm = new Map()
-  for (const r of rows) { const k = `${roleGroup(r.role)}|${r.agent} · ${shortModel(r.model)}`; rm.set(k, (rm.get(k) || 0) + Number(r.cost_usd || 0)) }
-  const maxRm = Math.max(...rm.values(), 0)
-  const roleModel = `<div><h2>Role × model</h2><p class="sub">Where the money goes, summed over all jobs.</p><table class="heat"><tr><th></th>${models.map((m) => `<th>${esc(m)}</th>`).join('')}</tr>
-    ${ROLE_GROUPS.map(([k, l]) => `<tr><th>${l}</th>${models.map((m) => {
-      const v = rm.get(`${k}|${m}`) || 0
-      return v ? `<td style="background:${heatBg(v, maxRm)}" data-tip="${esc(`${l} on ${m}\n${money(v)} · ${pct(v, total)}% of all`)}">${money(v)}<small>${pct(v, total)}%</small></td>` : '<td class="nil">–</td>'
-    }).join('')}</tr>`).join('')}</table></div>`
+  // Cost per role: one bar each on a common scale, claude then codex; the models are in the tooltip.
+  const byRoleMap = new Map()
+  for (const r of rows) {
+    const g = roleGroup(r.role)
+    const e = byRoleMap.get(g) || { p: { claude: 0, codex: 0, other: 0 }, models: new Map() }
+    e.p[agentKey(r.agent)] += Number(r.cost_usd || 0)
+    const mk = `${r.agent} · ${shortModel(r.model)}`
+    e.models.set(mk, (e.models.get(mk) || 0) + Number(r.cost_usd || 0))
+    byRoleMap.set(g, e)
+  }
+  const roleList = ROLE_GROUPS.map(([k, l]) => ({ l, e: byRoleMap.get(k) })).filter((x) => x.e).sort((a, b) => partsTotal(b.e.p) - partsTotal(a.e.p))
+  const rowTotal = roleList.reduce((s, x) => s + partsTotal(x.e.p), 0)
+  const maxRole = Math.max(...roleList.map((x) => partsTotal(x.e.p)), 0.01)
+  const roleBars = `<div><h2>Cost per role</h2><p class="sub">Where the money goes, summed over the jobs above; one scale, claude then codex.</p>
+    <div class="rbars">${roleList.map(({ l, e }) => {
+      const v = partsTotal(e.p)
+      const tipText = `${l} · ${money(v)}\n${tipAgents(e.p)}\n${[...e.models].map(([m, c]) => `  ${m} ${money(c)}`).join('\n')}`
+      return `<div class="rb" data-tip="${esc(tipText)}"><span class="rl">${esc(l)}</span>
+        <span class="rt"><span class="split wide" style="width:${Math.max(2, (100 * v) / maxRole)}%" role="img" aria-label="${esc(`${l}: ${splitText(e.p)}`)}">${AGENT_KEYS.filter((k) => e.p[k] > 0.004).map((k) => `<i style="flex:${e.p[k]} 1 0;background:var(--${k})"></i>`).join('')}</span></span>
+        <span class="rv">${money(v)} · ${pct(v, rowTotal)}%</span></div>`
+    }).join('')}</div></div>`
 
-  // Cache per model.
+  // Cache per model; what it saved sits in this section's header.
+  const swKey = (key) => sw(agentKey(String(key).split(' · ')[0]))
   const cm = group(rows, (r) => `${r.agent} · ${shortModel(r.model)}`)
   const cacheBody = cm.map((g) => {
     const s = rows.filter((r) => `${r.agent} · ${shortModel(r.model)}` === g.key).reduce((a, r) => a + cacheSaving(r), 0)
-    return `<tr><td>${esc(g.key)}</td><td class="n">${tokens(g.input)}</td><td class="n">${tokens(g.cached)}</td><td class="n">${tokens(g.output)}</td>
-      <td class="n">${bar(pct(g.cached, g.cached + g.input))}</td><td class="n">${money(g.cost)}</td><td class="n">${PRICES ? `~${money(s)}` : '–'}</td></tr>`
+    return `<tr><td>${swKey(g.key)}${esc(g.key)}</td><td class="n">${tokens(g.input)}</td><td class="n">${tokens(g.cached)}</td><td class="n">${tokens(g.output)}</td>
+      <td class="n">${pct(g.cached, g.cached + g.input)}%</td><td class="n">${money(g.cost)}</td><td class="n">${PRICES ? `~${money(s)}` : '–'}</td></tr>`
   }).join('')
-  const cache = `<h2>Cache</h2><p class="sub">What each model read from the cache, and roughly what it would have cost at the full input price.</p>
+  const cache = `<h2>Cache</h2><p class="cache-sav"><b>${PRICES ? `~${money(saving)}` : '–'}</b>saved by the cache · ${pct(cTok, cTok + inTok)}% of input tokens were cache reads</p>
+    <p class="sub">What each model read from the cache. "~" marks an estimate: the cached tokens priced at the full input price instead of the cache-read price, from config.json.</p>
     <table class="costs"><thead><tr><th>agent · model</th><th class="n">input</th><th class="n">cached</th><th class="n">output</th><th class="n">cache share</th><th class="n">cost</th><th class="n">saved</th></tr></thead><tbody>${cacheBody}</tbody></table>`
 
-  return `${tiles}${chart1}<div class="grid2">${chart2}${matrix}</div><div class="grid2">${roleModel}<div>${cache}</div></div>`
+  return `${tiles}${chart1}${daily}<div class="grid2">${chart2}${matrix}</div><div class="grid2">${roleBars}<div>${cache}</div></div>`
 }
 
 // ---- Board and costs controls, tooltips ---------------------------------
 
+const UI_URL = { range: '30d', per: 'auto', shade: 'agent' } // kept in the query string, so a link keeps the view
+function syncUrl() {
+  const u = new URL(location.href)
+  for (const [k, d] of Object.entries(UI_URL)) { if (ui[k] === d) u.searchParams.delete(k); else u.searchParams.set(k, ui[k]) }
+  history.replaceState(history.state, '', u)
+}
 document.addEventListener('click', (e) => {
   const u = e.target.closest('[data-ui]')
   if (u) {
     const k = u.dataset.ui
     ui[k] = k === 'limit' ? Number(u.dataset.val) : u.dataset.val
+    if (k in UI_URL) syncUrl()
     return render()
   }
+  const q = e.target.closest('#rl-btn')
+  if (q) {
+    ui.legend = !ui.legend
+    applyLegend()
+  }
 })
+function applyLegend() {
+  const b = $('rl-btn'), l = $('rlegend')
+  if (!b || !l) return
+  b.setAttribute('aria-expanded', String(ui.legend))
+  if (ui.legend) l.removeAttribute('data-collapsed'); else l.setAttribute('data-collapsed', '')
+}
 document.addEventListener('toggle', (e) => { if (e.target.matches?.('[data-old]')) ui.old = e.target.open }, true)
 document.addEventListener('input', (e) => { if (e.target.id === 'q') { ui.q = e.target.value; ui.limit = 0; render() } })
 const tip = $('tip')
+const tipHtml = (s) => esc(s).replace(/\{(claude|codex|other)\}/g, '<i class="sw $1" style="background:var(--$1)"></i>')
+function showTip(el, x, y, above) {
+  tip.innerHTML = tipHtml(el.dataset.tip)
+  tip.style.display = 'block'
+  const left = Math.max(8, Math.min(x, innerWidth - tip.offsetWidth - 8))
+  const flip = above ? y - tip.offsetHeight - 8 : y + 16 + tip.offsetHeight > innerHeight ? y - tip.offsetHeight - 10 : y + 16
+  tip.style.left = `${left}px`; tip.style.top = `${Math.max(8, flip)}px`
+}
 document.addEventListener('mousemove', (e) => {
   const el = e.target.closest?.('[data-tip]')
   if (!el) { tip.style.display = 'none'; return }
-  tip.textContent = el.dataset.tip
-  tip.style.display = 'block'
-  const x = Math.min(e.clientX + 14, innerWidth - tip.offsetWidth - 8)
-  const y = e.clientY + 16 + tip.offsetHeight > innerHeight ? e.clientY - tip.offsetHeight - 10 : e.clientY + 16
-  tip.style.left = `${x}px`; tip.style.top = `${y}px`
+  showTip(el, e.clientX + 14, e.clientY)
 })
+// The same tooltip on keyboard focus.
+document.addEventListener('focusin', (e) => {
+  const el = e.target.closest?.('[data-tip]')
+  if (el && el.matches(':focus-visible')) { const r = el.getBoundingClientRect(); showTip(el, r.left + r.width / 2, r.top, true) }
+})
+document.addEventListener('focusout', () => { tip.style.display = 'none' })
+addEventListener('scroll', () => { tip.style.display = 'none' }, { passive: true })
+let rz
+addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => { lastCosts = ''; lastPlan = ''; render() }, 150) })
 
 // ---- Subscription view ---------------------------------------------------
 // What the factory's jobs in every repo would have cost on the API, month by month,
@@ -1486,7 +1898,7 @@ document.addEventListener('mousemove', (e) => {
 
 let lastPlan = ''
 const plan = { at: 0, data: null, err: null }
-const AGENTS = [['claude', '#3987e5'], ['codex', '#d95926']]
+const AGENTS = ['claude', 'codex']
 
 async function loadPlan() {
   // It reads every repo's jobs; twice a minute is plenty, unless the server is still reading the sessions.
@@ -1504,6 +1916,13 @@ async function loadPlan() {
 // Older jobs have no cost_by_agent: all their cost was Claude's.
 const agentCost = (j, a) => Number(j.cost_by_agent ? j.cost_by_agent[a] || 0 : a === 'claude' ? j.cost_usd || 0 : 0)
 const monthOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+
+// The directory an outside session ran in: "neo:/home/me/code/app/.claude/worktrees/agent-1" -> machine "neo", "…/worktrees/agent-1".
+function dirLabel(cwd) {
+  const m = String(cwd).match(/^([A-Za-z0-9_.-]+):(\/.*)$/)
+  const segs = (m ? m[2] : String(cwd)).replace(/\/+$/, '').split('/').filter(Boolean)
+  return { machine: m ? m[1] : '', short: `${segs.length > 2 ? '…/' : '/'}${segs.slice(-2).join('/')}` }
+}
 
 function planPage() {
   if (plan.err === 'old-server') {
@@ -1534,110 +1953,185 @@ function planPage() {
   const starts = all.map((j) => Date.parse(j.started))
   if (firstOut) starts.push(new Date(+firstOut.slice(0, 4), +firstOut.slice(5) - 1, 1).getTime())
   const first = new Date(Math.min(...starts))
-  const months = []
+  const allMonths = []
   for (let d = new Date(first.getFullYear(), first.getMonth(), 1); d <= now; d = new Date(d.getFullYear(), d.getMonth() + 1, 1)) {
     const end = new Date(d.getFullYear(), d.getMonth() + 1, 1)
     const share = end > now ? (now - d) / (end - d) : 1
     const key = monthOf(d)
     const jobs = all.filter((j) => monthOf(new Date(j.started)) === key)
-    const row = { key, label: d.toLocaleDateString([], { month: 'short', year: 'numeric' }), share, jobs: jobs.length, api: {}, fac: {}, out: {}, fee: {} }
-    for (const [a] of AGENTS) {
+    const monthlyFee = Object.fromEntries(AGENTS.map((a) => [a, subs.filter((s) => s.agent === a && (!s.since || s.since <= key)).reduce((t, s) => t + Number(s.usd_per_month || 0), 0)]))
+    const row = { key, start: d.getTime(), end: end.getTime(), label: d.toLocaleDateString([], { month: 'short', year: 'numeric' }), short: d.toLocaleDateString([], { month: 'short' }), share, jobs: jobs.length, jl: jobs, api: {}, fac: {}, out: {}, fee: {}, monthlyFee }
+    for (const a of AGENTS) {
       row.fac[a] = jobs.reduce((s, j) => s + agentCost(j, a), 0)
       row.out[a] = Number((outMonths[key] || {})[a] || 0)
       row.api[a] = row.fac[a] + row.out[a]
-      row.fee[a] = share * subs.filter((s) => s.agent === a && (!s.since || s.since <= key))
-        .reduce((t, s) => t + Number(s.usd_per_month || 0), 0)
+      row.fee[a] = share * monthlyFee[a]
     }
     row.apiT = row.api.claude + row.api.codex
     row.feeT = row.fee.claude + row.fee.codex
     row.facT = row.fac.claude + row.fac.codex
     row.outT = row.out.claude + row.out.codex
-    months.push(row)
+    allMonths.push(row)
   }
+  // The shared time range picks the months shown; this month is always in.
+  const span = RANGES[ui.range], cut = span ? Date.now() - span * 864e5 : 0
+  const months = allMonths.filter((m) => m.end > cut)
   const sum = (f) => months.reduce((s, m) => s + f(m), 0)
-  const api = Object.fromEntries(AGENTS.map(([a]) => [a, sum((m) => m.api[a])]))
-  const fee = Object.fromEntries(AGENTS.map(([a]) => [a, sum((m) => m.fee[a])]))
+  const api = Object.fromEntries(AGENTS.map((a) => [a, sum((m) => m.api[a])]))
+  const fee = Object.fromEntries(AGENTS.map((a) => [a, sum((m) => m.fee[a])]))
   const apiT = api.claude + api.codex, feeT = fee.claude + fee.codex
   const facT = sum((m) => m.facT), outT = sum((m) => m.outT)
   const cur = months[months.length - 1]
+  const prev = allMonths[allMonths.length - 2]
   const times = (x, y) => (y ? `×${(x / y).toFixed(1)}` : '–')
-  const saved = (x, y) => `<span class="${x - y >= 0 ? 'down' : 'up'}">${x - y >= 0 ? '' : '−'}${money(Math.abs(x - y))}</span>`
-  const tile = (v, k, sub) => `<div class="tile"><div class="v">${v}</div><div class="k">${k}</div><div class="s">${sub}</div></div>`
-  const tiles = `<div class="tiles">
-    ${tile(saved(apiT, feeT), `saved since ${esc(months[0].label)}`, `${money(apiT)} API-equivalent for ${money(feeT)} in fees · ${times(apiT, feeT)}`)}
-    ${tile(saved(cur.apiT, cur.feeT), 'this month so far', `${money(cur.apiT)} for ${money(cur.feeT)} (${Math.round(cur.share * 100)}% of the month) · ${times(cur.apiT, cur.feeT)}`)}
-    ${AGENTS.map(([a]) => tile(times(api[a], fee[a]), `${a}: value per dollar paid`, `${money(api[a])} for ${money(fee[a])}${fee[a] ? '' : ' · no subscription listed'}`)).join('')}
-    ${outside.status === 'ready' ? tile(money(outT), 'outside the factory', `${pct(outT, apiT)}% of the API-equivalent · factory jobs ${money(facT)}`)
-      : tile('…', 'outside the factory', outside.status === 'scanning' ? 'reading the sessions on this machine' : outside.status === 'off' ? 'off in subscriptions.json' : esc(outside.error || outside.status))}
-  </div>`
+  const saved = (x, y) => `<span class="${x - y >= 0 ? 'sav' : ''}">${x - y >= 0 ? '' : '−'}${money(Math.abs(x - y))}</span>`
 
-  // One bar per month, split by agent, with the month's fee as a line across it.
-  const ceilV = Math.max(...months.map((m) => Math.max(m.apiT, m.feeT)), 1)
-  const step = niceStep(ceilV / 4), top = Math.ceil(ceilV / step) * step
-  const grid = []
-  for (let v = step; v <= top + 1e-9; v += step) grid.push(`<div class="gl" style="bottom:${(100 * v) / top}%"><span>$${v}</span></div>`)
-  const bars = months.map((m) => {
-    const tip = `${m.label}${m.share < 1 ? ' (so far)' : ''} · ${m.jobs} jobs\n`
-      + AGENTS.map(([a]) => `  ${a.padEnd(8)}${money(m.api[a]).padStart(9)} API (factory ${money(m.fac[a])}, outside ${money(m.out[a])}) · ${money(m.fee[a])} fee`).join('\n')
-      + `\n  saved   ${(m.apiT >= m.feeT ? '' : '−') + money(Math.abs(m.apiT - m.feeT))}`
-    // Per agent: the factory's part solid, the part outside it faded.
-    const segs = AGENTS.map(([a, c]) => (m.fac[a] > 0 ? `<i style="flex-grow:${m.fac[a]};background:${c}"></i>` : '')
-      + (m.out[a] > 0 ? `<i style="flex-grow:${m.out[a]};background:${c};opacity:.45"></i>` : '')).join('')
-    return `<div class="bcol" data-tip="${esc(tip)}" style="max-width:120px">
-      <div class="bstack" style="height:${(100 * m.apiT) / top}%${m.share < 1 ? ';opacity:.6' : ''}">${segs}</div>
-      <div class="fee" style="bottom:${(100 * m.feeT) / top}%"></div><span class="bx">${esc(m.label)}</span></div>`
-  }).join('')
-  const legend = `<div class="legend">${AGENTS.map(([a, c]) => `<span><i style="background:${c}"></i>${a} in factory jobs</span>
-    <span><i style="background:${c};opacity:.45"></i>${a} outside the factory</span>`).join('')}
-    <span><i class="fee-key"></i>subscription fees</span></div>`
-  const chart = `<h2>Per month</h2><p class="sub">Bars: what the month's work would have cost on the API, factory jobs and everything else. Line: what the subscriptions cost that month. Above the line is money saved.</p>
-    ${legend}<div class="chart">${grid.join('')}<div class="bars" style="justify-content:center">${bars}</div></div><div style="height:26px"></div>`
+  // "On pace for": this month so far, plus the remaining days at the mean of the last 7 days for factory jobs
+  // and at the month's own daily mean for the sessions outside (they are only known per month). Hidden before day 3.
+  const DAY = 864e5
+  const elapsed = (now - cur.start) / DAY, inMonth = (cur.end - cur.start) / DAY, left = Math.max(0, inMonth - elapsed)
+  let pace = null
+  if (cur.share < 1 && elapsed >= 3) {
+    const win = Math.min(7, elapsed), wcut = now - win * DAY
+    pace = {}
+    for (const a of AGENTS) {
+      const recent = cur.jl.filter((j) => Date.parse(j.started) >= wcut).reduce((s, j) => s + agentCost(j, a), 0)
+      pace[a] = cur.api[a] + (recent / win + cur.out[a] / elapsed) * left
+    }
+    pace.T = pace.claude + pace.codex
+  }
+  // Only compare with a month the factory already ran in; before that the month's
+  // record is partial (Claude Code deletes transcripts after 30 days).
+  const paceVsPrev = pace && prev && prev.apiT && prev.facT > 0 ? Math.round(100 * (pace.T / prev.apiT - 1)) : null
+  const monthFee = cur.monthlyFee.claude + cur.monthlyFee.codex
+
+  // The hero: what was saved against what was paid.
+  const outLine = outside.status === 'ready' ? `Outside the factory <b>${money(outT)}</b> (${pct(outT, apiT)}% of the API-equivalent) · factory jobs <b>${money(facT)}</b>`
+    : outside.status === 'scanning' ? 'Outside the factory: reading the sessions on this machine…'
+    : outside.status === 'off' ? 'Outside the factory: off in subscriptions.json' : `Outside the factory: ${esc(outside.error || outside.status)}`
+  const hero = `<section class="hero" aria-label="Saved against paid">
+    <div class="hk">${cur.share < 1 ? 'Saved this month so far' : 'Saved this month'}</div>
+    <div class="hv">${saved(cur.apiT, cur.feeT)}<small>${times(cur.apiT, cur.feeT)} paid back</small></div>
+    <div class="hs"><b>${money(cur.apiT)}</b> API-equivalent for <b>${money(cur.feeT)}</b> in fees${cur.share < 1 ? ` (${Math.round(cur.share * 100)}% of the month)` : ''}</div>
+    ${pace ? `<div class="hs">On pace for <b>${money(pace.T)}</b> this month${paceVsPrev !== null ? ` · ${deltaHtml(paceVsPrev)} vs ${esc(prev.short)}` : ''}</div>`
+      : prev ? `<div class="hs">${prev.short}: <b>${money(prev.apiT)}</b> API-equivalent</div>` : ''}
+    <div class="hs">Since ${esc(months[0].label)}: saved ${saved(apiT, feeT)} · ${money(apiT)} for ${money(feeT)} · ${times(apiT, feeT)}</div>
+    <div class="hs">${outLine}</div></section>`
+
+  // A bullet graph per provider for this month: API-equivalent as the bar (factory solid, outside tinted and outlined),
+  // the fee as a marker, bands at 1x and 3x the fee.
+  const bullet = (a) => {
+    const v = cur.api[a], f = cur.fee[a]
+    const { max } = niceAxis(Math.max(v, f * 3.2, 1) / 1.08)
+    const x = (n) => `${Math.min(100, (100 * n) / max)}%`
+    const mid = max / 2
+    const aria = `${a}: ${money(v)} API-equivalent this month${cur.share < 1 ? ' so far' : ''}, ${f ? `fee ${money(f)}, ${times(v, f)}` : 'no subscription listed'}; factory ${money(cur.fac[a])}, outside ${money(cur.out[a])}`
+    return `<div class="bl" role="img" aria-label="${esc(aria)}" data-tip="${esc(`${a}\n${money(v)} API-equivalent · factory ${money(cur.fac[a])} · outside ${money(cur.out[a])}\n${f ? `fee ${money(f)} · ${times(v, f)}` : 'no subscription listed'}`)}">
+      <div class="bl-head"><span class="nm">${sw(a)}${a}<b>${f ? times(v, f) : '–'}</b></span><span class="gl2">${money(v)}${f ? ` for ${money(f)}` : ' · no subscription listed'}</span></div>
+      <div class="bl-track" style="--b1:${x(f)};--b2:${x(f * 3)}"><div class="bl-bar" style="width:${x(v)}">
+        ${cur.fac[a] > 0 ? `<i style="flex:${cur.fac[a]} 1 0;background:var(--${a})"></i>` : ''}${cur.out[a] > 0 ? `<i class="out" style="flex:${cur.out[a]} 1 0;background:var(--${a}-soft);box-shadow:inset 0 0 0 1.5px var(--${a})"></i>` : ''}</div>
+        ${f ? `<span class="bl-fee" style="left:calc(${x(f)} - 1px)" title="fee"></span>` : ''}</div>
+      <div class="bl-axis"><span style="left:0">$0</span><span style="left:50%">${axisFmt(mid)}</span><span style="left:100%">${axisFmt(max)}</span></div>
+      <div class="bl-sub">${f ? `fee marker ${money(f)} · ` : ''}factory ${money(cur.fac[a])} · outside ${money(cur.out[a])}</div></div>`
+  }
+  const bullets = `<section class="bullets" aria-label="Value per provider"><h3>${esc(cur.label)}${cur.share < 1 ? ' so far' : ''}, by provider</h3>
+    ${AGENTS.map(bullet).join('')}
+    <div class="legend"><span>${sw('claude')}${sw('codex')}in factory jobs</span><span>${sw('claude', 'out')}${sw('codex', 'out')}outside the factory</span><span><i class="sw fee" style="border-top-style:solid"></i>fee (bands: under 1x, 1x to 3x, over 3x)</span></div></section>`
+
+  // One column per month, split by agent; the factory part solid, the part outside tinted with a stroke in the agent colour.
+  // The fee is a dashed line across the month's column: above it is money saved. This month gets a hatched "on pace" cap.
+  const n = months.length
+  const avail = plotWidth()
+  let right = 100, W = Math.min(avail, 48 + n * 190 + right)
+  let slot = (W - 48 - right) / n
+  const labelEach = slot >= 170
+  if (!labelEach) { right = avail <= 640 ? 76 : 100; W = Math.min(avail, Math.max(360, 48 + n * 130 + right)); slot = (W - 48 - right) / n }
+  const items = months.map((m, i) => {
+    const isCur = m === cur
+    const segs = []
+    for (const a of AGENTS) {
+      if (m.fac[a] > 0) segs.push({ v: m.fac[a], fill: `var(--${a})` })
+      if (m.out[a] > 0) segs.push({ v: m.out[a], fill: `var(--${a}-soft)`, stroke: `var(--${a})` })
+    }
+    const ghost = isCur && pace && pace.T > m.apiT ? pace.T : 0
+    const tip = `${m.label}${m.share < 1 ? ' (so far)' : ''} · ${plural(m.jobs, 'factory job')}\n${money(m.apiT)} API-equivalent\n`
+      + AGENTS.map((a) => `{${a}} ${a.padEnd(7)}${money(m.api[a]).padStart(9)}  factory ${money(m.fac[a])} · outside ${money(m.out[a])} · fee ${money(m.fee[a])}`).join('\n')
+      + `\n${m.apiT >= m.feeT ? 'saved' : 'short by'} ${money(Math.abs(m.apiT - m.feeT))} · ${times(m.apiT, m.feeT)}`
+      + (ghost ? `\non pace for ${money(pace.T)} (claude ${money(pace.claude)} · codex ${money(pace.codex)})` : '')
+    const showNote = labelEach || isCur
+    const mark = m.feeT > 0 ? { v: m.feeT, label: labelEach || isCur ? ['break-even', money(m.feeT)] : null } : null
+    return { label: m.short + (new Date(m.start).getFullYear() !== now.getFullYear() ? ` ${new Date(m.start).getFullYear()}` : ''), segs, total: m.apiT, ghost, tip, mark,
+      note: showNote && m.apiT > m.feeT ? `saved ${money(m.apiT - m.feeT)}` : '', noteCls: 'sav' }
+  })
+  const chartSvg = barChart({ W, H: 270, items, title: 'Per month, API-equivalent against fees', maxBar: 64, right,
+    desc: `${n} months. ${months.map((m) => `${m.label}: ${money(m.apiT)} API-equivalent against ${money(m.feeT)} in fees`).join('; ')}.` })
+  const legend = `<div class="legend"><span>${sw('claude')}claude in factory jobs</span><span>${sw('claude', 'out')}claude outside the factory</span>
+    <span>${sw('codex')}codex in factory jobs</span><span>${sw('codex', 'out')}codex outside the factory</span>
+    <span><i class="sw fee"></i>subscription fees: the break-even</span>${pace ? '<span><i class="sw hatch"></i>on pace for this month</span>' : ''}</div>`
+  const aside = `<aside><p><b>Above the dashed line is money saved.</b> Each column is what that month's work would have cost on the API: the factory's jobs, plus every other Claude Code and Codex session on this machine.</p>
+    <p>${subsLine(subs)}</p></aside>`
+  const chart = `<h2>Per month</h2><p class="sub">API-equivalent per month against the subscription fee that month.</p>${legend}
+    <div class="chart-row"><div>${chartSvg}</div>${avail - W >= 260 ? aside : ''}</div>`
 
   const monthRows = [...months].reverse().map((m) => `<tr><td>${esc(m.label)}${m.share < 1 ? ' <span class="note">so far</span>' : ''}</td>
     <td class="n">${m.jobs}</td><td class="n">${money(m.facT)}</td><td class="n">${money(m.outT)}</td>
-    ${AGENTS.map(([a]) => `<td class="n">${money(m.api[a])}</td><td class="n">${money(m.fee[a])}</td>`).join('')}
+    ${AGENTS.map((a) => `<td class="n">${money(m.api[a])}</td><td class="n">${money(m.fee[a])}</td>`).join('')}
     <td class="n">${saved(m.apiT, m.feeT)}</td><td class="n">${times(m.apiT, m.feeT)}</td></tr>`).join('')
   const monthTable = `<h2>Months</h2><table class="costs"><thead><tr><th>month</th><th class="n">jobs</th>
     <th class="n">factory</th><th class="n">outside</th>
     <th class="n">claude API</th><th class="n">claude fee</th><th class="n">codex API</th><th class="n">codex fee</th>
     <th class="n">saved</th><th class="n">value</th></tr></thead><tbody>${monthRows}</tbody>
-    <tfoot><tr><td>total</td><td class="n">${all.length}</td><td class="n">${money(facT)}</td><td class="n">${money(outT)}</td>${AGENTS.map(([a]) => `<td class="n">${money(api[a])}</td><td class="n">${money(fee[a])}</td>`).join('')}
+    <tfoot><tr><td>total</td><td class="n">${sum((m) => m.jobs)}</td><td class="n">${money(facT)}</td><td class="n">${money(outT)}</td>${AGENTS.map((a) => `<td class="n">${money(api[a])}</td><td class="n">${money(fee[a])}</td>`).join('')}
     <td class="n">${saved(apiT, feeT)}</td><td class="n">${times(apiT, feeT)}</td></tr></tfoot></table>`
 
   const projRows = projects.map((p) => {
     const c = p.jobs.reduce((s, j) => s + agentCost(j, 'claude'), 0), x = p.jobs.reduce((s, j) => s + agentCost(j, 'codex'), 0)
     return { p, c, x, t: c + x }
-  }).sort((a, b) => b.t - a.t).map(({ p, c, x, t }) => `<tr><td>${esc(p.name)}${p.missing ? ' <span class="note">not found</span>' : ''}</td>
+  }).sort((a, b) => b.t - a.t)
+  const projTotal = projRows.reduce((s, r) => s + r.t, 0)
+  const projBody = projRows.map(({ p, c, x, t }) => `<tr><td>${esc(p.name)}${p.missing ? ' <span class="note">not found</span>' : ''}</td>
     <td class="n">${p.jobs.length}</td><td class="n">${money(c)}</td><td class="n">${money(x)}</td><td class="n">${money(t)}</td>
-    <td class="n">${bar(pct(t, apiT))}</td></tr>`).join('')
+    <td class="n"><span class="bar" style="--w:${pct(t, projRows[0]?.t || 1)}%"></span>${pct(t, projTotal)}%</td></tr>`).join('')
   const projTable = `<h2>Repos</h2><table class="costs"><thead><tr><th>repo</th><th class="n">jobs</th><th class="n">claude</th>
-    <th class="n">codex</th><th class="n">API-equivalent</th><th class="n">share</th></tr></thead><tbody>${projRows}</tbody></table>`
+    <th class="n">codex</th><th class="n">API-equivalent</th><th class="n">share</th></tr></thead><tbody>${projBody}</tbody></table>`
 
-  // Where the work outside the factory happened: the session's directory.
-  const home = (c) => c.replace(/^\/home\/[^/]+|^\/Users\/[^/]+/, '~')
-  const outRows = (outside.by_cwd || []).slice(0, 15).map((c) => `<tr><td class="t" title="${esc(c.cwd)}">${esc(home(c.cwd))}</td>
-    <td class="n">${c.sessions}</td><td class="n">${money(c.claude)}</td><td class="n">${money(c.codex)}</td>
-    <td class="n">${bar(pct(c.claude + c.codex, outT))}</td></tr>`).join('')
+  // Where the work outside the factory happened: the session's directory (last two segments; the full path is the tooltip).
+  const dirs = outside.by_cwd || []
+  const showAll = ui.dirs === 'all'
+  const dirTotal = dirs.reduce((s, c) => s + c.claude + c.codex, 0) || outT
+  const maxDir = Math.max(...dirs.map((c) => c.claude + c.codex), 0.01)
+  const shownDirs = dirs.slice(0, showAll ? 15 : 8)
+  const outRows = shownDirs.map((c) => {
+    const d = dirLabel(c.cwd), t = c.claude + c.codex
+    return `<tr><td class="t" title="${esc(c.cwd)}">${d.machine ? `<span class="mach">${esc(d.machine)}</span>` : ''}${esc(d.short)}</td>
+      <td class="n">${c.sessions}</td><td class="n">${money(c.claude)}</td><td class="n">${money(c.codex)}</td>
+      <td class="n"><span class="bar" style="--w:${(100 * t) / maxDir}%"></span>${pct(t, dirTotal)}%</td></tr>`
+  }).join('')
+  const rest = Math.min(dirs.length, 15) - shownDirs.length
+  const restRow = rest > 0 ? `<tr><td colspan="5"><button class="more" data-ui="dirs" data-val="all">${rest} more directories ${money(dirs.slice(8, 15).reduce((s, c) => s + c.claude + c.codex, 0))} →</button></td></tr>`
+    : showAll && dirs.length > 8 ? '<tr><td colspan="5"><button class="more" data-ui="dirs" data-val="top">show fewer</button></td></tr>' : ''
   const outTable = outRows ? `<h2>Outside the factory</h2><p class="sub">Claude and Codex sessions not part of a job, by
-    directory; the top 15 of ${(outside.by_cwd || []).length}.</p><table class="costs fill"><thead><tr><th>directory</th>
+    directory; the top ${shownDirs.length} of ${dirs.length}. The bar is relative to the biggest directory, the percentage to all of them.</p><table class="costs fill"><thead><tr><th>directory</th>
     <th class="n">sessions</th><th class="n">claude</th><th class="n">codex</th><th class="n">share</th></tr></thead>
-    <tbody>${outRows}</tbody></table>` : ''
+    <tbody>${outRows}${restRow}</tbody></table>` : ''
   const shown = new Set(months.map((m) => m.key))
   const unpriced = {}
   for (const [m, models] of Object.entries(outside.unpriced || {})) {
-    if (shown.has(m)) for (const [model, n] of Object.entries(models)) unpriced[model] = (unpriced[model] || 0) + n
+    if (shown.has(m)) for (const [model, c] of Object.entries(models)) unpriced[model] = (unpriced[model] || 0) + c
   }
   const unpricedNote = Object.keys(unpriced).length ? ` Not counted, no price in config.json prices_usd_per_mtok:
-    ${Object.entries(unpriced).map(([model, n]) => `${esc(model)} (${tokens(n)} tokens)`).join(', ')}.` : ''
+    ${Object.entries(unpriced).map(([model, c]) => `${esc(model)} (${tokens(c)} tokens)`).join(', ')}.` : ''
 
-  const subList = subs.map((s) => `${esc(s.name || s.agent)} ${money(s.usd_per_month)}/month${s.since ? ` since ${esc(s.since)}` : ''}`).join(' · ') || 'none listed'
-  return `<div class="cv">${tiles}${chart}${monthTable}${projTable}${outTable}
-    <p class="note">Subscriptions: ${subList}, from <code>${esc(plan.data.config)}</code>. API-equivalent at each repo's
+  return `<div class="cv">${rangeControl(`${plural(n, 'month')} of ${allMonths.length}`)}<div class="plan-top">${hero}${bullets}</div>${chart}${monthTable}${projTable}${outTable}
+    <p class="note">Subscriptions: ${subsLine(subs)}, from <code>${esc(plan.data.config)}</code>. API-equivalent at each repo's
       factory/config.json prices. Outside the factory: every other Claude Code transcript and Codex session on this
       machine, at this repo's prices; orchestrating sessions count there too. Claude Code deletes transcripts after
       30 days unless <code>cleanupPeriodDays</code> says otherwise, so older months lack that part.${unpricedNote}
-      This month's fees count pro rata.</p></div>`
+      This month's fees count pro rata. "On pace" adds the rest of the month at the mean of the last seven days (factory jobs)
+      and at the month's daily mean (outside sessions); it is a projection, not a forecast, and shows from day 3.
+      Monthly fee now: ${money(monthFee)}.</p></div>`
 }
+const subsLine = (subs) => subs.map((s) => `${esc(s.name || s.agent)} ${money(s.usd_per_month)}/month${s.since ? ` since ${esc(s.since)}` : ''}`).join(' · ') || 'none listed'
 
 // #job=<id> opens that job's drawer (the hub's overview deep-links here). Needs the jobs loaded.
 function routeJob() {
