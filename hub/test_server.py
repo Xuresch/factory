@@ -9,6 +9,8 @@ is configured through FACTORY_HUB_PORT, _DB, _TOKENS, _BIND, _DASHBOARD and
 _STATIC (a folder holding index.html and app.js).
 """
 
+import calendar
+import datetime
 import gzip
 import http.client
 import json
@@ -190,6 +192,55 @@ class TestIngest(HubCase):
         self.assertEqual([j["id"] for j in ov["recent"]], ["001", "004"])
         self.assertEqual({e["job"] for e in ov["events"]}, {"001", "002", "003", "004"})
         self.assertEqual(ov["month"]["subscriptions_usd"], 100)
+
+    def test_overview_agent_split(self):
+        now = datetime.datetime.now(datetime.timezone.utc)
+        today, month = now.strftime("%Y-%m-%d"), now.strftime("%Y-%m")
+        prev_first = (now.replace(day=1) - datetime.timedelta(days=1))
+        prev = prev_first.strftime("%Y-%m")
+
+        def j(jid, cost, by, started):
+            data = {"id": jid, "title": jid, "stage": "merged", "started": started, "cost_usd": cost}
+            if by is not None:
+                data["cost_by_agent"] = by
+            return {"id": jid, "job": data, "files": {"spec.md": "x"}}
+
+        t = f"{today}T00:30:00Z"
+        a = [j("001", 3.0, {"claude": 2.0, "codex": 1.0}, t), j("002", 1.0, None, t),
+             j("003", 4.0, {"claude": 4.0}, f"{prev}-15T10:00:00Z")]
+        b = [j("001", 0.6, {"claude": 0.1, "codex": 0.5}, t), j("002", 0.2, {"claude": 0.1}, t)]
+
+        def outside(this, last):
+            return {"status": "ready", "months": {month: this, prev: last}, "by_cwd": [], "unpriced": {}}
+        self.ok(push("m1", [repo("o/a", a), repo("o/b", b)],
+                     outside=outside({"claude": 5.0, "codex": 1.0}, {"claude": 2.0, "codex": 0.5})))
+        self.ok(push("m2", [], outside=outside({"claude": 7.0, "codex": 1.0}, {"claude": 1.0, "codex": 0.5})))
+        ov = self.get_json("/api/overview")
+        ra, rb = ov["repos"]
+        self.assertEqual(ra["cost_by_agent"], {"claude": 6.0, "codex": 1.0, "other": 1.0})
+        self.assertEqual(ra["cost_month_by_agent"], {"claude": 2.0, "codex": 1.0, "other": 1.0})
+        self.assertEqual(rb["cost_by_agent"], {"claude": 0.2, "codex": 0.5, "other": 0.1})
+        self.assertEqual(rb["cost_month_by_agent"], rb["cost_by_agent"])
+        self.assertEqual(ra["cost_usd"], 8.0)
+        self.assertEqual(ra["cost_month"], 4.0)
+        day_a = ra["daily"][-1]
+        self.assertEqual((day_a["day"], day_a["jobs"], day_a["cost_usd"]), (today, 2, 4.0))
+        self.assertEqual(day_a["by_agent"], {"claude": 2.0, "codex": 1.0, "other": 1.0})
+        self.assertEqual(ra["daily"][0]["by_agent"], {"claude": 0.0, "codex": 0.0, "other": 0.0})
+        self.assertEqual(len(ov["daily"]), 14)
+        top = ov["daily"][-1]
+        self.assertEqual((top["day"], top["jobs"], top["cost_usd"]), (today, 4, 4.8))
+        self.assertEqual(top["by_agent"], {"claude": 2.2, "codex": 1.5, "other": 1.1})
+        m = ov["month"]
+        self.assertEqual(m["factory"], {"claude": 2.2, "codex": 1.5, "other": 1.1})
+        self.assertEqual(m["outside"], {"claude": 12.0, "codex": 2.0})
+        self.assertEqual(m["by_agent"], {"claude": 14.2, "codex": 3.5})
+        self.assertEqual(m["api_equivalent_usd"], 18.8)
+        self.assertEqual(m["prev"], {"month": prev, "api_equivalent_usd": 8.0,
+                                     "factory": {"claude": 4.0, "codex": 0.0, "other": 0.0},
+                                     "outside": {"claude": 3.0, "codex": 1.0}})
+        self.assertEqual(m["days_elapsed"], now.day)
+        self.assertEqual(m["days_in_month"], calendar.monthrange(now.year, now.month)[1])
 
     def test_delta_ingest_files_removed_and_job_ids(self):
         files = {"spec.md": "a", "round-1/review-code.md": "b", "round-2/review-ux.md": "c"}

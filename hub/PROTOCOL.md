@@ -172,15 +172,26 @@ All JSON, `Cache-Control: no-store`.
     "last_seen": "…", "href": "/r/Xuresch/nerdround_2/dashboard.html",
     "counts": {"running": 1, "needs_you": 2, "merged": 30, "rejected": 1, "total": 43},
     "cost_usd": 123.4, "cost_month": 12.3,
-    "daily": [{"day": "2026-11-04", "cost_usd": 1.2, "jobs": 2}],
+    "cost_by_agent": {"claude": 90.0, "codex": 30.0, "other": 3.4},
+    "cost_month_by_agent": {"claude": 9.0, "codex": 3.0, "other": 0.3},
+    "daily": [{"day": "2026-11-04", "cost_usd": 1.2, "jobs": 2,
+               "by_agent": {"claude": 1.0, "codex": 0.2, "other": 0.0}}],
     "last_activity": "…"
   }],
   "live":      [{"repo": "…", "machine": "…", "id": "…", "href": "…", "job": {job.json}}],
   "needs_you": [{"repo": "…", "machine": "…", "id": "…", "href": "…", "job": {job.json}}],
   "recent":    [{"repo": "…", "machine": "…", "id": "…", "href": "…", "job": {job.json}}],
   "events":    [{"at": "…", "machine": "…", "repo": "…", "job": "…", "title": "…", "from": "build", "to": "gate"}],
+  "daily": [{"day": "2026-11-04", "cost_usd": 2.4, "jobs": 5,
+             "by_agent": {"claude": 2.0, "codex": 0.4, "other": 0.0}}],
   "month": {"month": "2026-11", "api_equivalent_usd": 80.1, "subscriptions_usd": 200,
-             "by_agent": {"claude": 50.0, "codex": 30.1}}
+             "by_agent": {"claude": 50.0, "codex": 30.1},
+             "factory": {"claude": 20.0, "codex": 10.1, "other": 1.0},
+             "outside": {"claude": 30.0, "codex": 20.0},
+             "days_elapsed": 18, "days_in_month": 30,
+             "prev": {"month": "2026-10", "api_equivalent_usd": 95.0,
+                      "factory": {"claude": 40.0, "codex": 5.0, "other": 0.0},
+                      "outside": {"claude": 40.0, "codex": 10.0}}}
 }
 ```
 
@@ -191,6 +202,16 @@ All JSON, `Cache-Control: no-store`.
   (sum of `cost_usd` / `cost_by_agent`) plus outside usage for the month summed
   over machines; `subscriptions_usd` the sum of the deduplicated subscriptions'
   `usd_per_month`.
+  Agent splits are `{claude, codex, other}` per job, summed: `other` is
+  `cost_usd` minus claude+codex when that exceeds 0.005 (a job without
+  `cost_by_agent` is all `other`), else 0. `repos[].cost_by_agent` covers all
+  jobs, `cost_month_by_agent` the jobs started this month, `daily[].by_agent`
+  each day; top-level `daily` is the same 14 days summed over all repos.
+  `month.factory` is the split of jobs started this month, `month.outside` the
+  outside usage this month summed over machines, `month.by_agent` their
+  claude/codex sum. `month.prev` repeats `api_equivalent_usd`, `factory` and
+  `outside` for the previous calendar month; `days_elapsed` (today's UTC day of
+  month) and `days_in_month` allow a pro-rata projection.
 - `GET /api/stream` → `text/event-stream`. Events: `event: job` (the event
   object), `event: seen` (`{machine, at}`). A `: ping` comment every 15 s.
 - `GET /healthz` → `ok`.
