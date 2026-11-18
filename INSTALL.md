@@ -172,8 +172,11 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
   carry over).
 - `ci_wait_minutes` (default 30) and `ci_start_grace_seconds` (default 180),
   GitHub only: `job merge` pushes the synced, gated branch and waits for the
-  PR's checks on that commit before `gh pr merge`. A failing check sends the
-  job back to the builder; checks still pending after `ci_wait_minutes` send
+  PR's checks on that commit before `gh pr merge`. A failing GitHub Actions
+  check is rerun once per commit (`gh run rerun --failed`), at approve and at
+  merge; only a check that fails again counts, and one that passed on rerun
+  is listed as `Passed on rerun` in `ci.md` and `merge-ci.md`. A failing check
+  sends the job back to the builder; checks still pending after `ci_wait_minutes` send
   it to a human; no check within the grace period means the repo has no CI,
   and it merges. Raise the minutes if CI takes longer; a repo without CI loses
   the grace period on every merge, so lower it there (`0` skips the wait).

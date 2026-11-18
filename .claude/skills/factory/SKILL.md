@@ -362,7 +362,10 @@ finished:
   `factory/bin/job start <id> approver`. In a merge-only round whose change
   was approved before, `advance` writes `decision.md` (`APPROVE`, carried from
   round k) itself and prints `approval carried`: don't start the approver
-  (`job start` refuses), run `factory/bin/job merge <id>`.
+  (`job start` refuses), run `factory/bin/job merge <id>`. On GitHub, when
+  CI fails, `advance` reruns the failed checks once and waits for them (up to
+  `ci_wait_minutes`, it prints `rerunning once`); `job next` says `wait`
+  meanwhile.
 - any CHANGES: `factory/bin/job advance <id> build` (or `needs-human` when it
   refuses because this was the last round, or because a finding `stayed
   disputed`: the builder answered it `disagree` and the reviewer kept it
@@ -385,8 +388,9 @@ finished:
   its full output, then always run `factory/bin/job next <id>` before you do
   anything else with that job. While it waits, the other jobs go on, `job next` says `wait`
   for this one and a second `job merge` refuses; if it was cut off, the job is
-  still `merging` and `job next` says to run it again. A conflict, a failing gate or a failing CI check after
-  the sync is the builder's to fix: it sends the job back to **build** for
+  still `merging` and `job next` says to run it again. A failing GitHub Actions check is rerun
+  once per commit first (`Passed on rerun` in `merge-ci.md` when it was a flake). A conflict, a
+  failing gate or a check that fails again after the sync is the builder's to fix: it sends the job back to **build** for
   another round and says so; `job send` the builder `Read
   round-<N>/merge-back.md and base-sync.md, fix it, and update build.md.` Only
   with no round left does it go to `needs-human`, and CI still pending after

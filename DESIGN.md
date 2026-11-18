@@ -259,8 +259,9 @@ builder at the start of that round. A conflict only in lockfiles
 (`lockfile_regenerate`) the factory resolves itself: it takes the base's
 lockfile and regenerates it, as a builder should. A conflict, a failing gate
 or a failing CI check during `job merge` sends the job back to the builder
-too. Only with no round left does it reach a human. When that round only
-merged the base (the change compared to the base is the same patch as the
+too, after one rerun: a GitHub Actions check that passes on rerun is a flake,
+listed in `merge-ci.md`, and costs no round. Only with no round left does it
+reach a human. When that round only merged the base (the change compared to the base is the same patch as the
 approved one), the reviews and the approval carry over and nobody reviews the
 same change twice. `job approve` merges an escalated job the same way.
 
