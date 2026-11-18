@@ -48,6 +48,7 @@ impl Hub {
             ("job_rounds", "round"),
             ("job_round_reviews", "round, lens"),
             ("job_reviewers", "lens"),
+            ("job_costs", "seq"),
         ] {
             let mut grouped: HashMap<i64, Vec<Row>> = HashMap::new();
             for row in self
@@ -167,6 +168,7 @@ impl Hub {
             o.extend(json!({"id":id,"key":val(r,"job_key"),"machine":val(r,"machine"),"repo":repo_name,"href":format!("/r/{}/dashboard.html#job={}",quote(repo_name),quote(&repo_id)),"issue":val(r,"issue_ref"),"spec_skipped":boolean(r,"spec_skipped"),"removed":!val(r,"removed_at").is_null() || !val(r,"checkout_removed").is_null(),
                 "cost_by_agent":{"claude":val(r,"cost_claude"),"codex":val(r,"cost_codex"),"other":val(r,"cost_other")},
                 "tokens":{"input":val(r,"input_tokens"),"cached":val(r,"cached_tokens"),"output":val(r,"output_tokens")},
+                "cost_breakdown":child("job_costs").iter().map(|x| fields(x,&["role","role_base","agent","model","sessions","input_tokens","cached_tokens","output_tokens","cost_usd"])).collect::<Vec<_>>(),
                 "intake":{"decision":val(r,"intake_decision"),"risk":val(r,"intake_risk"),"size":val(r,"intake_size"),"split":boolean(r,"intake_split"),"rescoped":boolean(r,"intake_rescoped"),"surfaces":child("job_surfaces").iter().map(|x| val(x,"surface")).collect::<Vec<_>>()},
                 "agents":{"builder":{"agent":val(r,"builder_agent"),"model":val(r,"builder_model"),"effort":val(r,"builder_effort")},"reviewers":reviewers},"reviews":reviews,
                 "paused":if val(r,"paused_after").is_null() {Value::Null} else {json!({"after":val(r,"paused_after")})},

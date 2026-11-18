@@ -462,6 +462,8 @@ class TestReadApi(HubCase):
         self.assertEqual(j["history"][1]["from"], "spec")
         self.assertEqual(j["intake"]["surfaces"], ["ui"])
         self.assertEqual(j["tokens"]["input"], 10)
+        self.assertEqual(j["cost_breakdown"][0]["role_base"], "builder")
+        self.assertEqual(j["cost_breakdown"][0]["input_tokens"], 10)
         self.assertEqual(self.get_json("/api/overview")["live"][0]["job"], j)
         detail = self.get_json("/api/repos/o/r/jobs/001")
         self.assertEqual(detail["cost_breakdown"][0]["role_base"], "builder")
