@@ -812,7 +812,7 @@ t_codex_model_and_effort() {
   check "low builds on terra low" "$(field "$id" "d['agents']['builder']")" "'effort': 'low'" &&
   J start "$id" builder >/dev/null &&
   check "model and effort reach Orca" "$(tail -1 "$CALLS")" "--agent codex --model gpt-6.1-terra --effort low" &&
-  check "preset" "$(J route-set "$id" builder=sol-high)" "codex/gpt-6.1-sol:high" &&
+  check "preset" "$(J route-set "$id" builder=sol-high)" "codex/gpt-6.2-sol:high" &&
   check "explicit effort" "$(J route-set "$id" builder=codex/gpt-6.1-terra:medium)" "codex/gpt-6.1-terra:medium" &&
   check "bad entry" "$(J route-set "$id" builder=gpt 2>&1)" "terra-low"
 }

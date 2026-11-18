@@ -2906,7 +2906,7 @@ def cmd_rewind(job, target, text):
 
 
 def parse_entry(value):
-    """`claude`, `codex/gpt-6.1-terra`, `codex/gpt-6.1-sol:high`, or a preset
+    """`claude`, `codex/gpt-6.1-terra`, `codex/gpt-6.2-sol:high`, or a preset
     from config.json `model_presets` such as `terra-high`."""
     presets = CONFIG.get("model_presets", {})
     if value in presets:
