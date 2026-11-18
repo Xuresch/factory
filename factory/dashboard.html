@@ -1867,7 +1867,7 @@ function costsFor(jobs, allJobs) {
     <p class="sub">What each model read from the cache. "~" marks an estimate: the cached tokens priced at the full input price instead of the cache-read price, from config.json.</p>
     <table class="costs"><thead><tr><th>agent · model</th><th class="n">input</th><th class="n">cached</th><th class="n">output</th><th class="n">cache share</th><th class="n">cost</th><th class="n">saved</th></tr></thead><tbody>${cacheBody}</tbody></table>`
 
-  const tokenTotals = js.reduce((a, j) => { for (const k of ['input', 'cached', 'output']) a[k] += Number(j.tokens?.[k] || 0); return a }, { input: 0, cached: 0, output: 0 })
+  const tokenTotals = jobs.reduce((a, j) => { for (const k of ['input', 'cached', 'output']) a[k] += Number(j.tokens?.[k] || 0); return a }, { input: 0, cached: 0, output: 0 })
   const hubTokens = `<h2>Tokens</h2><p class="sub">${tokens(tokenTotals.input)} input · ${tokens(tokenTotals.cached)} cached · ${tokens(tokenTotals.output)} output. Model and role breakdowns are in each job’s overview.</p>`
   return `${tiles}${chart1}${daily}<div class="grid2">${chart2}${matrix}</div>${hub ? hubTokens : `<div class="grid2">${roleBars}<div>${cache}</div></div>`}`
 }
