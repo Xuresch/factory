@@ -457,6 +457,8 @@ triaged as ticket makes the review CHANGES, which goes to the user like any
 other. Only `PR OPEN` with every comment triaged is done; tell the user what
 the triage decided (its `## PR comments` section). The same check runs
 before `job finish <branch>` merges an existing PR.
+When a human already merged that PR, `job finish` says `the branch is done`
+(`FINISH: MERGED`) and removes the kept worktree: the feature is finished.
 
 **Mid-feature reviews.** With `feature_review_every: N` in `config.json`
 (default 0, off), `job merge` starts a mid-feature review itself after every

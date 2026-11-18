@@ -3062,6 +3062,13 @@ def cmd_finish(branch, pr_only=False):
 
     if GITHUB:
         run(["git", "fetch", "origin"])
+        done = merged_feature_pr(branch)
+        if done:  # a human merged the PR `--pr` left open: nothing to sync, check or review
+            report.write_text(f"FINISH: MERGED\n\n# {branch} → {BASE}\n\nPull request #{done['number']} was "
+                              f"merged on GitHub" + (f" at {done['mergedAt']}" if done.get("mergedAt") else "") + ".\n")
+            finish_cleanup(branch)
+            print(f"{branch}: pull request #{done['number']} is merged into {BASE}; the branch is done")
+            return
     where = branch_worktree(branch)
     temp = None
     kept = worktree_base() / f"_finish-{slug}"
@@ -3169,15 +3176,35 @@ def cmd_finish(branch, pr_only=False):
     report.write_text(f"FINISH: MERGED\n\n# {branch} → {BASE}\n\nSynced, checked"
                       + (", reviewed" if CONFIG.get("feature_review", True) else "")
                       + f" and merged at {now()}.\n")
-    if state_file.exists():
-        state_file.unlink()
-    feature_file(branch, "-mid.json").unlink(missing_ok=True)
-    if (worktree_base() / f"_midreview-{slug}").exists():
-        remove_worktree(worktree_base() / f"_midreview-{slug}", check=False)
-    wt = worktree_base() / f"_finish-{slug}"
-    if wt.exists():
-        remove_worktree(wt, check=False)
+    finish_cleanup(branch)
     print(f"{branch}: merged into {BASE}")
+
+
+def merged_feature_pr(branch):
+    """The merged pull request from <branch> into the base ({number, mergedAt}),
+    when the branch has nothing on origin after it; else None. A branch that got
+    new commits after an earlier merged PR isn't done."""
+    prs = gh_json("pr", "list", "--head", branch, "--base", BASE, "--state", "merged",
+                  "--json", "number,headRefOid,mergedAt")
+    tips = [run(["git", "rev-parse", "--verify", "-q", ref], check=False).stdout.strip()
+            for ref in (f"refs/remotes/origin/{branch}", f"refs/heads/{branch}")]
+    for pr in prs:
+        head = pr.get("headRefOid")
+        if not head or all(not t or t == head or run(["git", "merge-base", "--is-ancestor", t, head],
+                                                      check=False).returncode == 0 for t in tips):
+            return pr
+    return None
+
+
+def finish_cleanup(branch):
+    """A finished feature branch: drop its finish state, the mid-review state and
+    the worktrees job finish and the mid-feature review kept."""
+    slug = feature_slug(branch)
+    feature_file(branch, ".json").unlink(missing_ok=True)
+    feature_file(branch, "-mid.json").unlink(missing_ok=True)
+    for name in (f"_midreview-{slug}", f"_finish-{slug}"):
+        if (worktree_base() / name).exists():
+            remove_worktree(worktree_base() / name, check=False)
 
 
 def feature_slug(branch):

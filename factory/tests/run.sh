@@ -214,7 +214,7 @@ elif cmd == ["pr", "create"]:
 elif cmd == ["pr", "list"]:  # --state open (default), merged or all
     state = (opt("--state") or "open").upper()
     ok = pr and state in ("ALL", pr["state"]) and opt("--head") in (None, pr["headRefName"])
-    print(json.dumps([{"headRefOid": head(), **pr}] if ok else []))
+    print(json.dumps([{"headRefOid": pr.get("mergedHead") or head(), **pr}] if ok else []))
 elif cmd == ["pr", "view"]:
     print(json.dumps({"headRefOid": head(), **pr}))
 elif cmd == ["run", "rerun"]:  # the rerun's results replace the PR's checks (and a commit's)
@@ -856,6 +856,32 @@ t_gh_finish_pulls_origin_after_local_merge() {
   local tip; tip=$(python3 -c "import json; print(json.load(open('factory/jobs/_features/feature-q.json'))['tip'])") &&
   check "the checked tip contains it" "$(git -C "$wt" merge-base --is-ancestor "$fix" "$tip" && echo yes)" "yes" &&
   check "checked again" "$(python3 -c "import json; print(json.load(open('factory/jobs/_features/feature-q.json'))['checked'])")" "$tip"
+}
+
+t_gh_finish_after_hand_merge() {
+  new_gh_repo ghfinishmerged
+  git branch feature/p master; git checkout -q feature/p && echo p > p.txt && git add p.txt && git commit -qm p && git checkout -q master
+  git push -q origin feature/p
+  local f=factory/jobs/_features wt=.worktrees/_finish-feature-p
+  check "asks for review" "$(J finish feature/p --pr)" "start the feature review" || return 1
+  J feature-review feature/p >/dev/null
+  printf 'VERDICT: PASS\n\n## Findings\nNone.\n' > $f/feature-p-review.md
+  check "pr opened" "$(J finish feature/p --pr 2>&1)" "is open; merge it on GitHub" || return 1
+  # A human merges the PR on GitHub; the base moves, so a sync would ask for a new review.
+  gh_pr_set "pr['state'], pr['mergedHead'] = 'MERGED', '$(git -C "$GH/../origin.git" rev-parse feature/p)'"
+  "$GH/land" m.txt m >/dev/null
+  local out; out=$(J finish feature/p --pr 2>&1)
+  check "recognizes the merge" "$out" "feature/p: pull request #7 is merged into master; the branch is done" &&
+  check "no review asked" "[$(grep -c 'feature review' <<< "$out")]" "[0]" &&
+  check "report" "$(head -1 $f/feature-p.md)" "FINISH: MERGED" &&
+  check "report names the PR" "$(cat $f/feature-p.md)" "Pull request #7 was merged" &&
+  check "kept worktree removed" "$(test -e "$wt" && echo kept || echo gone)" "gone" &&
+  check "state removed" "$(test -e $f/feature-p.json && echo kept || echo gone)" "gone" &&
+  check "nothing merged by the factory" "[$(grep -c '^pr merge' "$GH_LOG")]" "[0]" || return 1
+  # New commits on the branch after the merged PR: not done, finish goes on.
+  (cd "$TMP_ROOT/ghfinishmerged" && git clone -q origin.git more && cd more && git config user.email t@t &&
+   git config user.name t && git checkout -q feature/p && echo q > q.txt && git add q.txt && git commit -qm q && git push -q origin feature/p)
+  check "new work isn't done" "$(J finish feature/p --pr 2>&1)" "start the feature review"
 }
 
 t_gh_finish_origin_conflict() {
