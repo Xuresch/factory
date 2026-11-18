@@ -13,7 +13,7 @@ machine A                         machine B
         │  POST /api/ingest (Bearer token, gzip JSON, only what changed)
         ▼                                 ▼
    ┌──────────────────── hub/ (Rust, factory-hub) ──────────────────┐
-   │ SQLite: machines, repos, jobs, files, events                     │
+   │ Turso: documents + projected tables (hub/migrations, project.rs) │
    │ /            overview (hub/static/index.html), live via SSE      │
    │ /api/...     JSON read API + /api/stream (SSE)                   │
    │ /r/<owner>/<name>/   virtual factory/ tree → dashboard.html      │
@@ -143,21 +143,45 @@ Content-Encoding: gzip            (optional)
 ```
 
 - `job_ids` is always the complete list for that repo on that machine. The hub
-  deletes that machine's jobs of that repo not in it.
+  marks that machine's jobs of that repo not in it as removed (`removed_at`):
+  they leave the board and the tree but their cost stays in the history, and
+  they come back when listed again.
 - `full: true`: the hub also replaces each listed job's file set with exactly
   what was sent (files not sent are deleted), and a repo the machine reported
-  before but that is absent from `repos` is dropped for that machine.
+  before but that is absent from `repos` is marked removed for that machine.
 - Omitted `config` / `subscriptions` / `outside` keys = unchanged.
 - Response `200 {"ok": true, "need_full": bool}`. `need_full` is true when the
   hub has no record of this machine (fresh database) or of a repo in a non-full
   push. `401` wrong/missing token, `400` bad body, `413` body over 64 MB.
 - Tokens: `$FACTORY_HUB_TOKENS`, comma-separated. Empty = ingest is refused (403).
 - On every job whose `stage` differs from the stored one (or which is new) the
-  hub records an **event** `{at, machine, repo, job, title, from, to}` (from
-  null for new) and pushes it to every SSE client. Also an event `type: "seen"`
-  per ingest (not stored) so the page can show the heartbeat.
+  hub pushes an **event** `{at, machine, repo, job, title, from, to}` (from
+  null for new) to every SSE client. Also an event `type: "seen"` per ingest so
+  the page can show the heartbeat. The overview's `events` list is read from
+  the jobs' `history` (table `job_stages`), with the times `bin/job` recorded.
+
+## Storage
+
+The schema is `hub/migrations/NNNN_*.sql`, applied in order at startup, each in
+one transaction, after the database file is copied to `<db>.bak-<version>`.
+A released migration is never edited; a change is a new file.
+
+- Documents are kept whole: `jobs.doc` (job.json), `checkouts.config_doc`,
+  `outside_scans.doc`, `job_files.content`, `tickets.content`.
+- Everything the hub filters, sorts, counts or sums is projected from them by
+  `hub/src/project.rs` into typed columns of `jobs` (stage group, cost split,
+  tokens, durations, …) and child tables (`job_stages`, `job_costs`,
+  `job_rounds`, `job_round_reviews`, `job_reviewers`, `job_findings`,
+  `job_builder_changes`, `job_approvals`, `job_surfaces`, `job_follow_ups`,
+  `job_slices`), and the outside scan into `outside_months`, `outside_unpriced`,
+  `outside_cwds`.
+- The projection is pure and versioned (`PROJECTION_VERSION`). When it changes,
+  the hub re-projects every older job from the stored documents at startup; no
+  reporter has to send anything again.
 
 ## Read API
+
+The projected job list, detail, and cost endpoints are specified in [API.md](API.md). Overview job entries use the same summaries.
 
 All JSON, `Cache-Control: no-store`.
 
@@ -178,9 +202,9 @@ All JSON, `Cache-Control: no-store`.
                "by_agent": {"claude": 1.0, "codex": 0.2, "other": 0.0}}],
     "last_activity": "…"
   }],
-  "live":      [{"repo": "…", "machine": "…", "id": "…", "href": "…", "job": {job.json}}],
-  "needs_you": [{"repo": "…", "machine": "…", "id": "…", "href": "…", "job": {job.json}}],
-  "recent":    [{"repo": "…", "machine": "…", "id": "…", "href": "…", "job": {job.json}}],
+  "live":      [{"repo": "…", "machine": "…", "id": "…", "href": "…", "job": {summary}}],
+  "needs_you": [{"repo": "…", "machine": "…", "id": "…", "href": "…", "job": {summary}}],
+  "recent":    [{"repo": "…", "machine": "…", "id": "…", "href": "…", "job": {summary}}],
   "events":    [{"at": "…", "machine": "…", "repo": "…", "job": "…", "title": "…", "from": "build", "to": "gate"}],
   "daily": [{"day": "2026-11-04", "cost_usd": 2.4, "jobs": 5,
              "by_agent": {"claude": 2.0, "codex": 0.4, "other": 0.0}}],

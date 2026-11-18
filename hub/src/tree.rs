@@ -10,14 +10,6 @@ use crate::store::{self, get_or_empty, text, Error};
 use crate::util::{html_escape, number, quote};
 use crate::Hub;
 
-const JOB_KEYS: [&str; 6] = [
-    "id",
-    "stage",
-    "started",
-    "ended",
-    "cost_usd",
-    "cost_by_agent",
-];
 const TEXT: &str = "text/plain; charset=utf-8";
 const JSON: &str = "application/json";
 
@@ -60,8 +52,10 @@ impl Answer {
 pub struct JobRow {
     pub repo: String,
     pub machine: String,
+    /// The folder name on the machine.
     pub id: String,
-    pub job: Value,
+    /// `jobs.id`
+    pub job_id: i64,
     /// The id the virtual tree shows for it.
     pub served: String,
 }
@@ -83,7 +77,7 @@ pub fn repo_served_ids(keys: &[(&str, &str)]) -> Vec<String> {
 
 /// Served ids across repos: `<name>~<id>`, escalating on a clash to
 /// `<name>~<machine>~<id>`, then `<owner>~<name>~<machine>~<id>`.
-fn all_served_ids(keys: &[(&str, &str, &str)]) -> Vec<String> {
+pub fn all_served_ids(keys: &[(&str, &str, &str)]) -> Vec<String> {
     type Form = fn(&str, &str, &str, &str) -> String;
     let forms: [Form; 3] = [
         |_, n, _, i| format!("{n}~{i}"),
@@ -222,33 +216,42 @@ fn listing(title: &str, names: &[String]) -> Answer {
     Answer::ok("text/html; charset=utf-8", body.into_bytes())
 }
 
+/// The jobs a tree shows: not removed, on a checkout still reported.
+const SHOWN_JOBS: &str =
+    "SELECT r.slug AS repo, m.name AS machine, j.job_key AS id, j.id AS job_id \
+     FROM jobs j JOIN checkouts c ON c.id=j.checkout_id JOIN repos r ON r.id=c.repo_id \
+     JOIN machines m ON m.id=c.machine_id \
+     WHERE j.removed_at IS NULL AND c.removed_at IS NULL";
+
 impl Hub {
-    /// Every job (of one repo, or of all) with its served id; unparsable jobs are skipped.
+    /// Every shown job (of one repo, or of all) with its served id.
     pub async fn all_jobs(&self, repo: Option<&str>) -> Result<Vec<JobRow>, Error> {
-        let (sql, params) = match repo {
-            Some(r) => (
-                "SELECT repo, machine, id, job FROM jobs WHERE repo=? ORDER BY repo, machine, id",
-                vec![text(r)],
-            ),
-            None => (
-                "SELECT repo, machine, id, job FROM jobs ORDER BY repo, machine, id",
-                vec![],
-            ),
+        let rows = match repo {
+            Some(r) => {
+                self.store
+                    .query(
+                        &format!("{SHOWN_JOBS} AND r.slug=? ORDER BY r.slug, m.name, j.job_key"),
+                        vec![text(r)],
+                    )
+                    .await?
+            }
+            None => {
+                self.store
+                    .query(
+                        &format!("{SHOWN_JOBS} ORDER BY r.slug, m.name, j.job_key"),
+                        vec![],
+                    )
+                    .await?
+            }
         };
-        let mut rows: Vec<JobRow> = self
-            .store
-            .query(sql, params)
-            .await?
+        let mut rows: Vec<JobRow> = rows
             .iter()
-            .filter_map(|row| {
-                let job = serde_json::from_str(get_or_empty(row, "job")).ok()?;
-                Some(JobRow {
-                    repo: get_or_empty(row, "repo").to_owned(),
-                    machine: get_or_empty(row, "machine").to_owned(),
-                    id: get_or_empty(row, "id").to_owned(),
-                    job,
-                    served: String::new(),
-                })
+            .map(|row| JobRow {
+                repo: get_or_empty(row, "repo").to_owned(),
+                machine: get_or_empty(row, "machine").to_owned(),
+                id: get_or_empty(row, "id").to_owned(),
+                job_id: store::get_int(row, "job_id").unwrap_or(0),
+                served: String::new(),
             })
             .collect();
         let served = if repo.is_some() {
@@ -270,54 +273,91 @@ impl Hub {
         Ok(rows)
     }
 
+    /// A stored job.json, with `id` set to the served id.
+    pub async fn job_doc(&self, job_id: i64, served: &str) -> Result<Value, Error> {
+        let rows = self
+            .store
+            .query("SELECT doc FROM jobs WHERE id=?", vec![store::int(job_id)])
+            .await?;
+        let mut doc: Value = rows
+            .first()
+            .and_then(|r| serde_json::from_str(get_or_empty(r, "doc")).ok())
+            .unwrap_or_else(|| json!({}));
+        if let Some(o) = doc.as_object_mut() {
+            if o.get("id").and_then(Value::as_str) != Some(served) {
+                o.insert("id".to_owned(), Value::String(served.to_owned()));
+            }
+        }
+        Ok(doc)
+    }
+
     /// What bin/dashboard's `/_subscriptions.json` answers, over every repo and machine.
     pub async fn subscriptions(&self) -> Result<Value, Error> {
         let machines = self
             .store
-            .query(
-                "SELECT machine, subscriptions, outside FROM machines ORDER BY machine",
-                vec![],
-            )
+            .query("SELECT id, name FROM machines ORDER BY name", vec![])
             .await?;
         if machines.is_empty() {
             return Ok(json!({"configured": false, "config": "factory hub"}));
         }
-        let (mut subs, mut seen, mut outsides) = (Vec::new(), HashSet::new(), Vec::new());
-        for row in &machines {
-            let parse = |col: &str| {
-                store::get(row, col)
-                    .filter(|s| !s.is_empty())
-                    .and_then(|s| serde_json::from_str::<Value>(s).ok())
-            };
-            for sub in parse("subscriptions")
-                .as_ref()
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                if sub.is_object() && seen.insert(subscription_key(sub)) {
-                    subs.push(sub.clone());
-                }
-            }
-            if let Some(o) = parse("outside") {
-                outsides.push((get_or_empty(row, "machine").to_owned(), o));
+        let mut subs = Vec::new();
+        let mut seen = HashSet::new();
+        for row in self
+            .store
+            .query(
+                "SELECT s.name AS name, s.agent AS agent, s.usd_per_month AS usd FROM subscriptions s \
+                 JOIN machines m ON m.id=s.machine_id ORDER BY m.name, s.seq",
+                vec![],
+            )
+            .await?
+        {
+            let sub = json!({"name": row["name"], "agent": row["agent"],
+                             "usd_per_month": crate::util::float(store::get_f64(&row, "usd"))});
+            if seen.insert(subscription_key(&sub)) {
+                subs.push(sub);
             }
         }
+        let outsides: Vec<(String, Value)> = self
+            .store
+            .query(
+                "SELECT m.name AS machine, o.doc AS doc FROM outside_scans o \
+                 JOIN machines m ON m.id=o.machine_id ORDER BY m.name",
+                vec![],
+            )
+            .await?
+            .iter()
+            .filter_map(|r| {
+                let doc = serde_json::from_str(get_or_empty(r, "doc")).ok()?;
+                Some((get_or_empty(r, "machine").to_owned(), doc))
+            })
+            .collect();
+        // every job counts for the costs, also those gone from their machine
         let mut projects: BTreeMap<String, Vec<Value>> = BTreeMap::new();
-        for x in self.all_jobs(None).await? {
-            let summary: Map<String, Value> = JOB_KEYS
-                .iter()
-                .map(|k| {
-                    (
-                        (*k).to_owned(),
-                        x.job.get(*k).cloned().unwrap_or(Value::Null),
-                    )
-                })
-                .collect();
+        for row in self
+            .store
+            .query(
+                "SELECT r.slug AS repo, j.job_key AS id, j.stage AS stage, j.started AS started, \
+                 j.ended AS ended, j.cost_usd AS cost_usd, j.cost_claude AS claude, j.cost_codex AS codex \
+                 FROM jobs j JOIN checkouts c ON c.id=j.checkout_id JOIN repos r ON r.id=c.repo_id \
+                 ORDER BY r.slug, c.machine_id, j.job_key",
+                vec![],
+            )
+            .await?
+        {
+            let mut by_agent = Map::new();
+            for agent in ["claude", "codex"] {
+                let usd = store::get_f64(&row, agent);
+                if usd != 0.0 {
+                    by_agent.insert(agent.to_owned(), crate::util::float(usd));
+                }
+            }
             projects
-                .entry(x.repo)
+                .entry(get_or_empty(&row, "repo").to_owned())
                 .or_default()
-                .push(Value::Object(summary));
+                .push(json!({"id": row["id"], "stage": row["stage"], "started": row["started"],
+                             "ended": row["ended"],
+                             "cost_usd": crate::util::float(store::get_f64(&row, "cost_usd")),
+                             "cost_by_agent": by_agent}));
         }
         let projects: Vec<Value> = projects
             .into_iter()
@@ -349,19 +389,24 @@ impl Hub {
             return Ok(Answer::json(&self.subscriptions().await?));
         }
         if rest == "config.json" {
-            let (sql, params) = match repo {
-                Some(r) => (
-                    "SELECT config FROM repos WHERE config IS NOT NULL AND repo=? \
-                     ORDER BY last_seen DESC LIMIT 1",
-                    vec![text(r)],
-                ),
-                None => (
-                    "SELECT config FROM repos WHERE config IS NOT NULL \
-                     ORDER BY last_seen DESC LIMIT 1",
-                    vec![],
-                ),
+            let base =
+                "SELECT c.config_doc AS config FROM checkouts c JOIN repos r ON r.id=c.repo_id \
+                        WHERE c.config_doc IS NOT NULL AND c.removed_at IS NULL";
+            let rows = match repo {
+                Some(r) => {
+                    self.store
+                        .query(
+                            &format!("{base} AND r.slug=? ORDER BY c.last_seen DESC LIMIT 1"),
+                            vec![text(r)],
+                        )
+                        .await?
+                }
+                None => {
+                    self.store
+                        .query(&format!("{base} ORDER BY c.last_seen DESC LIMIT 1"), vec![])
+                        .await?
+                }
             };
-            let rows = self.store.query(sql, params).await?;
             return Ok(Answer::text(
                 rows.first().and_then(|r| store::get(r, "config")),
                 JSON,
@@ -371,7 +416,9 @@ impl Hub {
             let rows = self
                 .store
                 .query(
-                    "SELECT content FROM tickets WHERE repo=? AND path=? ORDER BY updated DESC LIMIT 1",
+                    "SELECT t.content AS content FROM tickets t JOIN checkouts c ON c.id=t.checkout_id \
+                     JOIN repos r ON r.id=c.repo_id WHERE r.slug=? AND t.path=? \
+                     ORDER BY t.updated DESC LIMIT 1",
                     vec![text(repo), text(rest)],
                 )
                 .await?;
@@ -409,7 +456,6 @@ impl Hub {
             return Ok(Answer::not_found());
         };
         let sub = &parts[2..];
-        let owner = || vec![text(&x.machine), text(&x.repo), text(&x.id)];
         if sub[sub.len() - 1].is_empty() {
             // a directory listing
             let prefix = if sub.len() > 1 {
@@ -420,8 +466,8 @@ impl Hub {
             let rows = self
                 .store
                 .query(
-                    "SELECT path FROM files WHERE machine=? AND repo=? AND job_id=?",
-                    owner(),
+                    "SELECT path FROM job_files WHERE job_id=?",
+                    vec![store::int(x.job_id)],
                 )
                 .await?;
             let mut names = BTreeSet::new();
@@ -446,21 +492,13 @@ impl Hub {
         }
         let path = sub.join("/");
         if path == "job.json" {
-            let mut job = x.job.clone();
-            if x.served != x.id {
-                if let Some(o) = job.as_object_mut() {
-                    o.insert("id".to_owned(), Value::String(x.served.clone()));
-                }
-            }
-            return Ok(Answer::json(&job));
+            return Ok(Answer::json(&self.job_doc(x.job_id, &x.served).await?));
         }
-        let mut params = owner();
-        params.push(text(&path));
         let rows = self
             .store
             .query(
-                "SELECT content FROM files WHERE machine=? AND repo=? AND job_id=? AND path=?",
-                params,
+                "SELECT content FROM job_files WHERE job_id=? AND path=?",
+                vec![store::int(x.job_id), text(&path)],
             )
             .await?;
         Ok(Answer::text(

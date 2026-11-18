@@ -31,8 +31,10 @@
 //! Viewing has no login of its own; put the hub behind an auth proxy and leave
 //! /api/ingest and /healthz outside it, since ingest is token-only.
 
+mod api;
 mod ingest;
 mod overview;
+mod project;
 mod sse;
 mod store;
 mod tree;
@@ -164,6 +166,13 @@ async fn run() -> Result<(), String> {
         tokens,
         ingest_lock: Mutex::new(()),
     });
+    let reprojected = hub
+        .reproject()
+        .await
+        .map_err(|e| format!("cannot re-project the jobs: {e}"))?;
+    if reprojected > 0 {
+        println!("hub: re-projected {reprojected} jobs");
+    }
 
     let host = if bind.is_empty() {
         "0.0.0.0"
@@ -263,7 +272,13 @@ async fn handle(State(hub): State<Arc<Hub>>, req: Request) -> Response {
     match *req.method() {
         Method::GET | Method::HEAD => {
             let head = req.method() == Method::HEAD;
-            get(&hub, req.uri().path(), head).await
+            get(
+                &hub,
+                req.uri().path(),
+                req.uri().query().unwrap_or(""),
+                head,
+            )
+            .await
         }
         Method::POST => post(&hub, req).await,
         _ => close(reply(501, TEXT, "unsupported method\n")),
@@ -272,7 +287,7 @@ async fn handle(State(hub): State<Arc<Hub>>, req: Request) -> Response {
 
 // -- GET --
 
-async fn get(hub: &Hub, raw: &str, head: bool) -> Response {
+async fn get(hub: &Hub, raw: &str, query: &str, head: bool) -> Response {
     let path = unquote(raw);
     if path.contains('\0') || path.split('/').any(|p| p == "..") {
         return not_found();
@@ -284,10 +299,15 @@ async fn get(hub: &Hub, raw: &str, head: bool) -> Response {
             Err(e) => server_error(&e),
         },
         "/api/stream" => stream(hub, head),
+        "/api/costs" => api_costs(hub, query).await,
         "/" => static_file(hub, "index.html").await,
         "/all" | "/all/" => redirect("/all/dashboard.html"),
         _ => {
-            if let Some(name) = path.strip_prefix("/static/") {
+            if let Some(rest) = path.strip_prefix("/api/repos/") {
+                api_repo(hub, rest, query).await
+            } else if let Some(rest) = path.strip_prefix("/api/all/jobs") {
+                api_jobs(hub, None, rest, query).await
+            } else if let Some(name) = path.strip_prefix("/static/") {
                 static_file(hub, name).await
             } else if let Some(rest) = path.strip_prefix("/all/") {
                 tree(hub, None, rest, raw).await
@@ -297,6 +317,61 @@ async fn get(hub: &Hub, raw: &str, head: bool) -> Response {
                 not_found()
             }
         }
+    }
+}
+
+fn query_value(query: &str, key: &str) -> Option<String> {
+    query
+        .split('&')
+        .filter_map(|part| part.split_once('='))
+        .find(|(k, _)| *k == key)
+        .map(|(_, v)| unquote(&v.replace('+', " ")))
+}
+
+async fn api_repo(hub: &Hub, path: &str, query: &str) -> Response {
+    let mut parts = path.splitn(4, '/');
+    let (Some(owner), Some(name), Some("jobs")) = (parts.next(), parts.next(), parts.next()) else {
+        return reply_json(404, &json!({"error": "not found"}));
+    };
+    if owner.is_empty() || name.is_empty() {
+        return reply_json(404, &json!({"error": "not found"}));
+    }
+    let repo = format!("{owner}/{name}");
+    let rest = parts.next().map_or(String::new(), |id| format!("/{id}"));
+    api_jobs(hub, Some(&repo), &rest, query).await
+}
+
+async fn api_jobs(hub: &Hub, repo: Option<&str>, rest: &str, query: &str) -> Response {
+    let result = if rest.is_empty() {
+        hub.api_jobs(repo, query_value(query, "removed").as_deref() == Some("1"))
+            .await
+    } else if let Some(id) = rest
+        .strip_prefix('/')
+        .filter(|id| !id.is_empty() && !id.contains('/'))
+    {
+        hub.api_detail(repo, id).await
+    } else {
+        return reply_json(404, &json!({"error": "not found"}));
+    };
+    match result {
+        Ok(Some(v)) => reply_json(200, &v),
+        Ok(None) => reply_json(404, &json!({"error": "not found"})),
+        Err(e) => server_error(&e),
+    }
+}
+
+async fn api_costs(hub: &Hub, query: &str) -> Response {
+    let group = query_value(query, "group").unwrap_or_default();
+    let repo = query_value(query, "repo");
+    let since = query_value(query, "since");
+    let until = query_value(query, "until");
+    match hub
+        .api_costs(&group, repo.as_deref(), since.as_deref(), until.as_deref())
+        .await
+    {
+        Ok(Some(v)) => reply_json(200, &v),
+        Ok(None) => reply_json(404, &json!({"error": "not found"})),
+        Err(e) => server_error(&e),
     }
 }
 
@@ -317,7 +392,8 @@ async fn repo_tree(hub: &Hub, path: &str, raw: &str) -> Response {
     match hub
         .store
         .query(
-            "SELECT 1 FROM repos WHERE repo=? LIMIT 1",
+            "SELECT 1 FROM repos r JOIN checkouts c ON c.repo_id=r.id \
+             WHERE r.slug=? AND c.removed_at IS NULL LIMIT 1",
             vec![store::text(&repo)],
         )
         .await

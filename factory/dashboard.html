@@ -620,6 +620,11 @@ function verdictOf(line) {
 
 // A round's verdicts come from its files: the gate first, then each routed reviewer.
 async function roundVerdicts(job, n) {
+  if (hub) {
+    const round = (job.rounds || []).find((r) => r.round === n)
+    return { gate: round?.gate || 'pending', reviews: Object.fromEntries(
+      Object.keys(job.agents?.reviewers || {}).map((lens) => [lens, round?.reviews?.[lens] || 'pending'])) }
+  }
   const key = `${job.id}/${n}`
   if (roundCache.has(key)) return roundCache.get(key)
   const dir = `jobs/${job.id}/round-${n}/`
@@ -763,8 +768,8 @@ async function poll() {
   try {
     jobs = await loadJobs()
     await render()
-    routeJob()
     if (openJobId) await refreshDrawer()
+    routeJob()
     lastOk = Date.now()
     status.className = 'status'
     status.innerHTML = `<span class="dot"></span>jobs/ · ${new Date().toLocaleTimeString()}`
@@ -780,6 +785,7 @@ async function poll() {
 
 // factory/bin/job writes each jobs/<id>/job.json.
 async function loadJobs() {
+  if (hub) return (await fetchJSON(`${apiJobs()}`)).jobs
   let listing
   try { listing = await fetchText('jobs/') } catch { return [] }
   const doc = new DOMParser().parseFromString(listing, 'text/html')
@@ -791,6 +797,14 @@ async function loadJobs() {
     .filter((id) => !id.startsWith('_'))
     .sort()
   return Promise.all(ids.map(async (id) => JSON.parse(await fetchText(`jobs/${id}/job.json`))))
+}
+
+function apiJobs() {
+  return hub.repo === 'all' ? '/api/all/jobs' : `/api/repos/${hub.repo.split('/').map(encodeURIComponent).join('/')}/jobs`
+}
+
+async function fetchJSON(url) {
+  return JSON.parse(await fetchText(url))
 }
 
 // ---- Drawer --------------------------------------------------------------
@@ -834,8 +848,13 @@ function tone(first) {
 const firstLines = new Map()
 
 async function refreshDrawer() {
-  const job = jobs.find((j) => j.id === openJobId)
+  const id = openJobId
+  let job = jobs.find((j) => j.id === id)
   if (!job) return
+  if (hub) {
+    job = await fetchJSON(`${apiJobs()}/${encodeURIComponent(id)}`)
+    if (openJobId !== id) return
+  }
   const tail = `${job.stage}${job.round ? ` · round ${job.round}` : ''} · ${money(job.cost_usd)} · ${elapsed(job)}`
   $('d-ref').hidden = !hub
   if (hub) $('d-ref').innerHTML = `${repoChip(job, true)}<span class="num">${esc(ref(job))}</span>`
@@ -846,7 +865,7 @@ async function refreshDrawer() {
 
   const base = `jobs/${job.id}/`
   // "costs" is not a file: it renders job.cost_breakdown. Finished jobs open on it.
-  const jobFiles = sortFiles(await listFiles(base))
+  const jobFiles = sortFiles(hub ? (job.files || []).filter((f) => f.endsWith('.md')) : await listFiles(base))
   const files = [COSTS, ...(isLocal(job) ? [TICKET] : []), ...jobFiles]
   if (!openPath || !files.includes(openPath)) {
     openPath = DONE.has(job.stage) || !jobFiles.length ? COSTS : jobFiles[0]
@@ -862,7 +881,7 @@ async function refreshDrawer() {
     text = await fetchText(base + openPath)
     firstLines.set(base + openPath, text.split('\n')[0].trim())
   }
-  await Promise.all(files.filter((f) => f !== COSTS && f !== TICKET && !firstLines.has(base + f)).map(async (f) => {
+  if (!hub) await Promise.all(files.filter((f) => f !== COSTS && f !== TICKET && !firstLines.has(base + f)).map(async (f) => {
     firstLines.set(base + f, (await fetchText(base + f)).split('\n')[0].trim())
   }))
 
@@ -875,8 +894,11 @@ async function refreshDrawer() {
     const name = f === COSTS ? `overview · $${Number(job.cost_usd).toFixed(2)}`
       : f === TICKET ? `ticket · ${esc(job.issue)}` : round
       ? `<span class="rn">R${round[1]} </span>${esc(f.split('/')[1].replace(/^review-|\.md$/g, ''))}`
-      : esc(f)
-    const t = tone(firstLines.get(base + f) || '')
+      : esc(f.replace(/\.md$/, ''))
+    const match = f.match(/^round-(\d+)\/(checks|review-(.+))\.md$/)
+    const roundData = match && (job.rounds || []).find((r) => r.round === Number(match[1]))
+    const verdict = match && (match[2] === 'checks' ? roundData?.gate : roundData?.reviews?.[match[3]])
+    const t = tone(firstLines.get(base + f) || (verdict ? `${match[2] === 'checks' ? 'GATE' : 'VERDICT'}: ${verdict}` : ''))
     return `${head}<button class="file ${f === openPath ? 'on' : ''}" data-file="${esc(f)}">
       <span class="v ${t || ''}"></span>${name}</button>`
   }).join('') || '<div class="empty">No files yet.</div>'
@@ -918,8 +940,10 @@ const dur = (ms) => (ms > 0 && ms < 60000 ? '<1m' : ms > 0 ? mins(ms) : '–')
 // The job's wall clock as a waterfall, from job.history (factory/bin/job advance): one row per stage,
 // bar offset = start, length = duration. Time spent waiting on a human is hatched, work wears its agent's colour.
 function timelineTable(job) {
+  const summary = hub && job.work_s != null && job.wait_s != null
+    ? `<p class="wf-tot"><b>${mins(job.work_s * 1000)}</b> agents working · <b>${mins(job.wait_s * 1000)}</b> waiting on you</p>` : ''
   const h = job.history || []
-  if (!h.length) return '<p class="note">No timeline: this job started before the factory recorded one.</p>'
+  if (!h.length) return summary + '<p class="note">No timeline: this job started before the factory recorded one.</p>'
   const t0 = Date.parse(h[0].at)
   const end = job.ended ? Date.parse(job.ended) : Date.now()
   const total = Math.max(1, end - t0)
@@ -944,9 +968,9 @@ function timelineTable(job) {
   const work = by.claude + by.codex + by.other
   const seg = (k) => (by[k] > 0 ? `<i class="${k}" style="flex:${by[k]} 1 0"></i>` : '')
   const part = (k, label) => (by[k] > 0 ? `<span>${k === 'wait' ? '<i class="sw wait"></i>' : sw(k)}${label} ${mins(by[k])}</span>` : '')
-  return `<div class="wf">
+  return `${summary}<div class="wf">
     <div class="wf-sum" role="img" aria-label="${esc(`Agents working ${mins(work)}, waiting on you ${mins(by.wait)}, total ${mins(total)}`)}">${['claude', 'codex', 'other', 'wait'].map(seg).join('')}</div>
-    <p class="wf-tot"><b>${mins(work)}</b> agents working · <b>${mins(by.wait)}</b> waiting on you · ${mins(total)} total</p>
+    ${summary ? '' : `<p class="wf-tot"><b>${mins(work)}</b> agents working · <b>${mins(by.wait)}</b> waiting on you · ${mins(total)} total</p>`}
     <div class="legend">${part('claude', 'claude')}${part('codex', 'codex')}${part('other', 'checks and merge')}${part('wait', 'waiting on you (paused, needs-human, needs-info)')}</div>
     ${rows}
     <div class="wf-axis"><span></span><div><span>start</span><span>${mins(total / 2)}</span><span>${mins(total)}</span></div><span></span></div></div>`
@@ -967,7 +991,13 @@ function costTable(job) {
     </tr>`).join('')
   const followUps = (job.follow_ups || []).map((f) => `<li>${esc(f.issue)}: ${esc(f.title)}</li>`).join('')
   const pt = partsTotal(parts)
+  const findings = (job.findings || []).map((f) => `<li>R${esc(f.round)} · ${esc(f.lens)} · ${esc(f.finding)} · ${esc(f.status)}${f.answer ? ` · ${esc(f.answer)}` : ''}</li>`).join('')
+  const approvals = (job.approvals || []).map((a) => `<li>${esc(a.kind)}${a.by ? ` · ${esc(a.by)}` : ''}${a.round != null ? ` · R${esc(a.round)}` : ''}${a.note ? ` · ${esc(a.note)}` : ''}</li>`).join('')
+  const changes = (job.builder_changes || []).map((c) => `<li>R${esc(c.round)} · ${esc(c.agent || '')}${c.model ? ` · ${esc(c.model)}` : ''}${c.reason ? ` · ${esc(c.reason)}` : ''}</li>`).join('')
   return `<h2>Timeline</h2>${timelineTable(job)}
+    ${findings ? `<h2>Findings</h2><ul>${findings}</ul>` : ''}
+    ${approvals ? `<h2>Approvals</h2><ul>${approvals}</ul>` : ''}
+    ${changes ? `<h2>Builder changes</h2><ul>${changes}</ul>` : ''}
     ${followUps ? `<h2>Follow-ups filed</h2><ul>${followUps}</ul>` : ''}
     <h2>Costs</h2>
     <div class="cost-head"><b>${money(total || job.cost_usd)}</b><span>API-equivalent</span></div>
@@ -995,6 +1025,7 @@ const shortModel = (m) => String(m || '?').replace(/^claude-/, '').replace(/-\d+
 
 // Time a job spent working and waiting on a human, from job.history.
 function times(job) {
+  if (hub && job.work_s != null && job.wait_s != null) return { total: (job.duration_s || 0) * 1000, work: job.work_s * 1000, wait: job.wait_s * 1000 }
   const h = job.history || []
   const end = job.ended ? Date.parse(job.ended) : Date.now()
   let wait = 0
@@ -1290,6 +1321,7 @@ const ref = (j) => (j.issue ? `#${j.issue}` : `#${numOf(j)}`)
 const repoOf = (j, forced = false) => {
   if (!hub) return null
   if (hub.repo !== 'all') return forced ? hub.repo : null
+  if (j.repo) return j.repo
   const p = String(j.id).split('~')
   if (p.length < 2) return null
   const known = (window.FactoryNav?.data?.repos || []).map((r) => r.repo).filter((r) => r.split('/').pop() === p[0])
@@ -2143,21 +2175,20 @@ function routeJob() {
 
 // Under the hub, `hub` answers {repo, overview}; run locally it 404s and nothing changes. Then the hub's
 // app bar (hub/static/nav.js) replaces this page's header, view tabs, repo switcher, search and status.
-fetch('hub', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).then((h) => {
+const hubReady = fetch('hub', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).then((h) => {
   const root = document.documentElement
   if (!h || !h.overview) { root.classList.remove('hub'); return }
   hub = h
   root.classList.add('hub')
   const bar = document.createElement('script')
   bar.src = new URL('static/nav.js', new URL(h.overview, location.href)).href
-  bar.onload = () => { if (window.FactoryNav?.fail) { hub = null; root.classList.remove('hub') } else { lastRender = ''; lastCosts = ''; render() } }
-  bar.onerror = () => { hub = null; root.classList.remove('hub') }
+  bar.onload = () => { if (window.FactoryNav?.fail) root.classList.remove('hub'); else { lastRender = ''; lastCosts = ''; render() } }
+  bar.onerror = () => { root.classList.remove('hub') }
   document.head.append(bar)
 }).catch(() => { document.documentElement.classList.remove('hub') })
 
 window.addEventListener('hashchange', () => { render(); routeJob() })
-poll()
-setInterval(poll, POLL_MS)
+hubReady.then(() => { poll(); setInterval(poll, POLL_MS) })
 </script>
 </body>
 </html>

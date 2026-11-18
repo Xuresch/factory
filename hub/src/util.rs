@@ -272,3 +272,13 @@ mod tests {
         assert!(!safe_path("a//b"));
     }
 }
+
+/// FNV-1a 64 of a text, as 16 hex digits: a stable change marker for stored documents.
+pub fn doc_hash(s: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in s.as_bytes() {
+        h ^= u64::from(*byte);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
