@@ -565,7 +565,10 @@ new feature, ask.
   `intake.md` or `spec.md` while it was paused are binding. When the spec's
   `## Needs a human` lists items, first ask the user for the result of each,
   and add one line per item after the first, `- <item>: <their result>`: the
-  approver escalates every item without a recorded result.
+  approver escalates every item without a recorded result. An item the user
+  explicitly keeps for themselves ("I run the migration after the merge")
+  counts as answered: record it that way, and the approver lists it as a
+  step for after the merge instead of escalating.
 - **Changing course** on a running or waiting job ("anderer Ansatz", "back to
   the spec", "redo the build with X"): stop the job's running workers, then
   pass their words verbatim:

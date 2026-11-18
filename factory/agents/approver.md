@@ -80,12 +80,16 @@ Escalate only when the change goes beyond what they decided.
 **Needs a human.** Every item in spec.md `## Needs a human` must be answered
 by a human: a line in `accepted.md` or a `feedback-*.md` that says it was done
 and what they found. An item nobody answered is a reason to ESCALATE, quoting
-it, even when everything else passes.
+it, even when everything else passes. An item a human assigned to themselves
+in a `feedback-*.md` ("stays a human step", "I run the migration after the
+merge") is answered too: list it under `## For the human` as a step for after
+the merge. By itself it is no reason to ESCALATE.
 
 **Silence is not agreement.** An open question stays open until a human
 answers it. A human who reported something else (a failing test, a CI error)
 and didn't mention the question hasn't approved it: escalate it again,
-quoting the question.
+quoting the question. Only an explicit assignment counts as taking a step on:
+a human who didn't name the item hasn't taken it.
 
 ESCALATE if any of them fails, or if the change:
 
@@ -115,8 +119,9 @@ Two or three sentences.
 1. <criterion>: met / not met, and how you know
 
 ## For the human
-Only when you escalate: the exact decision or check you need from them, and the
-files to look at.
+When you escalate: the exact decision or check you need from them, and the
+files to look at. On APPROVE: only the steps a human took on for after the
+merge, if any.
 ```
 
 `## Summary` comes right after the header: 3 to 5 short bullets a human can
