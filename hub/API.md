@@ -26,6 +26,9 @@ moving from job.json to the API changes little.
   "duration_s": 3600, "wait_s": 600, "work_s": 3000,
   "cost_usd": 9.29, "cost_by_agent": {"claude": 5.2, "codex": 4.0, "other": 0.09},
   "tokens": {"input": 1, "cached": 2, "output": 3},
+  "cost_breakdown": [{"role": "builder-s1", "role_base": "builder", "agent": "claude",
+                      "model": "claude-opus-5-5", "sessions": 1, "input_tokens": 1,
+                      "cached_tokens": 2, "output_tokens": 3, "cost_usd": 1.2}],
   "intake": {"decision": "ACCEPT", "risk": "medium", "size": "small", "split": false,
              "rescoped": false, "surfaces": ["ui"]},
   "agents": {"builder": {"agent": "claude", "model": "opus", "effort": "high"},
@@ -42,7 +45,8 @@ moving from job.json to the API changes little.
 }
 ```
 
-`paused` is null unless `paused_after` is set. `rounds[].gate` / `reviews[lens]`
+`cost_breakdown` is job_costs by seq (a handful of rows per job; the costs pages
+aggregate it per model and role over any range of jobs). `paused` is null unless `paused_after` is set. `rounds[].gate` / `reviews[lens]`
 are the verdicts read from `round-N/checks.md` / `round-N/review-<lens>.md`
 (`PASS`, `CHANGES`, `FAIL`, `invalid`, or null when the file is not there yet).
 
@@ -56,8 +60,6 @@ are the verdicts read from `round-N/checks.md` / `round-N/review-<lens>.md`
   as in `/all/`.
 - `GET /api/repos/<owner>/<name>/jobs/<served id>` (and `/api/all/jobs/<served id>`)
   → the summary plus:
-  - `cost_breakdown`: `[{role, role_base, agent, model, sessions, input_tokens,
-    cached_tokens, output_tokens, cost_usd}]` (job_costs, by seq)
   - `reviewers`: `[{lens, agent, model, effort, verdict, skipped_reason, held}]`
   - `round_reviews`: `[{round, lens, verdict, agent, model, effort}]`
   - `findings`: `[{round, finding, lens, status, answer}]`
