@@ -868,7 +868,7 @@ async function refreshDrawer() {
   const jobFiles = sortFiles(hub ? (job.files || []).filter((f) => f.endsWith('.md')) : await listFiles(base))
   const files = [COSTS, ...(isLocal(job) ? [TICKET] : []), ...jobFiles]
   if (!openPath || !files.includes(openPath)) {
-    openPath = hub || DONE.has(job.stage) || !jobFiles.length ? COSTS : jobFiles[0]
+    openPath = DONE.has(job.stage) || !jobFiles.length ? COSTS : jobFiles[0]
   }
 
   let text = null
@@ -1138,7 +1138,8 @@ function costsTables() {
       <tfoot><tr><td colspan="6">total</td><td class="n">${money(agent('claude'))}</td><td class="n">${money(agent('codex'))}</td>
       <td class="n">${money(total)}</td><td colspan="2"></td></tr></tfoot></table>
     <div class="grid2">
-      ${hub ? '<p class="note">Model and role breakdowns are available in each job’s overview.</p>' : tokenTable('By model', byModel, total, 'agent · model') + tokenTable('By role', byRole, total, 'role')}
+      ${tokenTable('By model', byModel, total, 'agent · model')}
+      ${tokenTable('By role', byRole, total, 'role')}
       <div><h2>By risk and size</h2><table class="costs"><thead><tr><th>risk · size</th><th class="n">jobs</th>
         <th class="n">cost</th><th class="n">per job</th><th class="n">rounds</th><th class="n">working</th>
         <th class="n">share</th></tr></thead><tbody>${riskBody}</tbody></table></div>
@@ -1670,10 +1671,9 @@ function rangeJobs() {
 }
 
 function costsPage() {
-  if (hub) ui.shade = 'agent'
   const js = rangeJobs()
   const extra = `<span class="gap"></span>${segBtn('per', 'auto', 'auto')}${segBtn('per', 'job', 'per job')}${segBtn('per', 'day', 'per day')}${segBtn('per', 'week', 'per week')}
-    <span class="gap"></span>${segBtn('shade', 'agent', 'by agent')}${hub ? '' : segBtn('shade', 'role', 'by role')}`
+    <span class="gap"></span>${segBtn('shade', 'agent', 'by agent')}${segBtn('shade', 'role', 'by role')}`
   return `<div class="cv">${rangeControl(`${js.length} of ${jobs.length} jobs`, extra)}${js.length ? costsFor(js, jobs) : '<p class="note">No jobs started in this range.</p>'}
     <details class="old" ${ui.old ? 'open' : ''} data-old><summary>All tables (every job)</summary>${costsTables()}</details></div>`
 }
@@ -1867,9 +1867,7 @@ function costsFor(jobs, allJobs) {
     <p class="sub">What each model read from the cache. "~" marks an estimate: the cached tokens priced at the full input price instead of the cache-read price, from config.json.</p>
     <table class="costs"><thead><tr><th>agent · model</th><th class="n">input</th><th class="n">cached</th><th class="n">output</th><th class="n">cache share</th><th class="n">cost</th><th class="n">saved</th></tr></thead><tbody>${cacheBody}</tbody></table>`
 
-  const tokenTotals = jobs.reduce((a, j) => { for (const k of ['input', 'cached', 'output']) a[k] += Number(j.tokens?.[k] || 0); return a }, { input: 0, cached: 0, output: 0 })
-  const hubTokens = `<h2>Tokens</h2><p class="sub">${tokens(tokenTotals.input)} input · ${tokens(tokenTotals.cached)} cached · ${tokens(tokenTotals.output)} output. Model and role breakdowns are in each job’s overview.</p>`
-  return `${tiles}${chart1}${daily}<div class="grid2">${chart2}${matrix}</div>${hub ? hubTokens : `<div class="grid2">${roleBars}<div>${cache}</div></div>`}`
+  return `${tiles}${chart1}${daily}<div class="grid2">${chart2}${matrix}</div><div class="grid2">${roleBars}<div>${cache}</div></div>`
 }
 
 // ---- Board and costs controls, tooltips ---------------------------------
@@ -2184,8 +2182,8 @@ const hubReady = fetch('hub', { cache: 'no-store' }).then((r) => (r.ok ? r.json(
   root.classList.add('hub')
   const bar = document.createElement('script')
   bar.src = new URL('static/nav.js', new URL(h.overview, location.href)).href
-  bar.onload = () => { if (!window.FactoryNav?.fail) { lastRender = ''; lastCosts = ''; render() } }
-  bar.onerror = () => {}
+  bar.onload = () => { if (window.FactoryNav?.fail) root.classList.remove('hub'); else { lastRender = ''; lastCosts = ''; render() } }
+  bar.onerror = () => { root.classList.remove('hub') }
   document.head.append(bar)
 }).catch(() => { document.documentElement.classList.remove('hub') })
 
