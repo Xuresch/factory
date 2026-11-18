@@ -181,6 +181,8 @@ A released migration is never edited; a change is a new file.
 
 ## Read API
 
+The projected job list, detail, and cost endpoints are specified in [API.md](API.md). Overview job entries use the same summaries.
+
 All JSON, `Cache-Control: no-store`.
 
 - `GET /api/overview` →
@@ -200,9 +202,9 @@ All JSON, `Cache-Control: no-store`.
                "by_agent": {"claude": 1.0, "codex": 0.2, "other": 0.0}}],
     "last_activity": "…"
   }],
-  "live":      [{"repo": "…", "machine": "…", "id": "…", "href": "…", "job": {job.json}}],
-  "needs_you": [{"repo": "…", "machine": "…", "id": "…", "href": "…", "job": {job.json}}],
-  "recent":    [{"repo": "…", "machine": "…", "id": "…", "href": "…", "job": {job.json}}],
+  "live":      [{"repo": "…", "machine": "…", "id": "…", "href": "…", "job": {summary}}],
+  "needs_you": [{"repo": "…", "machine": "…", "id": "…", "href": "…", "job": {summary}}],
+  "recent":    [{"repo": "…", "machine": "…", "id": "…", "href": "…", "job": {summary}}],
   "events":    [{"at": "…", "machine": "…", "repo": "…", "job": "…", "title": "…", "from": "build", "to": "gate"}],
   "daily": [{"day": "2026-11-04", "cost_usd": 2.4, "jobs": 5,
              "by_agent": {"claude": 2.0, "codex": 0.4, "other": 0.0}}],

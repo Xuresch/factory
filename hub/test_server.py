@@ -434,3 +434,74 @@ class TestTree(HubCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestReadApi(HubCase):
+    def test_summaries_details_and_overview(self):
+        e = entry("001", round=1, issue="12", round_limit=6,
+                  files={"spec.md": "spec", "round-1/checks.md": "GATE: PASS\n",
+                         "round-1/review-code.md": "VERDICT: CHANGES\n"},
+                  agents={"builder": {"agent": "claude"}, "reviewers": {"code": {"agent": "codex"}}},
+                  reviews={"code": "PASS"}, intake={"surfaces": ["ui"], "split": True},
+                  history=[{"stage": "spec", "at": "2026-11-17T10:00:00Z"},
+                           {"stage": "build", "round": 1, "at": "2026-11-17T10:10:00Z"}],
+                  slices=[{"n": 1, "title": "one", "state": "done"}],
+                  cost_breakdown=[{"role": "builder-s1", "agent": "claude", "model": "opus", "cost_usd": 1, "input_tokens": 10}],
+                  diff_sizes={"1": {"files": 3, "insertions": 40, "deletions": 2}},
+                  answers={"1": {"code F1": {"status": "fixed", "text": "done"}}},
+                  builder_log=[{"round": 1, "builder": {"agent": "codex"}, "why": "changes"}],
+                  accepted=[{"by": "person", "after": "spec"}],
+                  follow_ups=[{"issue": "42", "title": "later"}], fork_point="abc", review_head="def")
+        self.ok(push("neo", [repo("o/r", [e])]))
+        result = self.get_json("/api/repos/o/r/jobs")
+        self.assertEqual(result["machines"], ["neo"])
+        j = result["jobs"][0]
+        self.assertEqual((j["id"], j["key"], j["repo"]), ("001", "001", "o/r"))
+        self.assertEqual(j["rounds"][0]["gate"], "PASS")
+        self.assertEqual(j["rounds"][0]["reviews"], {"code": "CHANGES"})
+        self.assertEqual(j["slices"][0]["title"], "one")
+        self.assertEqual(j["history"][1]["from"], "spec")
+        self.assertEqual(j["intake"]["surfaces"], ["ui"])
+        self.assertEqual(j["tokens"]["input"], 10)
+        self.assertEqual(self.get_json("/api/overview")["live"][0]["job"], j)
+        detail = self.get_json("/api/repos/o/r/jobs/001")
+        self.assertEqual(detail["cost_breakdown"][0]["role_base"], "builder")
+        self.assertEqual(detail["reviewers"][0]["lens"], "code")
+        self.assertEqual(detail["round_reviews"][0]["verdict"], "CHANGES")
+        self.assertEqual(detail["findings"][0]["answer"], "done")
+        self.assertEqual(detail["builder_changes"][0]["reason"], "changes")
+        self.assertEqual(detail["approvals"][0]["by"], "person")
+        self.assertEqual(detail["follow_ups"][0]["issue"], "42")
+        self.assertIn("round-1/checks.md", detail["files"])
+        self.assertEqual((detail["fork_point"], detail["review_head"]), ("abc", "def"))
+        self.assertEqual(self.get_json("/api/all/jobs")["jobs"][0]["id"], "r~001")
+        self.assertTrue(self.get_json("/api/all/jobs")["jobs"][0]["href"].endswith("#job=001"))
+        self.assertEqual(self.get_json("/api/all/jobs/r~001")["key"], "001")
+        for path in ("/api/repos/no/repo/jobs", "/api/repos/o/r/jobs/missing", "/api/all/jobs/missing"):
+            self.assertEqual(self.get(path)[0], 404)
+        self.assertEqual(self.get("/api/all/jobs")[2].getheader("Cache-Control"), "no-store")
+
+    def test_costs_removal_and_machine_ids(self):
+        def cost_entry(key, day, amount, agent, model):
+            return entry(key, started=day + "T10:00:00Z", cost=amount,
+                         cost_breakdown=[{"role": "builder-s1", "agent": agent, "model": model,
+                                          "cost_usd": amount, "input_tokens": 5}])
+        self.ok(push("neo", [repo("o/r", [cost_entry("001", "2026-11-01", 2, "claude", "opus")])]))
+        self.ok(push("trinity", [repo("o/r", [cost_entry("001", "2026-11-02", 3, "codex", "gpt")])]))
+        ids = {j["id"] for j in self.get_json("/api/repos/o/r/jobs")["jobs"]}
+        self.assertEqual(ids, {"neo~001", "trinity~001"})
+        self.assertEqual(self.get_json("/api/repos/o/r/jobs/neo~001")["machine"], "neo")
+        self.assertEqual(self.get_json("/api/all/jobs/r~neo~001")["machine"], "neo")
+        for group, keys in [("day", {"2026-11-01", "2026-11-02"}), ("month", {"2026-11"}),
+                            ("repo", {"o/r"}), ("agent", {"claude", "codex"}),
+                            ("model", {"opus", "gpt"}), ("role", {"builder"})]:
+            rows = self.get_json("/api/costs?group=" + group)["rows"]
+            self.assertEqual({r["key"] for r in rows}, keys)
+            self.assertAlmostEqual(sum(r["cost_usd"] for r in rows), 5)
+        rows = self.get_json("/api/costs?group=day&repo=o%2Fr&since=2026-11-02&until=2026-11-02")["rows"]
+        self.assertEqual([(r["key"], r["cost_usd"]) for r in rows], [("2026-11-02", 3)])
+        self.ok(push("neo", [repo("o/r", [], ids=[])]))
+        removed = self.get_json("/api/repos/o/r/jobs?removed=1")["jobs"]
+        self.assertEqual(sum(j["removed"] for j in removed), 1)
+        self.assertEqual(len(self.get_json("/api/repos/o/r/jobs")["jobs"]), 1)
+        self.assertEqual(next(j["id"] for j in removed if not j["removed"]), "001")
+        self.assertEqual(sum(r["cost_usd"] for r in self.get_json("/api/costs?group=repo")["rows"]), 5)
