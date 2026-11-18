@@ -584,7 +584,7 @@ new feature, ask.
 - **Changing who works on a job** ("build it with Claude", "security review on
   Opus"): `factory/bin/job route-set <id> builder=claude/opus security=claude/opus`
   (agents `claude` or `codex`, `/model` and `:effort` optional, as in
-  `codex/gpt-6.1-sol:high`, or a preset from `model_presets`: `builder=terra-high`). A pinned builder isn't
+  `codex/gpt-6.2-sol:high`, or a preset from `model_presets`: `builder=terra-high`). A pinned builder isn't
   switched by the UI fallback. It warns when a cross-review lens ends up on the
   builder's agent; tell the user.
 - **A feature branch** ("bündel das in feature/x", "erst in dev"): the target

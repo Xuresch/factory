@@ -76,7 +76,7 @@
       },
       "high": {
         "agent": "codex",
-        "model": "gpt-6.1-sol",
+        "model": "gpt-6.2-sol",
         "effort": "high"
       }
     }
@@ -138,7 +138,7 @@
       },
       "claude": {
         "agent": "codex",
-        "model": "gpt-6.1-sol",
+        "model": "gpt-6.2-sol",
         "effort": "medium"
       }
     }
@@ -197,6 +197,12 @@
       "cache_read": 0.2
     },
     "gpt-6.1-sol": {
+      "input": 2.0,
+      "cached_input": 0.1,
+      "cache_write": 2.5,
+      "output": 10.0
+    },
+    "gpt-6.2-sol": {
       "input": 2.0,
       "cached_input": 0.1,
       "cache_write": 2.5,
@@ -293,12 +299,12 @@
     },
     "sol-medium": {
       "agent": "codex",
-      "model": "gpt-6.1-sol",
+      "model": "gpt-6.2-sol",
       "effort": "medium"
     },
     "sol-high": {
       "agent": "codex",
-      "model": "gpt-6.1-sol",
+      "model": "gpt-6.2-sol",
       "effort": "high"
     }
   },
