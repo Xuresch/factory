@@ -125,6 +125,7 @@ SURFACES: ui, security | ui | security | none
 RESCOPED: yes | no
 SIZE: small | medium | large
 SPLIT: yes | no
+TITLE: <type>(<scope>): <summary>
 
 ## Summary
 - 3 to 5 short bullets: what happened in this step and why
@@ -159,10 +160,17 @@ in protected paths: the factory can't build it. Name it in Why as a change
 for a human.
 ```
 
-- The six header lines come first, then a blank line. Write `RISK`,
-  `SURFACES`, `RESCOPED`, `SIZE` and `SPLIT` on every decision; for
+- The seven header lines come first, then a blank line. Write `RISK`,
+  `SURFACES`, `RESCOPED`, `SIZE`, `SPLIT` and `TITLE` on every decision; for
   NEEDS-INFO, REJECT and PROTECTED, write your best guess. `SPLIT: yes` only with
   `SIZE: large`.
+- `TITLE` names the change as a Conventional Commits line, for example
+  `TITLE: fix(export): keep empty rows in the CSV`: a type from
+  `commit_types` in `factory/config.json` (default `feat`, `fix`, `docs`,
+  `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`), an
+  optional scope, an imperative summary, at most 72 characters, no period at
+  the end, no issue number. When the spec writer is skipped it is the spec's
+  title, so the PR's title too.
 - `## Summary` comes right after the header: 3 to 5 short bullets a human can
   skim on the dashboard. The detail goes in the sections below it.
 - `RESCOPED: yes` when your Scope differs from what the issue asked for.

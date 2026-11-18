@@ -101,6 +101,9 @@ touch an issue or label.
 - `diagnosing-bugs`: when the gate failed or a review found a bug, use its
   loop (reproduce, hypothesise, prove, fix) before you change code.
 - `pr`: write the PR body with it. The first line stays `Closes #<issue>`.
+- `git-commit`: its message format for every commit (see "Commit, push,
+  PR"). Use only the format: don't stage with it, and its "repository rule
+  wins" and "no rebase" don't apply here.
 - `codebase-design`: when the spec needs a new module or seam, use its
   vocabulary and keep the interface small.
 - `modern-web-guidance`: before you
@@ -205,12 +208,21 @@ A criterion that asks for a test and has none named isn't met: write the test.
 
 The header's `Tracker:` says where the work goes.
 
-- Commit on the job branch with short one-line messages in the style of
-  `git log --oneline`. One commit per distinct piece of work.
+- Commit on the job branch in the Conventional Commits format of the
+  `git-commit` skill (`~/.agents/skills/git-commit/SKILL.md`):
+  `<type>(<scope>): <summary>`, the scope optional, the summary imperative
+  ("add", not "added"), the first line at most 72 characters with no period
+  at the end. The type is one of `commit_types` in `factory/config.json`
+  (default `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`,
+  `build`, `ci`, `chore`, `revert`). Use this format even when the repo's own
+  `git log` uses another style: here the factory wins over the skill's "the
+  repository rule wins". If the skill is missing, follow the format stated
+  here. One commit per distinct piece of work. The gate fails a commit
+  subject that breaks the format.
 - No trailers: never add `Co-Authored-By`, `Signed-off-by` for anyone else,
   or a "Generated with" line, whatever your own defaults say. Nobody
   co-authors a factory job; the gate strips such lines anyway. The same goes
-  for PR bodies: no "Generated with" footer.
+  for PR bodies: no "Generated with" footer. This rule beats the skills.
 - A commit made with `--no-verify`, or with any hook skipped, goes under
   `## Self-review` in build.md: the hook and the reason, so reviewers and the
   approver see it.
@@ -219,9 +231,26 @@ The header's `Tracker:` says where the work goes.
 - **Tracker: github.** Push with `git push -u origin <branch>`. Push only the
   job branch, never anything else. If the branch has no PR yet
   (`gh pr view <branch>` fails), open it as a draft:
-  `gh pr create --draft --base <base branch> --head <branch> --title "<spec title>" --body "Closes #<issue>"`
-  followed by a blank line and your Summary. Once it exists, just push; the PR
-  updates itself. Never mark the PR ready and never merge it.
+  `gh pr create --draft --base <base branch> --head <branch> --title "<spec title>" --body "<body>"`.
+  The title is spec.md's first line without the `# `, a Conventional Commits
+  line like the commits (with squash merges it becomes the commit on the
+  base; GitHub appends the PR number, so don't). If the spec's title isn't
+  in that format, write one that is. The gate fails a PR title that breaks
+  the format; fix it with `gh pr edit <n> --title "..."`. The body is
+  `Closes #<issue>`, a blank line, then a short body written with the `pr`
+  skill (`~/.agents/skills/pr/SKILL.md`): `## Summary`, `## Evidence`,
+  `## Merge Danger`. If the skill is missing, write those three sections
+  anyway: the smallest diagram, tree or diff sketch that shows the change;
+  the before and after (a failing then passing test, output, a screenshot);
+  one-way or two-way door and the blast radius. The factory adds its review
+  table below your text between its `<!-- factory:review -->` markers:
+  never edit or remove them. Once the PR exists, just push; the PR updates
+  itself. Never mark the PR ready and never merge it.
+- **Rewording commits.** When the gate's checks.md lists commit subjects
+  that break the format, reword them with the commands it gives (with a
+  GitHub tracker they end in `git push --force-with-lease origin <job
+  branch>`). That is the one time you may rewrite history or force-push:
+  only your own job branch, only those commits, never any other branch.
 - **Tracker: local.** There is no remote and no PR. Commit only: never push,
   never merge, and never touch the ticket in `.scratch/`. The factory merges
   the branch into the base itself after approval.

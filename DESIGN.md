@@ -33,8 +33,8 @@ intake (fable)     → ACCEPT (scope possibly changed) | NEEDS-INFO | REJECT | P
 route (script)     → reviewers + models from risk/surfaces via config.json
 worktree           → factory/<job-id> from origin/main
 spec-writer (opus) → spec.md
-builder            → commits; first round pushes + opens draft PR "Closes #<n>"
-gate (script)      → checks.sh; FAIL → builder gets the log, no reviewers spawned
+builder            → Conventional Commits; first round pushes + opens draft PR titled with the spec's first line, body "Closes #<n>" + Summary/Evidence/Merge Danger
+gate (script)      → checks.sh + commit subjects and PR title; FAIL → builder gets the log, no reviewers spawned
 reviewers (routed) → parallel, WAIT FOR ALL; CHANGES → builder → gate → reviewers (max rounds)
 approver (opus)    → APPROVE: sync origin/main, gate, gh pr merge
                      ESCALATE: PR ready, decision as PR comment, label ready-for-human
@@ -93,6 +93,19 @@ protected, since features have to update them; the code reviewer fails any
 test that was weakened, skipped or special-cased to pass. The
 builder also has a `SubagentStop` hook that runs the checks before it finishes,
 as a nudge; the gate is still what decides.
+
+**Commit messages are checked, not asked for.** Every job commit and PR title
+is a Conventional Commits line (`feat(members): invite members by email`), at
+most 72 characters, whatever style the repo's history has: with squash merges
+the PR title is the commit on `main`, with merge or rebase the branch's
+commits land there. The title is written once, as the spec's first line (or
+intake's `TITLE:` when the spec writer is skipped), and the builder uses it
+for the PR. The round gate fails a non-merge commit or a PR title that breaks
+the rule and gives the builder the exact rewording command; that is the only
+time a builder may rewrite history and force-push, on its own branch. Jobs
+carry `commit_format: conventional` from creation, so jobs that were already
+running when the rule came in finish under the old one. The factory's own
+commits and PRs use `chore(factory): ...`.
 
 **Work only a human may do stops at the door.** A ticket whose whole change
 lies in `protected_paths` (a feature review asking to change `checks.sh` or a

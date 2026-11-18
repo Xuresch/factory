@@ -59,7 +59,7 @@ in the main checkout; your one file goes there.
 ## Write spec.md
 
 ```markdown
-# <short title>
+# <type>(<scope>): <short title>
 
 > Issue #<n>: <issue title>
 
@@ -169,6 +169,15 @@ What this slice builds, in two or three lines.
   prefer what the repo already has and list only what's really needed. A
   dependency the issue or a `feedback-*.md` already approved still goes in
   the list, with that note.
+- The first line is the job's title as a Conventional Commits line, for
+  example `# feat(members): invite members by email`. It becomes the PR
+  title, and with squash merges the commit on the base. The type is one of
+  `commit_types` in `factory/config.json` (default `feat`, `fix`, `docs`,
+  `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`); the
+  scope is optional; the summary is imperative ("add", not "adds"). At most
+  72 characters after the `# `, no period at the end, and no `(#<n>)`:
+  GitHub appends the PR number itself. Intake's `TITLE:` line is a starting
+  point.
 - `## Summary` comes right after the issue line: 3 to 5 short bullets a human
   can skim on the dashboard. The detail goes in the sections below it.
 - Don't stop to ask. Intake already asked the author everything only they
@@ -194,5 +203,6 @@ What this slice builds, in two or three lines.
   factory then stops the job before the build and hands it to a human.
 
 When you're done, report to the factory with `worker_done` as your task
-preamble describes, with one line as the summary: `SPEC: <short title>`.
+preamble describes, with one line as the summary: `SPEC: <title>`, the
+title line without the `# `.
 Nothing else goes in the summary: the detail is in your file.

@@ -11,6 +11,12 @@ so a branch can't change the checks it is judged by. It also fails when the
 branch modifies or deletes a file matching config.json `protected_paths`
 (fnmatch patterns, where `*` also matches `/`). Adding new files is fine.
 
+The round gate also checks the commit format, for jobs whose job.json says
+`commit_format: conventional` (every job created since the rule came in): each
+non-merge commit since the base, and the PR title on GitHub, must be a
+Conventional Commits line (config.json `commit_types`), at most 72 characters,
+with no trailing period. checks.md says how to reword them.
+
 Gates take turns: config.json `gate_parallel` (default 1) is how many round and
 merge gates may run checks.sh at once on this machine for this repo (0: no
 limit). A gate that has to wait says for whom, once, and checks.md records the
@@ -94,6 +100,68 @@ def strip_trailers(worktree, base_ref, branch, push):
     if push:
         subprocess.run(["git", "push", "--force-with-lease", "origin", branch], cwd=worktree, capture_output=True)
     return len(dirty)
+
+
+COMMIT_TYPES = ["feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore", "revert"]
+MAX_SUBJECT = 72
+
+
+def subject_problem(subject):
+    """Why a commit subject or PR title isn't a Conventional Commits line, or None."""
+    types = CONFIG.get("commit_types") or COMMIT_TYPES
+    if not re.match(rf"^({'|'.join(map(re.escape, types))})(\([^)]+\))?!?: \S.*", subject):
+        return f"isn't `<type>(<scope>): <summary>` with a type from {', '.join(types)}"
+    if len(subject) > MAX_SUBJECT:
+        return f"is {len(subject)} characters, over {MAX_SUBJECT}"
+    if subject.endswith("."):
+        return "ends with a period"
+    return None
+
+
+def pr_title(job):
+    """The job's PR title on GitHub, or None (no PR yet, or gh failed)."""
+    if job.get("tracker") != "github" or not job.get("pr"):
+        return None
+    res = subprocess.run(["gh", "pr", "view", str(job["pr"]), "--json", "title"], cwd=REPO,
+                         capture_output=True, text=True)
+    try:
+        return json.loads(res.stdout).get("title") if res.returncode == 0 else None
+    except ValueError:
+        return None
+
+
+def commit_format(job, worktree, base_ref):
+    """checks.md's `## Commit format` body for the job's own commits and PR
+    title, or "" when they all pass. Only jobs created under the rule
+    (job.json `commit_format: conventional`) are checked."""
+    if job.get("commit_format") != "conventional":
+        return ""
+    log = git(worktree, "log", "--no-merges", "--format=%H%x00%s", f"{base_ref}..HEAD")
+    bad = [(sha, subj, why) for sha, subj in (l.split("\x00", 1) for l in log.splitlines() if l)
+           for why in [subject_problem(subj)] if why]
+    title = pr_title(job)
+    title_why = subject_problem(title) if title is not None else None
+    if not bad and not title_why:
+        return ""
+    branch, out = job["branch"], []
+    if bad:
+        cases = "\n".join(f'    {sha}) echo "<new subject>"; sed 1d ;;' for sha, _, _ in bad)
+        out += ["Commit subjects on the job branch must be `<type>(<scope>): <summary>`, imperative, "
+                f"at most {MAX_SUBJECT} characters, no trailing period:", ""]
+        out += [f"- `{sha[:7]}` `{subj}`: {why}" for sha, subj, why in bad]
+        out += ["", f"Reword them, only on {branch} and only these commits: put each new subject in "
+                "the commands below" + (", which force-push the job branch" if job.get("tracker") == "github" else "")
+                + ". Change nothing else.", "",
+                "```", f"cd {worktree} && FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f --msg-filter '",
+                '  case "$GIT_COMMIT" in', cases, "    *) cat ;;", "  esac' -- " + f"{base_ref}..{branch}",
+                f"cd {worktree} && git update-ref -d refs/original/refs/heads/{branch}"]
+        if job.get("tracker") == "github":
+            out += [f"cd {worktree} && git push --force-with-lease origin {branch}"]
+        out += ["```", ""]
+    if title_why:
+        out += [f"The PR title `{title}` {title_why}. Fix it:", "",
+                "```", f'gh pr edit {job["pr"]} --title "<type>(<scope>): <summary>"', "```", ""]
+    return "\n".join(out)
 
 
 def run_checks(worktree, base_ref=None, mode="full"):
@@ -233,10 +301,11 @@ def gate(job_id, merge):
     stripped = strip_trailers(worktree, base_ref, job["branch"], bool(job.get("pr")))
     commit = git(worktree, "rev-parse", "HEAD").strip()
     protected = protected_changes(worktree, base_ref)
+    commits = "" if merge else commit_format(job, worktree, base_ref)
     waited = waited_minutes(job) if not merge else None
     queued, other = take_slot(job_id, "merge" if merge else "round")
     code, log, seconds = run_checks(worktree, base_ref, "merge" if merge else "round")
-    verdict = "PASS" if code == 0 and not protected else "FAIL"
+    verdict = "PASS" if code == 0 and not protected and not commits else "FAIL"
     name = "merge-checks" if merge else "checks"
     (round_dir / f"{name}.log").write_text(log)
     lines = TAIL if verdict == "FAIL" else PASS_TAIL
@@ -246,6 +315,9 @@ def gate(job_id, merge):
         f"Protected paths: {'changed: ' + ', '.join(protected) if protected else 'none changed'}",
         f"Commit {commit[:7]}" + (", synced with the latest main before merging" if merge else ""),
     ]
+    if commits:
+        summary.append("Commit format: a commit subject or the PR title isn't Conventional Commits "
+                       "(see `## Commit format`)")
     if stripped:
         summary.append(f"Removed Co-Authored-By / Generated-with lines from {stripped} commit"
                        + ("" if stripped == 1 else "s") + " (nobody co-authors a factory job)")
@@ -260,12 +332,14 @@ def gate(job_id, merge):
         "## Summary\n" + "\n".join(f"- {s}" for s in summary) + "\n\n"
         "## Protected paths\n"
         + ("\n".join(f"- {p}" for p in protected) if protected else "None changed.") + "\n\n"
+        + (f"## Commit format\n{commits}\n" if commits else "")
         + (failures_section(log) if code != 0 else "")
         + f"## checks.sh\nExit {code} in {seconds}s. Last {lines} lines of {name}.log:\n\n```\n{tail}\n```\n"
     )
     print(f"GATE: {verdict} ({job_id} round {job['round']}, checks.sh exit {code} in {seconds}s"
           + (f", after waiting {queued}s for {other}'s gate" if other else "")
-          + (f", protected paths changed: {', '.join(protected)}" if protected else "") + ")")
+          + (f", protected paths changed: {', '.join(protected)}" if protected else "")
+          + (", commit format" if commits else "") + ")")
     sys.exit(0 if verdict == "PASS" else 1)
 
 

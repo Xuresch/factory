@@ -115,7 +115,7 @@ to_build() {  # to_build <ticket> <risk> <surfaces>: create .. build round 1; pr
 }
 
 build_commit() {  # build_commit <job> <file> <content>
-  (cd ".worktrees/$1" && echo "$3" > "$2" && git add "$2" && git commit -qm "build $2")
+  (cd ".worktrees/$1" && echo "$3" > "$2" && git add "$2" && git commit -qm "feat: build $2")
 }
 
 to_review() {  # to_review <job>: READY → gate → review
@@ -201,7 +201,7 @@ elif cmd in (["issue", "comment"], ["pr", "comment"], ["pr", "close"]):
 elif cmd == ["issue", "close"]:
     i = load(f"issue-{args[2]}.json"); i["state"] = "CLOSED"; save(f"issue-{args[2]}.json", i)
 elif cmd == ["pr", "create"]:
-    save("pr.json", {"number": 7, "url": "https://github.com/o/r/pull/7", "headRefName": opt("--head"),
+    save("pr.json", {"number": 7, "url": "https://github.com/o/r/pull/7", "headRefName": opt("--head"), "title": opt("--title"),
                      "state": "OPEN", "isDraft": "--draft" in args, "statusCheckRollup": [], "body": opt("--body")})
     print("https://github.com/o/r/pull/7")
 elif cmd == ["pr", "list"]:
@@ -214,8 +214,8 @@ elif cmd == ["run", "rerun"]:  # the rerun's results replace the PR's checks
         pr["statusCheckRollup"] = load("rerun.json"); save("pr.json", pr)
 elif cmd == ["pr", "ready"]:
     pr["isDraft"] = False; save("pr.json", pr)
-elif cmd == ["pr", "edit"]:
-    pr["body"] = opt("--body"); save("pr.json", pr)
+elif cmd == ["pr", "edit"]:  # --body and/or --title
+    pr.update({k: opt(f"--{k}") for k in ("body", "title") if f"--{k}" in args}); save("pr.json", pr)
 elif cmd == ["pr", "merge"]:
     fail = load("merge-fail.json")
     if fail and fail["count"] > 0:
@@ -266,7 +266,7 @@ gh_to_approve() {  # gh_to_approve <issue> [<file> <content>...]: create .. revi
   (( $# )) || set -- y.txt y
   while (( $# )); do mkdir -p ".worktrees/$id/$(dirname "$1")"; build_commit "$id" "$1" "$2"; shift 2; done
   (cd ".worktrees/$id" && git push -q -u origin "factory/$id" 2>/dev/null &&
-   gh pr create --draft --base master --head "factory/$id" --title t --body b >/dev/null)
+   gh pr create --draft --base master --head "factory/$id" --title "feat: t" --body b >/dev/null)
   to_review "$id"; review "$id" 1 code PASS
   echo "$id"
 }
@@ -442,15 +442,15 @@ t_slices() {
   J advance "$id" build >/dev/null
   check "slice 2 waits" "$(J slice-start "$id" 2 2>&1)" "waits for slices [1]"
   J slice-start "$id" 1 >/dev/null
-  (cd ".worktrees/$id-s1" && echo 1 > a/1 && echo z > x.txt && git add -A && git commit -qm s1)
+  (cd ".worktrees/$id-s1" && echo 1 > a/1 && echo z > x.txt && git add -A && git commit -qm "feat: s1")
   printf 'STATUS: READY\n\n## Self-review\nok\n' > "factory/jobs/$id/slice-1.md"
   check "outside owns refused" "$(J slice-done "$id" 1 2>&1)" "changed files it doesn't own"
-  (cd ".worktrees/$id-s1" && git checkout -q HEAD~1 -- x.txt && git commit -qam fix)
+  (cd ".worktrees/$id-s1" && git checkout -q HEAD~1 -- x.txt && git commit -qam "fix: s1 owns only a/")
   mkdir -p "target/factory-jobs/$id-s1" "target/factory-jobs/$id"
   check "slice 1 merged" "$(J slice-done "$id" 1)" "slice 1 done"
   [[ "$(ls target/factory-jobs)" == "$id" ]] || { echo "    FAIL: slice target dir not freed, or job dir gone: $(ls target/factory-jobs)"; return 1; }
   J slice-start "$id" 2 >/dev/null
-  (cd ".worktrees/$id-s2" && test -f a/1 && echo 2 > b/2 && git add -A && git commit -qm s2)
+  (cd ".worktrees/$id-s2" && test -f a/1 && echo 2 > b/2 && git add -A && git commit -qm "feat: s2")
   printf 'STATUS: READY\n\n## Self-review\nok\n' > "factory/jobs/$id/slice-2.md"
   check "all merged" "$(J slice-done "$id" 2)" "all 2 slices merged" &&
   check "gate passes" "$(J advance "$id" gate && factory/bin/gate "$id")" "GATE: PASS"
@@ -679,7 +679,11 @@ t_sync_commits_leftover_work() {
   local bs; bs=$(cat "factory/jobs/$id/round-2/base-sync.md")
   check "synced" "$bs" "SYNC: MERGED" &&
   check "says it committed" "$bs" "left.txt" &&
-  check "work kept" "$(git -C ".worktrees/$id" log --format=%s -3)" "keep uncommitted work"
+  check "work kept" "$(git -C ".worktrees/$id" log --format=%s -3)" "chore(factory): keep uncommitted work" || return 1
+  # The factory's own commit passes the commit-format gate.
+  (cd ".worktrees/$id" && git rm -q left.txt && git commit -qm "fix: drop the stray file"); ready "$id"
+  J advance "$id" gate >/dev/null; factory/bin/gate "$id" >/dev/null
+  check "gate passes" "$(head -1 "factory/jobs/$id/round-2/checks.md")" "GATE: PASS"
 }
 
 t_blocked_builder_proposal() {
@@ -707,7 +711,7 @@ t_merge_starts_retro_and_commits_ticket() {
   local out; out=$(J merge "$id")
   check "retro started on friction" "$(grep "$id retro" "$CALLS")" "--agent claude --model sonnet" &&
   check "retro dispatch" "$(field "$id" "d['dispatch'].get('retro')")" "ctx_fake" &&
-  check "ticket committed" "$(git log --oneline -1)" "Close f/01" &&
+  check "ticket committed" "$(git log --oneline -1)" "chore(factory): close f/01" &&
   check "ticket clean" "[$(git status --short .scratch)]" "[]"
 }
 
@@ -1417,13 +1421,75 @@ t_gate_strips_coauthor_trailers() {
   new_repo trailers; ticket 01 One; commit_all
   local id; id=$(to_build 01 low none)
   (cd ".worktrees/$id" && echo a > a.txt && git add a.txt &&
-   git commit -qm $'build a\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nCo-authored-by: Sandcastle Bot <s@localhost>\n\n\U1F916 Generated with [Claude Code](https://claude.com/claude-code)')
+   git commit -qm $'feat: build a\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nCo-authored-by: Sandcastle Bot <s@localhost>\n\n\U1F916 Generated with [Claude Code](https://claude.com/claude-code)')
   ready "$id"; J advance "$id" gate >/dev/null; factory/bin/gate "$id" >/dev/null
   check "message is clean" "[$(git -C ".worktrees/$id" log -1 --format=%B | grep -ci 'co-authored\|generated with')]" "[0]" &&
   check "subject kept" "$(git -C ".worktrees/$id" log -1 --format=%s)" "build a" &&
   check "gate notes it" "$(cat "factory/jobs/$id/round-1/checks.md")" "Removed Co-Authored-By" &&
   check "checks.md names the new head" "$(sed -n 2p "factory/jobs/$id/round-1/checks.md")" "$(git -C ".worktrees/$id" rev-parse HEAD)" &&
   check "no backup ref" "[$(git for-each-ref refs/original | wc -l)]" "[0]"
+}
+
+t_gate_checks_commit_format() {
+  new_repo convcommits; ticket 01 One; ticket 02 Two; commit_all
+  local id; id=$(to_build 01 low none)
+  check "new jobs are checked" "$(field "$id" "d['commit_format']")" "conventional" || return 1
+  build_commit "$id" a.txt a
+  (cd ".worktrees/$id" && echo b > b.txt && git add b.txt && git commit -qm "Added b." &&
+   echo c > c.txt && git add c.txt && git commit -qm "feat(core): $(printf 'x%.0s' {1..70})" &&
+   echo d > d.txt && git add d.txt && git commit -qm "fix: drop d.")
+  ready "$id"; J advance "$id" gate >/dev/null
+  local out; out=$(factory/bin/gate "$id"); local md; md=$(cat "factory/jobs/$id/round-1/checks.md")
+  check "fails" "$out" "GATE: FAIL" && check "says why" "$out" "commit format" &&
+  check "bad type" "$md" "\`Added b.\`: isn't \`<type>(<scope>): <summary>\`" &&
+  check "too long" "$md" "characters, over 72" &&
+  check "period" "$md" "\`fix: drop d.\`: ends with a period" &&
+  check "good one not listed" "[$(grep -c 'feat: build a' <<< "$md")]" "[0]" &&
+  check "how to fix" "$md" "git filter-branch -f --msg-filter" &&
+  check "no push locally" "[$(grep -c 'push --force' <<< "$md")]" "[0]" || return 1
+  # The next round's builder rewords with the command the gate gives; then it passes.
+  J advance "$id" build >/dev/null
+  local cases; cases=$(git -C ".worktrees/$id" log --no-merges --format='%H) echo "fix: reword %h"; sed 1d ;;' master..HEAD | grep -v "$(git -C ".worktrees/$id" log -1 --format=%H HEAD~3)")
+  (cd ".worktrees/$id" && FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f --msg-filter "case \"\$GIT_COMMIT\" in
+$cases
+*) cat ;; esac" -- "master..factory/$id" >/dev/null 2>&1 && git update-ref -d "refs/original/refs/heads/factory/$id")
+  ready "$id"; J advance "$id" gate >/dev/null
+  check "passes after rewording" "$(factory/bin/gate "$id")" "GATE: PASS" &&
+  check "no section" "[$(grep -c 'Commit format' "factory/jobs/$id/round-2/checks.md")]" "[0]" || return 1
+  # A job created before the rule (no commit_format) isn't checked.
+  local old; old=$(to_build 02 low none)
+  python3 -c "import json; p='factory/jobs/$old/job.json'; j=json.load(open(p)); del j['commit_format']; json.dump(j, open(p, 'w'))"
+  (cd ".worktrees/$old" && echo o > o.txt && git add o.txt && git commit -qm "build o.")
+  ready "$old"; J advance "$old" gate >/dev/null
+  check "old job passes" "$(factory/bin/gate "$old")" "GATE: PASS"
+}
+
+t_gh_gate_checks_pr_title() {
+  new_gh_repo ghtitle; gh_issue 1 One
+  local id; id=$(J create 1) || return 1
+  intake "$id" low none; factory/bin/route "$id" >/dev/null && J advance "$id" spec >/dev/null
+  echo "# feat: one" > "factory/jobs/$id/spec.md"; J advance "$id" build >/dev/null
+  build_commit "$id" y.txt y
+  (cd ".worktrees/$id" && git push -q -u origin "factory/$id" 2>/dev/null &&
+   gh pr create --draft --base master --head "factory/$id" --title "One" --body b >/dev/null)
+  ready "$id"; J advance "$id" gate >/dev/null
+  local out; out=$(factory/bin/gate "$id"); local md; md=$(cat "factory/jobs/$id/round-1/checks.md")
+  check "fails" "$out" "GATE: FAIL" &&
+  check "names the title" "$md" "The PR title \`One\` isn't" &&
+  check "how to fix" "$md" "gh pr edit 7 --title" || return 1
+  gh pr edit 7 --title "feat: add one" >/dev/null
+  J advance "$id" build >/dev/null; ready "$id"; J advance "$id" gate >/dev/null
+  check "passes" "$(factory/bin/gate "$id")" "GATE: PASS"
+}
+
+t_spec_skipped_title_from_intake() {
+  new_repo skiptitle; ticket 01 One; commit_all
+  local id; id=$(J create f/01); intake "$id" low none $'TITLE: fix(x): keep x\n'
+  printf '\n## Acceptance criteria\n1. x: `true`\n' >> "factory/jobs/$id/intake.md"
+  factory/bin/route "$id" >/dev/null
+  check "spec skipped" "$(J advance "$id" spec)" "spec skipped" &&
+  check "title from intake" "$(head -1 "factory/jobs/$id/spec.md")" "# fix(x): keep x" &&
+  check "issue line kept" "$(cat "factory/jobs/$id/spec.md")" "> Issue f/01: 01: One"
 }
 
 t_worktree_setup_runs() {
@@ -1754,7 +1820,7 @@ t_real_change_or_feedback_is_not_carried() {
   # A human's feedback round never carries, even when the change stays the same.
   printf 'ESCALATE\n\n## Why\nhuman\n' > "factory/jobs/$id/decision.md"; J advance "$id" needs-human >/dev/null
   echo "looks the same to me, rerun" | J feedback "$id" >/dev/null
-  (cd ".worktrees/$id" && git commit -q --allow-empty -m "nothing new"); ready "$id"
+  (cd ".worktrees/$id" && git commit -q --allow-empty -m "chore: nothing new"); ready "$id"
   J advance "$id" gate >/dev/null; factory/bin/gate "$id" >/dev/null
   out=$(J advance "$id" review)
   check "feedback round: every lens runs" "$out" "start reviewers: code, ux, ui"
@@ -2146,7 +2212,7 @@ t_gh_factory_label() {
   echo "# Spec" > "factory/jobs/$id/spec.md"; J advance "$id" build >/dev/null
   build_commit "$id" y.txt y
   (cd ".worktrees/$id" && git push -q -u origin "factory/$id" 2>/dev/null &&
-   gh pr create --draft --base master --head "factory/$id" --title t --body b >/dev/null)
+   gh pr create --draft --base master --head "factory/$id" --title "feat: t" --body b >/dev/null)
   to_review "$id"; review "$id" 1 code PASS; J advance "$id" approve >/dev/null
   printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"
   check "merged" "$(J merge "$id" 2>&1)" "merged PR #7" &&

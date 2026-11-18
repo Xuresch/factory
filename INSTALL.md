@@ -107,6 +107,16 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
 - `base_branch`: the default branch.
 - `merge_method`: `merge`, `squash` or `rebase`, one the repo allows
   (`gh api repos/{owner}/{repo} --jq '{allow_merge_commit, allow_squash_merge, allow_rebase_merge}'`).
+- `commit_types` (default `feat`, `fix`, `docs`, `style`, `refactor`,
+  `perf`, `test`, `build`, `ci`, `chore`, `revert`): the Conventional Commits
+  types the factory allows. Every commit a job makes and its PR title must be
+  `<type>(<scope>): <summary>`, at most 72 characters, no trailing period,
+  even when the repo's own history uses another style; the round gate fails
+  the job otherwise and checks.md tells the builder how to reword. The spec's
+  first line is that title (intake's `TITLE:` when the spec writer is
+  skipped), so with `squash` it is the commit on the base. The factory's own
+  commits and PRs use `chore(factory): ...`. Jobs created before this rule
+  (no `commit_format` in job.json) aren't checked.
 - `protected_paths`: keep the factory entries and don't add the project's
   tests. Features legitimately change existing tests (a new required field
   changes every fixture), and a protected test blocks the job with no way
@@ -417,7 +427,8 @@ feel matters, add `**Factory:** hold after spec` to UI tickets or keep
 ## 4. Hand over
 
 Stay on the branch the user is on: don't create or check out another branch.
-Commit the install there with a one-line message and show the user the diff.
+Commit the install there with a one-line Conventional Commits message
+(`chore(factory): install the software factory`) and show the user the diff.
 Ask before pushing: the factory branches every job from `origin/<base_branch>`,
 so the install must be on that branch there before the first run.
 

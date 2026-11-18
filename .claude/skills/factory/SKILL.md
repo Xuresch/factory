@@ -28,8 +28,8 @@ intake (claude/fable)  → ACCEPT (scope possibly changed) | NEEDS-INFO | REJECT
 route (script)         → builder + reviewers + models from risk/surfaces via config.json
 worktree               → factory/<job-id> from origin/<base>
 spec-writer (claude)   → spec.md
-builder (codex)        → commits; on GitHub the first push opens a draft PR "Closes #<n>"
-gate (script)          → checks.sh; FAIL → builder gets the log, no reviewers start
+builder (codex)        → Conventional Commits; on GitHub the first push opens a draft PR titled with the spec's first line, "Closes #<n>"
+gate (script)          → checks.sh, commit subjects and PR title; FAIL → builder gets the log, no reviewers start
 reviewers (routed)     → parallel, WAIT FOR ALL; CHANGES → builder → gate → reviewers
                          code and security never run on the builder's agent
                          CHANGES from ux or ui → the next round's builder is claude
