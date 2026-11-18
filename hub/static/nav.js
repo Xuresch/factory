@@ -59,22 +59,44 @@
 
   const nav = {
     data: null, fail: false,
-    sync: { conn: 'wait', at: null, err: null },
+    sync: { conn: 'wait', at: null, err: null, down: null, auth: false },
     pageErr: null, subs: { data: [], job: [], seen: [] },
   }
   nav.on = (type, fn) => { nav.subs[type].push(fn); if (type === 'data' && nav.data) fn(nav.data) }
   const emit = (type, v) => nav.subs[type].forEach((fn) => { try { fn(v) } catch (e) { console.error(e) } })
   nav.setSub = (text) => { const el = $('#nb-sub'); if (el && el.textContent !== text) el.textContent = text }
-  nav.pageError = (msg) => { nav.pageErr = msg || null; paintHealth() }
+  // A failed page fetch may be an expired sign-in: /api/overview tells.
+  nav.pageError = (msg) => { nav.pageErr = msg || null; if (msg) reload(); paintHealth() }
   window.FactoryNav = nav
+
+  // ---- Sign-in --------------------------------------------------------------------------------
+  // A proxy in front of the hub (Authentik forward auth) may answer any request with a redirect
+  // to its login page on another origin once the session runs out. fetch and EventSource cannot
+  // follow that (CORS), only a top-level navigation can, and while the identity provider's own
+  // session is alive it signs back in without a prompt. /api/overview never redirects by itself,
+  // so a redirect there means "signed out": reload the page, at most once per 2 min, and only
+  // when the tab is visible (a hidden tab reloads when it is looked at again).
+  const RELOAD_KEY = 'factory-hub:auth-reload'
+  function signedOut() {
+    nav.sync.auth = true
+    paintHealth()
+    if (document.hidden) return
+    let last = 0
+    try { last = Number(sessionStorage.getItem(RELOAD_KEY)) || 0 } catch { /* storage blocked */ }
+    if (Date.now() - last < 120000) return   // just tried: a real login is needed, the banner says so
+    try { sessionStorage.setItem(RELOAD_KEY, String(Date.now())) } catch { /* storage blocked */ }
+    location.reload()
+  }
 
   async function load() {
     try {
-      const res = await fetch(`${ROOT}api/overview`, { cache: 'no-store' })
+      const res = await fetch(`${ROOT}api/overview`, { cache: 'no-store', redirect: 'manual' })
+      if (res.type === 'opaqueredirect' || res.status === 401) return signedOut()
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       nav.data = await res.json()
       nav.sync.at = Date.now()
       nav.sync.err = null
+      nav.sync.auth = false
       emit('data', nav.data)
       paintData()
     } catch (err) { nav.sync.err = err.message }
@@ -83,11 +105,32 @@
   let debounce = null
   const reload = () => { clearTimeout(debounce); debounce = setTimeout(load, 300) }
 
+  // The browser reconnects a dropped stream by itself (after `retry`, 3 s). A blip such as
+  // net::ERR_NETWORK_CHANGED (a VPN, Docker adding an interface) is therefore not shown for the
+  // first GRACE ms. A reconnect that fails (a redirect to the login page, a 502 while the pod
+  // restarts) closes the stream for good: then check the sign-in and open a new one, backing off.
+  const GRACE = 10000
+  let es = null, esTimer = null, esDelay = 3000
   function connect() {
     if (!('EventSource' in window)) return
-    const es = new EventSource(`${ROOT}api/stream`)
-    es.onopen = () => { const was = nav.sync.conn; nav.sync.conn = 'live'; paintHealth(); if (was === 'error') reload() }
-    es.onerror = () => { nav.sync.conn = 'error'; paintHealth() }
+    clearTimeout(esTimer)
+    if (es) es.close()
+    es = new EventSource(`${ROOT}api/stream`)
+    es.onopen = () => {
+      const was = nav.sync.conn
+      nav.sync.conn = 'live'; nav.sync.down = null; esDelay = 3000
+      paintHealth()
+      if (was === 'error') reload()
+    }
+    es.onerror = () => {
+      if (nav.sync.conn !== 'error') { nav.sync.conn = 'error'; nav.sync.down = Date.now() }
+      paintHealth()
+      if (es.readyState === EventSource.CLOSED) {
+        reload()
+        esTimer = setTimeout(connect, esDelay)
+        esDelay = Math.min(esDelay * 2, 60000)
+      }
+    }
     es.addEventListener('job', (ev) => {
       let e; try { e = JSON.parse(ev.data) } catch { return }
       emit('job', e)
@@ -113,12 +156,13 @@
   function health() {
     const { sync } = nav
     const age = sync.at ? Date.now() - sync.at : Infinity
+    if (sync.auth) return { s: 'error', label: 'signed out', bar: 'Your sign-in has expired, so nothing on this page updates.', err: true, signIn: true }
     if (!nav.data && !sync.err) return { s: 'wait', label: 'connecting…' }
     if (sync.err && age >= 60000) return { s: 'error', label: `offline ${gap(age)}`, bar: `Can't reach the hub (${sync.err}). Showing data from ${gap(age)} ago.`, err: true }
-    if (sync.conn === 'error') return { s: 'wait', label: 'reconnecting…', bar: `Live updates are paused, reconnecting. What you see is from ${gap(age)} ago.` }
+    if (sync.conn === 'error' && Date.now() - (sync.down || 0) >= GRACE) return { s: 'wait', label: 'reconnecting…', bar: `Live updates are paused, reconnecting. What you see is from ${gap(age)} ago.` }
     if (age >= 60000) return { s: 'wait', label: `stale ${gap(age)}`, bar: `This page has not been refreshed for ${gap(age)}. Numbers may be out of date.` }
     if (nav.pageErr) return { s: 'wait', label: 'reconnecting…', bar: `This view could not be refreshed (${nav.pageErr}). Showing what was loaded before.` }
-    if (sync.conn !== 'live') return { s: 'wait', label: 'connecting…' }
+    if (sync.conn === 'wait') return { s: 'wait', label: 'connecting…' }
     return source()
   }
   // Freshness of the data itself: when a machine last reported, not when this page was drawn.
@@ -187,6 +231,7 @@ html.nav-on body::before { display: none !important; }
 .nb-banner { padding: 5px 32px; font: 12px/1.6 var(--mono); text-align: center; color: var(--changes); background: color-mix(in srgb, var(--changes) 14%, var(--bg)); border-top: 1px solid color-mix(in srgb, var(--changes) 45%, var(--line)); }
 .nb-banner.err { color: var(--human); background: color-mix(in srgb, var(--human) 12%, var(--bg)); border-top-color: color-mix(in srgb, var(--human) 45%, var(--line)); }
 .nb-banner[hidden] { display: none; }
+.nb-banner a { color: inherit; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
 .nb-crumb { max-width: 1400px; margin: 0 auto; padding: 22px 32px 2px; }
 .nb-crumb h1 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -.01em; line-height: 1.35; overflow-wrap: anywhere; }
 .nb-crumb h1 .o { font-weight: 400; color: var(--subtle); }
@@ -354,7 +399,17 @@ dialog.nb-pal::backdrop { background: rgba(5, 6, 10, .6); overflow: hidden; over
     if (els.ls.dataset.k !== st) { els.ls.dataset.k = st; els.ls.textContent = h.label }
     if (els.mach.matches(':popover-open')) paintMachines()
     els.banner.hidden = !h.bar
-    if (h.bar && els.banner.textContent !== h.bar) els.banner.textContent = h.bar
+    const key = h.bar ? `${h.bar}|${!!h.signIn}` : ''
+    if (h.bar && els.banner.dataset.k !== key) {
+      els.banner.dataset.k = key
+      els.banner.textContent = h.bar
+      if (h.signIn) {
+        const a = document.createElement('a')
+        a.href = location.href
+        a.textContent = 'Sign in again'
+        els.banner.append(' ', a)
+      }
+    }
     els.banner.classList.toggle('err', !!h.err)
   }
 
@@ -584,7 +639,11 @@ dialog.nb-pal::backdrop { background: rgba(5, 6, 10, .6); overflow: hidden; over
       dispatchEvent(new PopStateEvent('popstate'))
     })
     addEventListener('hashchange', () => { redirectPlan(); paintView() })
-    document.addEventListener('visibilitychange', () => { if (!document.hidden) load() })
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) return
+      load()
+      if (es && es.readyState === EventSource.CLOSED) connect()
+    })
   }
 
   try {
