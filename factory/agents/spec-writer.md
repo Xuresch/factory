@@ -43,6 +43,19 @@ in the main checkout; your one file goes there.
    the old spec for what to keep, then write a new `spec.md` that follows the
    feedback, and say under Assumptions what changed because of it.
 
+7. The issue's siblings, when it has a parent: intake's `Siblings:`, then
+   each sibling's issue and, when it is built, its code. Name each in Context
+   as a dependency (`uses X from #NNN`, `merge after #NNN`) or as independent
+   with a one-line reason, and build on what a dependency provides instead of
+   a copy of it. On GitHub, the parent's other sub-issues:
+
+   ```bash
+   cd <worktree> && gh api graphql -F owner='{owner}' -F repo='{repo}' -F n=<issue> \
+     -f query='query($owner:String!,$repo:String!,$n:Int!){repository(owner:$owner,name:$repo){issue(number:$n){parent{number subIssues(first:50){nodes{number title state}}}}}}'
+   ```
+
+   Locally, the other tickets in the main checkout's `.scratch/<feature>/issues/`.
+
 ## Write spec.md
 
 ```markdown
@@ -140,7 +153,13 @@ What this slice builds, in two or three lines.
 - `## Needs a human` lists only what nobody in the factory can check: the
   state of production or of a live service, a secret or account, an external
   dashboard, an operator step from intake's `Operator prerequisites`, a
-  product decision you can't make. Not what tests or reviewers can verify. A
+  product decision you can't make. Not what tests or reviewers can verify.
+  It also names everything the change does that the approver always
+  escalates (the ESCALATE list in `factory/agents/approver.md`: permissions
+  or access rules, auth, sending email, a schema migration, deploy or CI
+  config, production data, and the rest), and any design that changes state
+  from URL input alone, without a user click. The human decides those after
+  the spec instead of after the build. A
   high-risk job pauses after the spec only when this section lists something,
   so don't pad it, and don't leave out a real one: it is the human's one look
   before the build.

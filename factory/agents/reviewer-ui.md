@@ -58,6 +58,10 @@ the server you started, by the PID listening on your port
 (`lsof -tiTCP:<port> -sTCP:LISTEN`); other jobs run dev servers too, so
 never kill by process name.
 
+When you can't look at a page (`agent-browser` missing, no way past sign-in,
+the dev server won't start), don't skip it silently: write a `## Notes` line
+`Not seen in a browser: <page> — <reason>`.
+
 <!-- project: where the design tokens, theme and shared components live -->
 <!-- /project -->
 
@@ -70,6 +74,9 @@ never kill by process name.
 - Alignment, spacing rhythm and hierarchy hold up, and nothing overflows at
   phone width.
 - Text contrast is readable.
+- When the diff widens who can reach a page or screen (new route access, a
+  role that now sees it), review that whole surface, not only the changed
+  lines.
 - New HTML, CSS and client-side JS follow current platform practice and stay
   within the project's Baseline target (`AGENTS.md` or `CLAUDE.md`; Baseline
   Widely available when none is set), or carry a fallback. Where the

@@ -56,6 +56,10 @@ the server you started, by the PID listening on your port
 (`lsof -tiTCP:<port> -sTCP:LISTEN`); other jobs run dev servers too, so
 never kill by process name.
 
+When you can't look at a page (`agent-browser` missing, no way past sign-in,
+the dev server won't start), don't skip it silently: write a `## Notes` line
+`Not seen in a browser: <page> — <reason>`.
+
 <!-- project: the kinds of users the app has -->
 <!-- /project -->
 
@@ -67,6 +71,9 @@ never kill by process name.
   gets a sensible path, following the patterns the app already uses. When the
   diff changes who may call a procedure or endpoint, find the screens that
   call it and check what each kind of user sees there now, in this round.
+- When the diff widens who can reach a page or screen (new route access, a
+  role that now sees it), review that whole surface for them, not only the
+  changed lines.
 - The copy is short, plain and consistent with the rest of the app.
 - Accessibility: real buttons and links, labels, focus order, keyboard use, and
   alt text.

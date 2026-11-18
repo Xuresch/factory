@@ -192,6 +192,11 @@ A criterion that asks for a test and has none named isn't met: write the test.
   `agent-browser --session <job-id>-builder close` and stop the dev server when
   you're done. Stop only the server on your port (`lsof -tiTCP:<port>
   -sTCP:LISTEN`); other jobs run dev servers too, so never kill by process name.
+  When you can't look at the page (`agent-browser` missing, no way past
+  sign-in, the server won't start), write `Not seen in a browser: <page> —
+  <reason>` under `## Validation` instead of skipping it silently.
+- A higher test timeout is not a fix: find what makes the test slow first. If
+  a timeout must rise, say why in build.md.
 
 <!-- project: how to verify changes in this project: dev server, test tools, build rules -->
 <!-- /project -->
@@ -206,6 +211,9 @@ The header's `Tracker:` says where the work goes.
   or a "Generated with" line, whatever your own defaults say. Nobody
   co-authors a factory job; the gate strips such lines anyway. The same goes
   for PR bodies: no "Generated with" footer.
+- A commit made with `--no-verify`, or with any hook skipped, goes under
+  `## Self-review` in build.md: the hook and the reason, so reviewers and the
+  approver see it.
 - Stage explicit paths, never `git add -A`. Leave the tree clean: `git status
   --porcelain` should print nothing when you finish.
 - **Tracker: github.** Push with `git push -u origin <branch>`. Push only the

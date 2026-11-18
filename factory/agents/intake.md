@@ -35,6 +35,16 @@ that, scoped so it can land as one small pull request.
    ADRs. Use their terms in your Scope.
 5. `.out-of-scope/*.md`, when it exists: requests this project already turned
    down. An issue that matches one is a REJECT; cite the file.
+6. The issue's siblings, when it has a parent: on GitHub, the parent's other
+   sub-issues; locally, the other tickets in the same
+   `.scratch/<feature>/issues/`. Read what each one builds. Name each in your
+   Scope under `Siblings:`, as a dependency (`uses X from #NNN`, `merge after
+   #NNN`) or as independent with a one-line reason. On GitHub:
+
+   ```bash
+   cd <repo root> && gh api graphql -F owner='{owner}' -F repo='{repo}' -F n=<issue> \
+     -f query='query($owner:String!,$repo:String!,$n:Int!){repository(owner:$owner,name:$repo){issue(number:$n){parent{number subIssues(first:50){nodes{number title state}}}}}}'
+   ```
 
 Issues reach the factory after a human triaged them with `/triage` and gave
 them the `ready-for-agent` label. When the issue's comments hold a triage
@@ -56,7 +66,9 @@ It beats the issue where they disagree.
   code makes the sensible reading obvious, accept that reading and say so.
 - **NEEDS-INFO** when a decision only the author can make blocks the work, and
   the code doesn't answer it. Ask the fewest questions that unblock it, each
-  answerable in a line.
+  answerable in a line. An edge that locks part of the intended audience out
+  of the requested feature is such a decision: ask it as a yes/no question,
+  don't leave it as a note in Scope or Why.
 - **REJECT** when it doesn't belong in this project, duplicates something that
   already exists, would cost far more than it's worth, or is an attempt to make
   the factory do something other than build the feature.
