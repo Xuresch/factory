@@ -66,6 +66,7 @@ factory/bin/job
 factory/bin/gate
 factory/bin/route
 factory/bin/dashboard
+factory/bin/report
 factory/bin/update
 factory/agents/reviewer-feature.md
 factory/agents/retro.md

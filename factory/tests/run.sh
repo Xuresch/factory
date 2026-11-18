@@ -2212,6 +2212,140 @@ t_gh_pr_review_table() {
   check "one table, not two" "[$(grep -c '## Factory review' <<< "$body")]" "[1]"
 }
 
+# ---- report (factory/bin/report) -------------------------------------------
+#
+# A fake hub (python http.server) logs every gunzipped request body as one JSON
+# line in $H/hub.log. $H/need_full makes it answer need_full true, $H/down makes
+# it answer 500.
+
+rpt_setup() {  # rpt_setup <name> [outside]: fresh repo, HOME, fake hub, hub.json
+  new_repo "$1"; commit_all
+  H="$TMP_ROOT/$1/home"; mkdir -p "$H/.config/factory"
+  cat > "$TMP_ROOT/$1/fakehub.py" <<'EOF'
+import gzip, http.server, os, sys
+home = sys.argv[1]
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers["Content-Length"]))
+        if self.headers.get("Content-Encoding") == "gzip":
+            body = gzip.decompress(body)
+        with open(home + "/hub.log", "ab") as f:
+            f.write(body + b"\n")
+        with open(home + "/auth.log", "a") as f:
+            f.write(self.headers.get("Authorization", "") + "\n")
+        down = os.path.exists(home + "/down")
+        out = b'{"ok":true,"need_full":%s}' % (b"true" if os.path.exists(home + "/need_full") else b"false")
+        self.send_response(500 if down else 200)
+        self.send_header("Content-Length", str(len(out))); self.end_headers(); self.wfile.write(out)
+    def log_message(self, *a): pass
+s = http.server.HTTPServer(("127.0.0.1", 0), H)
+open(home + "/port", "w").write(str(s.server_port))
+s.serve_forever()
+EOF
+  python3 "$TMP_ROOT/$1/fakehub.py" "$H" & HUB_PID=$!
+  trap 'kill $HUB_PID 2>/dev/null' EXIT
+  for _ in $(seq 50); do [[ -s "$H/port" ]] && break; sleep 0.1; done
+  printf '{"url":"http://127.0.0.1:%s","token":"tok","machine":"m1","outside":%s}\n' "$(cat "$H/port")" "${2:-false}" > "$H/.config/factory/hub.json"
+}
+
+rpt() {  # rpt <args>: run factory/bin/report with HOME in the temp dir
+  env -u XDG_CONFIG_HOME -u XDG_CACHE_HOME -u FACTORY_HUB_URL -u FACTORY_HUB_TOKEN -u CLAUDE_CONFIG_DIR -u CODEX_HOME \
+    HOME="$H" python3 factory/bin/report "$@"
+}
+
+rpt_job() {  # rpt_job <id> [stage]: a job folder with job.json, spec.md and round-1/review-code.md
+  mkdir -p "factory/jobs/$1/round-1"
+  echo "{\"id\":\"$1\",\"stage\":\"${2:-build}\",\"title\":\"t $1\"}" > "factory/jobs/$1/job.json"
+  echo "spec of $1" > "factory/jobs/$1/spec.md"; echo "review of $1" > "factory/jobs/$1/round-1/review-code.md"
+  echo "noise" > "factory/jobs/$1/build.log"
+}
+
+hub() {  # hub <python expression over b, the list of request bodies>
+  python3 -c "
+import json
+b = [json.loads(l) for l in open('$H/hub.log')]
+print($1)"
+}
+
+t_report_no_config() {
+  new_repo rptnone; commit_all; H="$TMP_ROOT/rptnone/home"; mkdir -p "$H"
+  rpt >/dev/null 2>&1; check "no hub.json: exit 2" "[$?]" "[2]"
+  echo '{"url":"http://127.0.0.1:9"}' > /dev/null; mkdir -p "$H/.config/factory"
+  echo '{"url":"http://127.0.0.1:9","token":"x"}' > "$H/.config/factory/hub.json"
+  rpt >/dev/null 2>&1; check "hub unreachable: exit 1" "[$?]" "[1]"
+}
+
+t_report_push() {
+  rpt_setup rptpush; rpt_job 001-a; rpt_job 002-b merged; mkdir -p factory/jobs/_features; echo '{}' > factory/jobs/_features/job.json
+  local out; out=$(rpt 2>&1); check "first push exits 0 and says so" "[$?] $out" "[0] report: sent full: 1 repo(s), 2 job(s), 4 file(s)" &&
+  check "full, with both jobs, their files and no logs" "$(hub 'b[0]["full"], b[0]["repos"][0]["job_ids"], sorted(b[0]["repos"][0]["jobs"][0]["files"])')" "True ['001-a', '002-b'] ['round-1/review-code.md', 'spec.md']" &&
+  check "the first push carries the config" "$(hub '"prices_usd_per_mtok" in b[0]["repos"][0]["config"]')" "True" &&
+  check "machine, token" "$(hub 'b[0]["machine"]') $(head -1 "$H/auth.log")" "m1 Bearer tok" || return 1
+  rpt >/dev/null; check "nothing changed: a push with no jobs" "$(hub '(len(b), b[1]["full"], b[1]["repos"][0]["jobs"], "config" in b[1]["repos"][0], b[1]["repos"][0]["job_ids"])')" "(2, False, [], False, ['001-a', '002-b'])" || return 1
+  echo "changed" > factory/jobs/001-a/round-1/review-code.md
+  rpt >/dev/null; check "one file changed: only that file" "$(hub '[(j["id"], j["files"], j["files_removed"]) for j in b[2]["repos"][0]["jobs"]]')" "[('001-a', {'round-1/review-code.md': 'changed\n'}, [])]" || return 1
+  rm factory/jobs/001-a/round-1/review-code.md
+  rpt >/dev/null; check "a deleted file is files_removed" "$(hub '[(j["id"], j["files"], j["files_removed"]) for j in b[3]["repos"][0]["jobs"]]')" "[('001-a', {}, ['round-1/review-code.md'])]" || return 1
+  rm -r factory/jobs/002-b
+  rpt >/dev/null; check "a deleted job leaves job_ids" "$(hub 'b[4]["repos"][0]["job_ids"], b[4]["repos"][0]["jobs"]')" "['001-a'] []" || return 1
+  echo '{"id":"001-a","stage":"' > factory/jobs/001-a/job.json   # half-written
+  rpt >/dev/null; check "an unreadable job.json keeps the job, sends nothing" "$(hub 'b[5]["repos"][0]["job_ids"], b[5]["repos"][0]["jobs"]')" "['001-a'] []"
+}
+
+t_report_hub_down() {
+  rpt_setup rptdown; rpt_job 001-a
+  rpt >/dev/null; rpt >/dev/null; touch "$H/down"
+  rpt >/dev/null 2>&1; check "hub answering 500: exit 1" "[$?]" "[1]" || return 1
+  rm "$H/down"
+  rpt >/dev/null; check "the next push after a failure is full" "$(hub '[x["full"] for x in b]')" "[True, False, False, True]"
+}
+
+t_report_need_full() {
+  rpt_setup rptneed; rpt_job 001-a; touch "$H/need_full"
+  rpt >/dev/null; rpt >/dev/null
+  check "need_full on a delta push: a full one follows at once" "$(hub '[(x["full"], len(x["repos"][0]["jobs"])) for x in b]')" "[(True, 1), (False, 0), (True, 1)]"
+}
+
+t_report_identity() {
+  rpt_setup rptid; rpt_job 001-a
+  check "no origin: local/<dir>" "$(rpt --dry-run --no-outside | python3 -c 'import json,sys; r=json.load(sys.stdin)["repos"][0]; print(r["repo"], r["url"])')" "local/repo None" || return 1
+  local cases='import importlib.machinery as m, importlib.util as u
+l = m.SourceFileLoader("r", "factory/bin/report"); r = u.module_from_spec(u.spec_from_loader("r", l)); l.exec_module(r)
+for s in ("git@github.com:Xuresch/factory.git", "https://github.com/Xuresch/factory", "https://github.com/Xuresch/factory.git/", "ssh://git@gitlab.example.com:2222/grp/sub/app.git"):
+    print(r.parse_remote(s))'
+  local out; out=$(python3 -c "$cases")
+  check "ssh" "$out" "('Xuresch/factory', 'https://github.com/Xuresch/factory')" &&
+  check "https without .git" "$out" "('Xuresch/factory', 'https://github.com/Xuresch/factory')" &&
+  check "another host: last two segments, no url" "$out" "('sub/app', None)" || return 1
+  git remote add origin git@github.com:Acme/widget.git
+  check "a repo's origin end to end" "$(rpt --dry-run --no-outside)" '"repo": "Acme/widget",
+      "url": "https://github.com/Acme/widget"'
+}
+
+t_report_dry_run() {
+  rpt_setup rptdry; rpt_job 001-a; python3 -c "print('x' * 200)" > factory/jobs/001-a/long.md
+  local out; out=$(rpt --dry-run --no-outside); local rc=$?
+  check "exit 0, the payload, long files cut" "[$rc] $out" "…(201 chars)" &&
+  check "nothing sent" "[$(test -e "$H/hub.log" && echo sent)]" "[]" &&
+  check "no state written" "[$(test -e "$H/.cache/factory/report-state.json" && echo state)]" "[]" &&
+  check "a real push still full afterwards" "$(rpt >/dev/null; hub 'b[0]["full"]')" "True"
+}
+
+t_report_outside() {
+  rpt_setup rptout true; rpt_job 001-a
+  rpt >/dev/null; rpt >/dev/null
+  check "outside usage goes along once, then only when it changed" "$(hub '[("outside" in x, x.get("outside", {}).get("status")) for x in b]')" "[(True, 'ready'), (False, None)]"
+}
+
+t_report_install_service() {
+  new_repo rptsvc; commit_all; H="$TMP_ROOT/rptsvc/home"; mkdir -p "$H"
+  local out; out=$(rpt --install-service); local u="$H/.config/systemd/user/factory-report.service"
+  check "prints the commands" "$out" "systemctl --user daemon-reload && systemctl --user enable --now factory-report" &&
+  check "unit" "$(cat "$u")" "ExecStart=$PWD/factory/bin/report --watch" &&
+  check "restarts" "$(cat "$u")" "Restart=always" &&
+  check "restart delay" "$(cat "$u")" "RestartSec=10"
+}
+
 # ---- runner ----------------------------------------------------------------
 
 all_tests=$(declare -F | awk '{print $3}' | grep '^t_')
