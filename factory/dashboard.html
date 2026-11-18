@@ -894,7 +894,7 @@ async function refreshDrawer() {
     const name = f === COSTS ? `overview · $${Number(job.cost_usd).toFixed(2)}`
       : f === TICKET ? `ticket · ${esc(job.issue)}` : round
       ? `<span class="rn">R${round[1]} </span>${esc(f.split('/')[1].replace(/^review-|\.md$/g, ''))}`
-      : esc(f)
+      : esc(f.replace(/\.md$/, ''))
     const match = f.match(/^round-(\d+)\/(checks|review-(.+))\.md$/)
     const roundData = match && (job.rounds || []).find((r) => r.round === Number(match[1]))
     const verdict = match && (match[2] === 'checks' ? roundData?.gate : roundData?.reviews?.[match[3]])
