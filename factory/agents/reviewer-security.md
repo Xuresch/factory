@@ -56,6 +56,10 @@ finding needed, and ask for it to be cut.
   tokens or internal errors.
 - **Payments and identity**: anything that can grant access, skip a webhook
   signature check, or change who a user is.
+- **Unattended state changes**: any state change that runs without a user
+  action (auto-submit, auto-accept, a redirect or page load that writes)
+  needs a proof of intent an outside link can't forge. A URL parameter alone
+  isn't one.
 - **Abuse**: public endpoints that can be spammed without a rate limit.
 - **Secrets**: keys, credentials or `.env` values in commits.
 - **Dependencies**: new packages, and whether they are needed and maintained.

@@ -55,6 +55,9 @@ APPROVE only if all of these hold:
   spec or by a finding. Growth beyond that is a reason to ESCALATE, naming
   what could be cut. A finding the builder disputed in build.md
   `## Review findings` and the reviewer withdrew is settled.
+- No `Not seen in a browser: <page>` line, in build.md or a review's Notes,
+  is on a page the acceptance criteria depend on. Such a line is a reason to
+  ESCALATE, naming the page; mention any other one in decision.md.
 - The final round's `ci.md`, when there is one, isn't `CI: FAIL`. A failing
   check is a reason to ESCALATE with its name, even when the gate passed.
   `CI: PENDING` or `CI: NONE` alone isn't: at approve time `CI: NONE` means

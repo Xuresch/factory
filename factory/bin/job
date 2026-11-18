@@ -38,7 +38,8 @@ Usage:
   job slice-done <job> <k>       slice k reported: merge it into the job branch, or continue/park it
   job approve <job>              needs-human → merging → merged: a human approves an escalated job
   job resume <job>               paused → on: after the human reviewed (and maybe edited) intake.md or spec.md;
-                                 stdin: one line of what they accepted (goes to accepted.md)
+                                 stdin: what they accepted, then one line per spec Needs-a-human item
+                                 with its result (all go to accepted.md)
   job rewind <job> <stage>       back to intake, spec or build with your feedback (stdin)
   job route-set <job> k=v...     override for this job: builder=claude/opus, code=codex, ux=claude/sonnet
   job finish <branch> [--pr]     every ticket for a feature branch is done: sync, check, feature review, merge
@@ -2644,7 +2645,7 @@ def pause(job, after, resume):
         items = "\n".join(f"- {x}" for x in todo)
         comment("issue", job["issue"],
                 f"### Factory: paused after spec, needs you\n\nBefore this job is built, the spec "
-                f"needs from you:\n\n{items}\n\nDo them, then resume with one line of what you found "
+                f"needs from you:\n\n{items}\n\nDo them, then resume with the result of each, one line per item "
                 f"(it goes to accepted.md for the approver). Review `factory/jobs/{job['id']}/spec.md` "
                 f"too if you like; your edits are binding. Or send feedback, or reject the job.")
         return label("issue", job["issue"], add=LABELS["needs_human"], remove=LABELS["queue"])
@@ -2673,19 +2674,23 @@ def optional_stdin():
 
 
 def record_acceptance(job, after, edited, note):
-    """What the human accepted when resuming a pause: one line in accepted.md,
-    so the approver reads it instead of inferring it from the resume."""
+    """What the human accepted when resuming a pause: an entry in accepted.md,
+    so the approver reads it instead of inferring it from the resume. The note's
+    first line heads the entry; each further line (the result of a Needs-a-human
+    item) goes under it."""
     what = {"intake": "intake.md", "spec": "spec.md", "dependencies": "the new dependencies in spec.md",
             "budget": "more budget"}.get(after, after)
-    line = note.strip().splitlines()[0] if note.strip() else (
-        f"accepted {what}" + (" with their edits" if edited else " as written"))
+    lines = [l.strip() for l in note.strip().splitlines() if l.strip()]
+    line = lines[0] if lines else f"accepted {what}" + (" with their edits" if edited else " as written")
     reason = {"spec": "held after spec", "intake": "held after intake",
               "dependencies": "new dependencies", "budget": "over budget"}.get(after, after)
     risk = (job.get("intake") or {}).get("risk")
-    entry = f"- {now()} @{operator()} resumed after {after} ({reason}, risk {risk}): {line}\n"
+    entry = (f"- {now()} @{operator()} resumed after {after} ({reason}, risk {risk}): {line}\n"
+             + "".join(f"  - {l.removeprefix('- ')}\n" for l in lines[1:]))
     f = job_dir(job["id"]) / "accepted.md"
     f.write_text((f.read_text() if f.exists() else "# Accepted by a human\n\n") + entry)
-    job.setdefault("accepted", []).append({"after": after, "note": line, "at": now(), "by": operator()})
+    job.setdefault("accepted", []).append({"after": after, "note": line, "at": now(), "by": operator()}
+                                          | ({"answers": [l.removeprefix("- ") for l in lines[1:]]} if lines[1:] else {}))
 
 
 def cmd_resume(job, note=""):
@@ -2711,6 +2716,10 @@ def cmd_resume(job, note=""):
         if p["after"] in {"spec", "dependencies"} and (job["intake"] or {}).get("split"):
             job["slices"] = parse_slices(f)
     record_acceptance(job, p["after"], edited, note)
+    todo = needs_a_human(job) if p["after"] == "spec" else []
+    if todo and not note.strip():
+        print(f"{job['id']}: no result recorded for {len(todo)} Needs-a-human item(s) in spec.md; "
+              "the approver escalates each one nobody answered", file=sys.stderr)
     sync(job)
     label("issue", job["issue"], add=LABELS["queue"], remove=LABELS["needs_human"])
     job["stage"], job["ended"] = p["resume"], None
@@ -3655,7 +3664,7 @@ def merge_summary(job, rough):
     if decided:
         lines += ["", "**Why it was approved**", decided]
     if (d / "accepted.md").exists():
-        lines += ["", "**Accepted by a human**"] + [l for l in (d / "accepted.md").read_text().splitlines() if l.startswith("- ")]
+        lines += ["", "**Accepted by a human**"] + [l for l in (d / "accepted.md").read_text().splitlines() if l.lstrip().startswith("- ")]
     if job.get("follow_ups"):
         lines += ["", "**Follow-ups**"] + [f"- {f['title']}" + (f" ({f['issue']})" if f.get("issue") else "")
                                            for f in job["follow_ups"]]
