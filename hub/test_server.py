@@ -254,6 +254,21 @@ class TestIngest(HubCase):
         self.assertEqual(self.get("/r/o/r/jobs/002/job.json")[0], 404)  # not in job_ids: deleted
         self.assertEqual(self.links(self.get("/r/o/r/jobs/")[1]), ["001/"])
 
+    def test_removed_job_keeps_its_cost_and_comes_back(self):
+        self.ok(push("m1", [repo("o/r", [entry("001", cost=2.0), entry("002", "merged", cost=3.0)])]))
+        self.ok(push("m1", [{"repo": "o/r", "job_ids": ["001"], "jobs": []}]))
+        r = self.get_json("/api/overview")["repos"][0]
+        self.assertEqual(r["counts"]["total"], 1)  # gone from the board
+        self.assertEqual(r["cost_usd"], 5.0)  # still in the history
+        self.ok(push("m1", [{"repo": "o/r", "job_ids": ["001", "002"], "jobs": []}]))
+        self.assertEqual(self.get("/r/o/r/jobs/002/job.json")[0], 200)
+        self.assertEqual(self.get_json("/api/overview")["repos"][0]["counts"]["total"], 2)
+
+    def test_round_verdicts_come_from_the_files(self):
+        files = {"spec.md": "s", "round-1/checks.md": "GATE: PASS\n", "round-1/review-code.md": "VERDICT: CHANGES\n"}
+        self.ok(push("m1", [repo("o/r", [entry("001", "review", files=files, round=1)])]))
+        self.assertEqual(self.get("/r/o/r/jobs/001/round-1/checks.md")[1], "GATE: PASS\n")
+
     def test_full_replaces_file_set_and_drops_repos(self):
         self.ok(push("m1", [repo("o/a", [entry("001", files={"spec.md": "x", "build.md": "y"})]),
                             repo("o/b", [entry("001")])]))

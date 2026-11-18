@@ -33,6 +33,7 @@
 
 mod ingest;
 mod overview;
+mod project;
 mod sse;
 mod store;
 mod tree;
@@ -164,6 +165,13 @@ async fn run() -> Result<(), String> {
         tokens,
         ingest_lock: Mutex::new(()),
     });
+    let reprojected = hub
+        .reproject()
+        .await
+        .map_err(|e| format!("cannot re-project the jobs: {e}"))?;
+    if reprojected > 0 {
+        println!("hub: re-projected {reprojected} jobs");
+    }
 
     let host = if bind.is_empty() {
         "0.0.0.0"
@@ -317,7 +325,8 @@ async fn repo_tree(hub: &Hub, path: &str, raw: &str) -> Response {
     match hub
         .store
         .query(
-            "SELECT 1 FROM repos WHERE repo=? LIMIT 1",
+            "SELECT 1 FROM repos r JOIN checkouts c ON c.repo_id=r.id \
+             WHERE r.slug=? AND c.removed_at IS NULL LIMIT 1",
             vec![store::text(&repo)],
         )
         .await
