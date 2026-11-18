@@ -1596,7 +1596,7 @@ def sync_with_base(job):
         # Skipping the sync then hides a conflict until the merge: commit it.
         git(job, "add", "-A")
         res = git(job, "commit", "--no-verify", "-m",
-                  "factory: keep uncommitted work before syncing with the base",
+                  "chore(factory): keep uncommitted work before syncing with the base",
                   check=False)
         if res.returncode != 0:
             (rd / "base-sync.md").write_text(
@@ -1810,7 +1810,7 @@ def advance(job, stage):
         if not GITHUB:
             set_status(job["issue"], "done")
             comment("issue", job["issue"], body)
-            commit_ticket(job, f"Close {job['issue']}: {job['title']} (factory job {job['id']})")
+            commit_ticket(job, f"chore(factory): close {job['issue']}\n\n{job['title']} (factory job {job['id']})")
         else:
             waiting = {"needs-human": LABELS["needs_human"], "needs-info": LABELS["needs_info"]}.get(old)
             label("issue", job["issue"], remove=",".join(x for x in (LABELS["queue"], waiting) if x))
@@ -1828,7 +1828,8 @@ def advance(job, stage):
                 close_issue(job["issue"])
             else:
                 set_status(job["issue"], "done")
-                commit_ticket(job, f"Close {job['issue']}: {job['title']} (made by hand, factory job {job['id']})")
+                commit_ticket(job, f"chore(factory): close {job['issue']}\n\n{job['title']} "
+                                   f"(made by hand, factory job {job['id']})")
         else:
             comment("issue", job["issue"], f"### Factory: rejected\n\n{reason}")
             label("issue", job["issue"], add=LABELS["wontfix"], remove=f"{LABELS['queue']},{waiting}")
@@ -2272,8 +2273,7 @@ def changed_outside(job, s):
 
 def composite_build_md(job, status, blocked=()):
     d = job_dir(job["id"])
-    spec_title = (first_line(d / "spec.md") or "").lstrip("# ").strip()
-    parts = [f"STATUS: {status}", "", f"# Build: {spec_title} ({len(job['slices'])} slices)", "", "## Summary",
+    parts = [f"STATUS: {status}", "", f"# Build: {spec_title(job)} ({len(job['slices'])} slices)", "", "## Summary",
              f"- Built in {len(job['slices'])} slices by parallel builders, merged into {job['branch']}."]
     for s in job["slices"]:
         parts.append(f"- Slice {s['n']} ({s['state']}): {s['title']}")
@@ -2308,8 +2308,7 @@ def finish_slices(job):
     if GITHUB:
         git(job, "push", "-u", "origin", job["branch"])
         if not gh_json("pr", "list", "--head", job["branch"], "--state", "open", "--json", "number"):
-            title = (first_line(job_dir(job["id"]) / "spec.md") or job["title"]).lstrip("# ").strip()
-            gh("pr", "create", "--draft", "--base", jbase(job), "--head", job["branch"], "--title", title,
+            gh("pr", "create", "--draft", "--base", jbase(job), "--head", job["branch"], "--title", spec_title(job),
                "--body", f"Closes #{job['issue']}\n\nBuilt in {len(job['slices'])} slices; see build.md.")
     save(job)
     print(f"{job['id']}: all {len(job['slices'])} slices merged into {job['branch']}; "
@@ -2660,14 +2659,21 @@ def spec_from_intake(job):
     scope = section(d / "intake.md", "Scope")
     if not criteria or not scope:
         return False
+    title = header(d / "intake.md").get("TITLE") or job["title"]
     (d / "spec.md").write_text(
-        f"# {job['title']}\n\n> Issue {job['issue']}: {job['title']}\n\n"
+        f"# {title}\n\n> Issue {job['issue']}: {job['title']}\n\n"
         f"> Small, low-risk job: written from intake.md, no spec writer.\n\n"
         f"## Summary\n- Built from intake's scope and acceptance criteria.\n\n"
         f"## Requirements\n{scope}\n\n## Acceptance criteria\n{criteria}\n\n"
         f"## Out of scope\nAnything not in the requirements above.\n")
     job["spec_skipped"] = True
     return True
+
+
+def spec_title(job):
+    """spec.md's first line without its `# `: the job's Conventional Commits
+    title, used for the PR title and a local squash merge."""
+    return (first_line(job_dir(job["id"]) / "spec.md") or job["title"]).lstrip("# ").strip()
 
 
 def spec_bullets(job, heading):
@@ -3088,7 +3094,7 @@ def cmd_finish(branch, pr_only=False):
             run(["git", "push", "origin", branch], cwd=where)
             prs = gh_json("pr", "list", "--head", branch, "--base", BASE, "--state", "open", "--json", "number")
             number = prs[0]["number"] if prs else gh("pr", "create", "--base", BASE, "--head", branch,
-                                                      "--title", f"Merge {branch}", "--body",
+                                                      "--title", f"chore(factory): merge {branch}", "--body",
                                                       f"Every factory ticket for {branch} is done.").strip().rsplit("/", 1)[-1]
             triaged = ""
             if prs:  # a re-run: reviewers had time to comment on the open PR
@@ -3126,7 +3132,7 @@ def cmd_finish(branch, pr_only=False):
                 return
             gh("pr", "merge", str(number), f"--{CONFIG['merge_method']}")
         else:
-            merge_locally(branch, BASE, f"Merge {branch} into {BASE}", f"finish-{slug}")
+            merge_locally(branch, BASE, f"chore(factory): merge {branch} into {BASE}", f"finish-{slug}")
     except Refused as e:
         stop("FAIL", f"The merge failed:\n\n```\n{e}\n```")
     finally:
@@ -3367,6 +3373,7 @@ def cmd_create(number):
         "dispatch": {}, "cost_usd": 0.0, "started": now(), "ended": None,
         "history": [{"stage": "intake", "round": 0, "at": now(), "t": time.time()}],
         "holds": holds,
+        "commit_format": "conventional",  # the gate checks commit subjects and the PR title
     }
     write_issue_md(job)
     save(job)
@@ -3886,7 +3893,7 @@ def cmd_merge(job):
                 gh("pr", "merge", str(job["pr"]), f"--{CONFIG['merge_method']}")
             else:
                 merge_locally(job["branch"], jbase(job),
-                              f"Merge {job['branch']}: {job['title']} ({job['issue']})", job["id"])
+                              f"{spec_title(job)}\n\nMerge {job['branch']} ({job['issue']})", job["id"])
             break
         except Refused as e:
             if base_moved(str(e)) and attempt < MERGE_ATTEMPTS:

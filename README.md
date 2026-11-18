@@ -54,9 +54,9 @@ route (script)    picks builder, reviewers and models from config.json
         ▼
 spec-writer (claude/opus) → spec.md
         ▼
-builder (codex) → commits, pushes, opens a draft PR "Closes #n"
+builder (codex) → Conventional Commits, pushes, opens a draft PR "Closes #n"
         ▼            ▲
-gate (script) ─FAIL──┤  factory/checks.sh; no reviewer runs on a failing build
+gate (script) ─FAIL──┤  factory/checks.sh, commit format; no reviewer runs on a failing build
         ▼ PASS       │
 reviewers ─CHANGES───┘  code (claude), + ux & ui on UI changes, + security
         │               CHANGES from ux or ui → next round's builder is claude,

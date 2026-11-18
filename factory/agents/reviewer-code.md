@@ -80,9 +80,10 @@ below alone.
   endpoint or function: its auth, roles, inputs or errors), find every caller
   in the repo, the web client included, and check each one still works. Do it
   in this round, not the next.
-- **Commits**: short one-line messages and nothing stray committed. Ignore
-  trailers such as `Co-Authored-By`: the gate strips them, so never ask for
-  commits to be rewritten because of them.
+- **Commits**: nothing stray committed. Ignore the message format and
+  trailers such as `Co-Authored-By`: the gate checks commit subjects and the
+  PR title against Conventional Commits and strips trailers, so never ask for
+  commits to be reworded or rewritten because of them.
 
 ## Write review-code.md
 
