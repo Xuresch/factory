@@ -138,7 +138,8 @@ check() {  # check <description> <actual> <expected substring>
 # fake `gh` on PATH. The fake keeps its state as JSON next to itself: issue-<n>.json
 # (what `gh issue view` prints), pr.json (one PR: `pr create` writes it, `pr view`
 # prints it with headRefOid read from origin unless pr.json pins one, `pr merge`
-# records mergedHead), merge-fail.json ({"count": n, "stderr": s, "run": cmd}:
+# records mergedHead), rerun.json (the statusCheckRollup `gh run rerun` puts on the PR),
+# merge-fail.json ({"count": n, "stderr": s, "run": cmd}:
 # the next n `pr merge` calls run cmd, then fail with s) and pr-comments.json
 # (what `gh api [--paginate] repos/{owner}/{repo}/<pulls|issues>/<n>/<comments|reviews>`
 # lists, two per page; see pr_comment).
@@ -208,6 +209,9 @@ elif cmd == ["pr", "list"]:
     print(json.dumps([pr] if ok else []))
 elif cmd == ["pr", "view"]:
     print(json.dumps({"headRefOid": head(), **pr}))
+elif cmd == ["run", "rerun"]:  # the rerun's results replace the PR's checks
+    if load("rerun.json") is not None:
+        pr["statusCheckRollup"] = load("rerun.json"); save("pr.json", pr)
 elif cmd == ["pr", "ready"]:
     pr["isDraft"] = False; save("pr.json", pr)
 elif cmd == ["pr", "edit"]:
@@ -1093,7 +1097,8 @@ t_gh_ci_at_approve() {
     local ci; ci=$(cat "factory/jobs/$id/round-1/ci.md")
     check "$case: verdict" "$(head -1 <<< "$ci")" "$want" || return 1
     case $case in
-      fail) check "fail: names the check" "$ci" "- ci/test: failure" ;;
+      fail) check "fail: names the check" "$ci" "- ci/test: failure" &&
+            check "fail: an external status isn't rerun" "[$(grep -c '^run rerun' "$GH_LOG")]" "[0]" ;;
       pending) check "pending: names the check" "$ci" "- lint: pending" ;;
       stale) check "stale: head note" "$ci" "The PR head f00ba44 isn't the reviewed commit" ;;
       pass) check "pass: no head note" "[$(grep -c "isn't the reviewed commit" <<< "$ci")]" "[0]" ;;
@@ -1797,6 +1802,75 @@ t_gh_ci_wait_frees_the_job() {
   wait "$pid"
   check "then needs-human" "$(cat "$TMP_ROOT/ciwait.out")" "needs-human: CI on PR #7 was still running" &&
   check "marker gone" "$(field "$id" "d.get('ci_wait')")" "None"
+}
+
+# Two Actions runs: build fails in run 101, test in run 102, lint passes.
+CI_RED="[{'__typename': 'CheckRun', 'name': 'build', 'status': 'COMPLETED', 'conclusion': 'FAILURE', 'completedAt': 't1', 'detailsUrl': 'https://github.com/o/r/actions/runs/101/job/1'},
+ {'__typename': 'CheckRun', 'name': 'lint', 'status': 'COMPLETED', 'conclusion': 'SUCCESS', 'completedAt': 't1', 'detailsUrl': 'https://github.com/o/r/actions/runs/101/job/2'},
+ {'__typename': 'CheckRun', 'name': 'test', 'status': 'COMPLETED', 'conclusion': 'FAILURE', 'completedAt': 't1', 'detailsUrl': 'https://github.com/o/r/actions/runs/102/job/3'}]"
+
+gh_rerun_set() {  # gh_rerun_set <flaky|real>: what the PR's checks say after `gh run rerun`
+  local test=SUCCESS; [[ $1 == real ]] && test=FAILURE
+  python3 -c "import json; r = $CI_RED; [c.update(conclusion='SUCCESS' if c['name'] != 'test' else '$test', completedAt='t2') for c in r]; json.dump(r, open('$GH/rerun.json', 'w'))"
+}
+
+t_gh_ci_rerun_at_approve() {
+  local case
+  for case in flaky real; do
+    new_gh_repo "ghrerun-$case"; gh_issue 1 One
+    local id; id=$(gh_to_approve 1) || return 1
+    gh_pr_set "pr['statusCheckRollup'] = $CI_RED"; gh_rerun_set "$case"
+    local out; out=$(J advance "$id" approve 2>&1) || { echo "$out"; return 1; }
+    local ci; ci=$(cat "factory/jobs/$id/round-1/ci.md")
+    check "$case: says it reruns" "$out" "rerunning once and waiting" &&
+    check "$case: one rerun per Actions run" "$(grep '^run rerun' "$GH_LOG")" "run rerun 101 --failed
+run rerun 102 --failed" &&
+    check "$case: remembered for the commit" "$(field "$id" "list(d['ci_reruns'][d['review_head']]['failed'])")" "['build', 'test']" &&
+    check "$case: marker gone" "$(field "$id" "d.get('ci_wait')")" "None" || return 1
+    case $case in
+      flaky) check "flaky: passes" "$(head -1 <<< "$ci")" "CI: PASS" &&
+             check "flaky: flakes stay visible" "$ci" "Passed on rerun: build, test" ;;
+      real) check "real: fails" "$(head -1 <<< "$ci")" "CI: FAIL" &&
+            check "real: the flake is named" "$ci" "Passed on rerun: build" &&
+            check "real: the failing check" "$ci" "- test: failure" ;;
+    esac || return 1
+  done
+  # The same commit fails again at merge: no second rerun, back to the builder.
+  printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"
+  gh_pr_set "pr['statusCheckRollup'] = $CI_RED"
+  out=$(J merge "$id" 2>&1)
+  check "once per commit: no second rerun" "[$(grep -c '^run rerun' "$GH_LOG")]" "[2]" &&
+  check "once per commit: back to build" "$out" "back to the builder for round 2: CI failed on PR #7"
+}
+
+t_gh_ci_rerun_at_merge() {
+  local case
+  for case in flaky real; do
+    new_gh_repo "ghmergererun-$case"; gh_issue 1 One
+    local id; id=$(gh_to_merging 1) || return 1
+    gh_pr_set "pr['statusCheckRollup'] = $CI_RED"; gh_rerun_set "$case"
+    local out; out=$(J merge "$id" 2>&1)
+    local ci; ci=$(cat "factory/jobs/$id/round-1/merge-ci.md" 2>/dev/null)
+    check "$case: reruns" "$out" "rerunning once and waiting" &&
+    check "$case: two rerun calls" "[$(grep -c '^run rerun' "$GH_LOG")]" "[2]" || return 1
+    case $case in
+      flaky) check "flaky: merged" "$out" "merged PR #7" &&
+             check "flaky: recorded as passed" "$(head -1 <<< "$ci")" "CI: PASS" &&
+             check "flaky: flakes stay visible" "$ci" "- Passed on rerun: build, test." ;;
+      real) check "real: back to build" "$out" "back to the builder for round 2: CI failed on PR #7" &&
+            check "real: names only the real failure" "$(cat "factory/jobs/$id/round-2/merge-back.md")" "CI failed on PR #7 after syncing with master: test." &&
+            check "real: recorded" "$ci" "CI: FAIL" &&
+            check "real: the flake is named" "$ci" "- Passed on rerun: build." &&
+            check "real: not merged" "[$(grep -c '^pr merge' "$GH_LOG")]" "[0]" ;;
+    esac || return 1
+  done
+  # A rerun that never restarts (the old failure stays): waited for up to the grace period, then FAIL.
+  new_gh_repo ghmergererun-stuck; gh_issue 1 One; set_config ci_start_grace_seconds 0.5
+  local id; id=$(gh_to_merging 1) || return 1
+  gh_pr_set "pr['statusCheckRollup'] = $CI_RED"
+  local out; out=$(J merge "$id" 2>&1)
+  check "stuck: back to build" "$out" "CI failed on PR #7 after syncing with master: build, test." &&
+  check "stuck: waited for the restart" "[$(( $(grep -c '^pr view 7 --json statusCheckRollup' "$GH_LOG") > 4 ))]" "[1]"
 }
 
 t_first_build_and_resume_sync_with_base() {

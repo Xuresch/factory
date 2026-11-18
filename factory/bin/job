@@ -25,12 +25,16 @@ Usage:
   job advance <job> <stage>      move a job to <stage>, or refuse. Entering build merges the base in
                                  (round-N/base-sync.md). A round whose change equals the last reviewed
                                  one (it only merged the base) carries every review at `review` and
-                                 an earlier APPROVE at `approve`: then run `job merge`, no workers
+                                 an earlier APPROVE at `approve`: then run `job merge`, no workers.
+                                 Entering approve on GitHub writes round-N/ci.md; a failing GitHub
+                                 Actions check is rerun once first and waited for (ci_wait_minutes)
   job merge <job>                APPROVE → sync with the base branch (a conflict only in
                                  lockfile_regenerate paths is regenerated, not sent back), gate, on
                                  GitHub push and wait for the PR's CI (ci_wait_minutes; round-N/
-                                 merge-ci.md), merge (the PR, or locally). A conflict, a failing gate
-                                 or CI goes back to build; CI still pending at the timeout, to a human
+                                 merge-ci.md), merge (the PR, or locally). A failing Actions check is
+                                 rerun once per commit; CI fails only when a check fails twice. A
+                                 conflict, a failing gate or CI goes back to build; CI still pending
+                                 at the timeout, to a human
   job reply <issue>              post your words (stdin) on the issue as the operator, not the factory
   job continue <job>             build.md says STATUS: PARTIAL → the builder goes on, same round
   job slices <job>               a split job's slices and which to start next
@@ -1019,10 +1023,12 @@ def fetch_base(branch, cwd=REPO):
 
 def ci_checks(job):
     """The PR's CI checks (GitHub Checks and statuses): {verdict, rows, failing,
-    pending, head}, verdict PASS | FAIL | PENDING | NONE. Raises Refused when
-    `gh pr view` fails."""
+    pending, passed, head, runs, ended}, verdict PASS | FAIL | PENDING | NONE;
+    runs maps a failing check to its GitHub Actions run id (from detailsUrl;
+    an external status has none), ended each check to its completedAt. Raises
+    Refused when `gh pr view` fails."""
     pr = gh_json("pr", "view", str(job["pr"]), "--json", "statusCheckRollup,headRefOid")
-    rows, failing, pending = [], [], []
+    rows, failing, pending, passed, runs, ended = [], [], [], [], {}, {}
     for c in pr.get("statusCheckRollup") or []:
         name = c.get("name") or c.get("context") or "?"
         state = (c.get("conclusion") or c.get("state") or c.get("status") or "").upper()
@@ -1030,12 +1036,18 @@ def ci_checks(job):
             state = "PENDING"
         if state in {"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"}:
             failing.append(name)
+            m = re.search(r"/actions/runs/(\d+)", c.get("detailsUrl") or "")
+            if m:
+                runs[name] = m.group(1)
         elif state in {"PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED", "WAITING", ""}:
             pending.append(name)
+        else:
+            passed.append(name)
+        ended[name] = c.get("completedAt") or ""
         rows.append(f"- {name}: {state.lower() or 'pending'}")
     verdict = "FAIL" if failing else "PENDING" if pending else "PASS" if rows else "NONE"
-    return {"verdict": verdict, "rows": rows, "failing": failing, "pending": pending,
-            "head": pr.get("headRefOid", "")}
+    return {"verdict": verdict, "rows": rows, "failing": failing, "pending": pending, "passed": passed,
+            "head": pr.get("headRefOid", ""), "runs": runs, "ended": ended}
 
 
 def ci_status(job):
@@ -1052,7 +1064,9 @@ def ci_status(job):
     stale = (f"\nThe PR head {head[:7]} isn't the reviewed commit {job.get('review_head', '')[:7]}: "
              "push the branch, these results are for an older commit.\n"
              if job.get("review_head") and head and head != job["review_head"] else "")
-    return (f"CI: {ci['verdict']}\n\n## Checks on PR #{job['pr']}\n" + ("\n".join(ci["rows"]) or "No checks reported.")
+    flaky = passed_on_rerun(job, ci)
+    return (f"CI: {ci['verdict']}\n\n" + (f"Passed on rerun: {', '.join(flaky)}\n\n" if flaky else "")
+            + f"## Checks on PR #{job['pr']}\n" + ("\n".join(ci["rows"]) or "No checks reported.")
             + "\n" + stale)
 
 
@@ -1062,12 +1076,14 @@ def ci_poll_seconds():
     return float(os.environ.get("FACTORY_CI_POLL_SECONDS") or CONFIG.get("ci_poll_seconds", 20))
 
 
-def wait_for_ci(job, head):
+def wait_for_ci(job, head, rerun=None):
     """Poll the PR's checks for the pushed `head` until none is pending. Returns
-    {verdict, rows, failing, pending, waited}: verdict PASS, FAIL, NONE (no check
-    showed up within `ci_start_grace_seconds`: a repo without CI) or TIMEOUT
+    {verdict, rows, failing, pending, passed, waited}: verdict PASS, FAIL, NONE (no
+    check showed up within `ci_start_grace_seconds`: a repo without CI) or TIMEOUT
     (still pending after `ci_wait_minutes`). Results for another head count as
-    not started yet: GitHub hasn't seen the push."""
+    not started yet: GitHub hasn't seen the push. After a rerun (rerun_failed's
+    record), a rerun check still showing its old failure hasn't restarted yet,
+    for up to the grace period."""
     grace = float(CONFIG.get("ci_start_grace_seconds", 180))
     limit = float(CONFIG.get("ci_wait_minutes", 30)) * 60
     start = time.monotonic()
@@ -1078,7 +1094,12 @@ def wait_for_ci(job, head):
         except Refused:
             ci = {"verdict": "NONE", "rows": [], "failing": [], "pending": [], "head": ""}
         if ci["head"] != head:
-            ci.update(verdict="NONE", rows=[], failing=[], pending=[])
+            ci.update(verdict="NONE", rows=[], failing=[], pending=[], passed=[])
+        old = [n for n in ci["failing"] if rerun and rerun["failed"].get(n)
+               and ci["ended"].get(n) == rerun["failed"][n]]
+        if old and waited < grace:
+            time.sleep(ci_poll_seconds())
+            continue
         if ci["verdict"] in {"PASS", "FAIL"}:
             return dict(ci, waited=waited)
         if ci["verdict"] == "NONE" and waited >= grace:
@@ -1088,12 +1109,73 @@ def wait_for_ci(job, head):
         time.sleep(ci_poll_seconds())
 
 
+def rerun_failed(job, ci):
+    """Rerun the GitHub Actions runs behind the failing checks (`gh run rerun
+    <run> --failed`), at most once per commit: job.json `ci_reruns`, keyed by the
+    head sha, remembers it. Saves the job. Returns the record ({at, runs, failed:
+    {check: completedAt}}) for wait_for_ci, or None when nothing was rerun: the
+    commit had its rerun, or no failing check has an Actions run (an external
+    status), or every rerun call failed."""
+    reruns = job.setdefault("ci_reruns", {})
+    runs = sorted({ci["runs"][n] for n in ci["failing"] if n in ci["runs"]})
+    if ci["head"] in reruns or not runs:
+        return None
+    done = [r for r in runs if run(["gh", "run", "rerun", r, "--failed"], check=False).returncode == 0]
+    reruns[ci["head"]] = {"at": now(), "runs": done,
+                          "failed": {n: ci["ended"].get(n, "") for n in ci["failing"] if ci["runs"].get(n) in done}}
+    save(job)
+    return reruns[ci["head"]] if done else None
+
+
+def passed_on_rerun(job, ci):
+    """The checks that failed on this head, were rerun and passed: flaky."""
+    rerun = (job.get("ci_reruns") or {}).get(ci.get("head")) or {}
+    return [n for n in rerun.get("failed", {}) if n in ci.get("passed", [])]
+
+
+def approve_ci_rerun(job):
+    """review → approve on GitHub: when CI fails on the reviewed commit, rerun
+    the failed checks once (rerun_failed) and wait for them, so ci.md shows the
+    rerun's result and a flaky check costs no escalation. Called before
+    `advance`, which holds no lock it could lose: the wait runs without the
+    job's lock (like merge_ci), and `advance` then checks everything again on
+    the reloaded job. Returns the job, synced again when it waited."""
+    if not (GITHUB and job.get("pr") and job["stage"] == "review"
+            and set((job.get("reviews") or {}).values()) == {"PASS"}):
+        return job  # advance refuses (or doesn't look at CI): no rerun for nothing
+    w = merge_waiting(job)
+    if w:
+        raise Refused(f"{job['id']}: another `job {w.get('command', 'advance')}` (pid {w['pid']}) has been "
+                      f"waiting for CI on {w['head'][:7]} since {w['since']}; let it finish")
+    try:
+        ci = ci_checks(job)
+    except Refused:
+        return job
+    if ci["verdict"] != "FAIL" or ci["head"] != job.get("review_head"):
+        return job
+    rerun = rerun_failed(job, ci)
+    if not rerun:
+        return job
+    print(f"{job['id']}: CI failed on PR #{job['pr']} ({', '.join(ci['failing'])}); rerunning once and "
+          f"waiting, up to {CONFIG.get('ci_wait_minutes', 30)} min", flush=True)
+    job["ci_wait"] = {"pid": os.getpid(), "start": proc_start(os.getpid()), "since": now(),
+                      "head": ci["head"], "command": "advance"}
+    save(job)
+    with unlocked(job):  # `job queue`, `job next` and the other jobs go on meanwhile
+        wait_for_ci(job, ci["head"], rerun)
+    job.pop("ci_wait", None)
+    save(job)
+    return sync(job)
+
+
 def record_ci(job, head, ci):
     """round-<N>/merge-ci.md: the CI state `job merge` saw on the head it merges."""
     state = "PENDING" if ci["verdict"] == "TIMEOUT" else ci["verdict"]
     note = {"NONE": "No check reported within ci_start_grace_seconds: the repo has no CI for this PR.",
             "TIMEOUT": f"Checks still pending after ci_wait_minutes: {', '.join(ci['pending'])}.",
             "FAIL": f"Failing: {', '.join(ci['failing'])}.", "PASS": "Every check passed."}[ci["verdict"]]
+    flaky = passed_on_rerun(job, dict(ci, head=head))
+    note += f"\n- Passed on rerun: {', '.join(flaky)}." if flaky else ""
     (round_dir(job) / "merge-ci.md").write_text(
         f"CI: {state}\nCOMMIT: {head}\n\n## Summary\n- {note}\n- Waited {int(ci['waited'])}s before merging.\n\n"
         f"## Checks on PR #{job['pr']}\n" + ("\n".join(ci["rows"]) or "No checks reported.") + "\n")
@@ -3851,7 +3933,8 @@ def unlocked(job):
 
 
 def merge_waiting(job):
-    """The `job merge` process waiting for this job's CI, while it lives; else None."""
+    """The `job merge` (or `job advance` to approve) process waiting for this
+    job's CI, while it lives; else None."""
     w = job.get("ci_wait")
     if w and w["pid"] != os.getpid() and pid_alive(w["pid"], w.get("start")):
         return w
@@ -3871,6 +3954,11 @@ def merge_ci(job):
     save(job)
     with unlocked(job):  # `job queue`, `job next` and the other jobs go on meanwhile
         ci = wait_for_ci(job, head)
+    rerun = rerun_failed(job, ci) if ci["verdict"] == "FAIL" and job["stage"] == "merging" else None
+    if rerun:  # a flaky check shouldn't cost a builder round: FAIL only when it fails twice
+        print(f"{job['id']}: CI failed ({', '.join(ci['failing'])}); rerunning once and waiting", flush=True)
+        with unlocked(job):
+            ci = wait_for_ci(job, head, rerun)
     job.pop("ci_wait", None)
     if job["stage"] != "merging":  # moved on while we waited: a human merged the PR, say
         save(job)
@@ -4640,6 +4728,10 @@ def next_gate(job, since):
 
 def next_review(job, since):
     i, rd, out = job["id"], round_dir(job), []
+    w = merge_waiting(job)
+    if w:
+        return [("wait", f"job advance (pid {w['pid']}) waiting for the CI rerun on PR #{job['pr']} "
+                         f"since {clock(entry_time({'at': w['since']}))}")]
     skipped = job.get("skipped_reviews") or {}
     start, waits = [], []
     for lens in reviewers(job):
@@ -4799,7 +4891,8 @@ def main(argv):
         elif cmd == "create" and len(args) == 1:
             cmd_create(args[0])
         elif cmd == "advance" and len(args) == 2:
-            job = advance(sync(resolve(args[0])), args[1])
+            job = sync(resolve(args[0]))
+            job = advance(approve_ci_rerun(job) if args[1] == "approve" else job, args[1])
             save(sync(job))
             print(f"{job['id']}: {job['stage']} (round {job['round']})")
             if args[1] == "review" and job.get("merge_only"):
