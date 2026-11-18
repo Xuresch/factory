@@ -139,6 +139,8 @@ check() {  # check <description> <actual> <expected substring>
 # (what `gh issue view` prints), pr.json (one PR: `pr create` writes it, `pr view`
 # prints it with headRefOid read from origin unless pr.json pins one, `pr merge`
 # records mergedHead), rerun.json (the statusCheckRollup `gh run rerun` puts on the PR),
+# commit-checks.json ({sha: [check runs]}: what `gh api .../commits/<sha>/check-runs` lists;
+# `pr merge` makes the merge commit f00d...), commit-rerun.json (the check runs `gh run rerun` puts there),
 # merge-fail.json ({"count": n, "stderr": s, "run": cmd}:
 # the next n `pr merge` calls run cmd, then fail with s) and pr-comments.json
 # (what `gh api [--paginate] repos/{owner}/{repo}/<pulls|issues>/<n>/<comments|reviews>`
@@ -160,6 +162,7 @@ load = lambda n: json.loads((d / n).read_text()) if (d / n).exists() else None
 save = lambda n, v: (d / n).write_text(json.dumps(v))
 opt = lambda k: args[args.index(k) + 1] if k in args else None
 cmd, pr = args[:2], load("pr.json")
+MAIN_SHA = "f00d" * 10  # the merge commit `pr merge` makes on the base
 head = lambda: subprocess.run(["git", "-C", str(d.parent / "origin.git"), "rev-parse", "refs/heads/" + pr["headRefName"]],
                               capture_output=True, text=True).stdout.strip()
 if cmd == ["api", "user"]:
@@ -183,6 +186,10 @@ elif cmd[0] == "api" and cmd[1].endswith("/dependencies/blocked_by"):  # issue-<
         sys.exit("HTTP 502")
     print(json.dumps([{"number": b, "state": load(f"issue-{b}.json")["state"].lower()}
                       for b in (load(f"issue-{n}.json") or {}).get("blocked_by", [])]))
+elif cmd[0] == "api" and "/check-runs" in cmd[1]:  # commit-checks.json {sha: [check runs]}
+    sha = cmd[1].split("/commits/")[1].split("/")[0]
+    runs = (load("commit-checks.json") or {}).get(sha, [])
+    print(json.dumps({"total_count": len(runs), "check_runs": runs}))
 elif cmd[0] == "api" and any(a.startswith("repos/{owner}/{repo}/") for a in args):
     # PR comments from pr-comments.json {"pulls/comments": [...], "issues/comments": [...], "pulls/reviews": [...]},
     # two per page: --paginate prints the pages back to back, without it only the first one comes.
@@ -204,14 +211,17 @@ elif cmd == ["pr", "create"]:
     save("pr.json", {"number": 7, "url": "https://github.com/o/r/pull/7", "headRefName": opt("--head"), "title": opt("--title"),
                      "state": "OPEN", "isDraft": "--draft" in args, "statusCheckRollup": [], "body": opt("--body")})
     print("https://github.com/o/r/pull/7")
-elif cmd == ["pr", "list"]:
-    ok = pr and pr["state"] == "OPEN" and opt("--head") in (None, pr["headRefName"])
-    print(json.dumps([pr] if ok else []))
+elif cmd == ["pr", "list"]:  # --state open (default), merged or all
+    state = (opt("--state") or "open").upper()
+    ok = pr and state in ("ALL", pr["state"]) and opt("--head") in (None, pr["headRefName"])
+    print(json.dumps([{"headRefOid": pr.get("mergedHead") or head(), **pr}] if ok else []))
 elif cmd == ["pr", "view"]:
     print(json.dumps({"headRefOid": head(), **pr}))
-elif cmd == ["run", "rerun"]:  # the rerun's results replace the PR's checks
+elif cmd == ["run", "rerun"]:  # the rerun's results replace the PR's checks (and a commit's)
     if load("rerun.json") is not None:
         pr["statusCheckRollup"] = load("rerun.json"); save("pr.json", pr)
+    if load("commit-rerun.json") is not None:
+        save("commit-checks.json", {**(load("commit-checks.json") or {}), **load("commit-rerun.json")})
 elif cmd == ["pr", "ready"]:
     pr["isDraft"] = False; save("pr.json", pr)
 elif cmd == ["pr", "edit"]:  # --body and/or --title
@@ -222,7 +232,7 @@ elif cmd == ["pr", "merge"]:
         fail["count"] -= 1; save("merge-fail.json", fail)
         subprocess.run(fail.get("run") or "true", shell=True)  # e.g. another PR lands meanwhile
         sys.exit(fail["stderr"])
-    pr["state"], pr["mergedHead"] = "MERGED", head(); save("pr.json", pr)
+    pr["state"], pr["mergedHead"], pr["mergeCommit"] = "MERGED", head(), {"oid": MAIN_SHA}; save("pr.json", pr)
 else:
     sys.exit(f"fake gh: unsupported call: gh {' '.join(args)}")
 EOF
@@ -238,6 +248,7 @@ EOF
   chmod +x "$dir/bin/gh" "$dir/bin/land"
   export PATH="$dir/bin:$PATH" GH="$dir/bin" GH_LOG="$dir/bin/gh.log" GATES_LOG="$dir/bin/gates.log"
   export FACTORY_CI_POLL_SECONDS=0.05  # job merge polls CI fast; no check within the grace = no CI
+  export FACTORY_MAIN_CI_SYNC=1  # job merge watches the base's CI in-process, not in the background
   sed -i 's/"tracker": "local"/"tracker": "github"/' factory/config.json
   set_config ci_start_grace_seconds 0 ci_wait_minutes 0.01
   printf '#!/usr/bin/env bash\nset -e\necho "$FACTORY_GATE" >> "$GATES_LOG"\ntest ! -f FAIL\n' > factory/checks.sh
@@ -845,6 +856,32 @@ t_gh_finish_pulls_origin_after_local_merge() {
   local tip; tip=$(python3 -c "import json; print(json.load(open('factory/jobs/_features/feature-q.json'))['tip'])") &&
   check "the checked tip contains it" "$(git -C "$wt" merge-base --is-ancestor "$fix" "$tip" && echo yes)" "yes" &&
   check "checked again" "$(python3 -c "import json; print(json.load(open('factory/jobs/_features/feature-q.json'))['checked'])")" "$tip"
+}
+
+t_gh_finish_after_hand_merge() {
+  new_gh_repo ghfinishmerged
+  git branch feature/p master; git checkout -q feature/p && echo p > p.txt && git add p.txt && git commit -qm p && git checkout -q master
+  git push -q origin feature/p
+  local f=factory/jobs/_features wt=.worktrees/_finish-feature-p
+  check "asks for review" "$(J finish feature/p --pr)" "start the feature review" || return 1
+  J feature-review feature/p >/dev/null
+  printf 'VERDICT: PASS\n\n## Findings\nNone.\n' > $f/feature-p-review.md
+  check "pr opened" "$(J finish feature/p --pr 2>&1)" "is open; merge it on GitHub" || return 1
+  # A human merges the PR on GitHub; the base moves, so a sync would ask for a new review.
+  gh_pr_set "pr['state'], pr['mergedHead'] = 'MERGED', '$(git -C "$GH/../origin.git" rev-parse feature/p)'"
+  "$GH/land" m.txt m >/dev/null
+  local out; out=$(J finish feature/p --pr 2>&1)
+  check "recognizes the merge" "$out" "feature/p: pull request #7 is merged into master; the branch is done" &&
+  check "no review asked" "[$(grep -c 'feature review' <<< "$out")]" "[0]" &&
+  check "report" "$(head -1 $f/feature-p.md)" "FINISH: MERGED" &&
+  check "report names the PR" "$(cat $f/feature-p.md)" "Pull request #7 was merged" &&
+  check "kept worktree removed" "$(test -e "$wt" && echo kept || echo gone)" "gone" &&
+  check "state removed" "$(test -e $f/feature-p.json && echo kept || echo gone)" "gone" &&
+  check "nothing merged by the factory" "[$(grep -c '^pr merge' "$GH_LOG")]" "[0]" || return 1
+  # New commits on the branch after the merged PR: not done, finish goes on.
+  (cd "$TMP_ROOT/ghfinishmerged" && git clone -q origin.git more && cd more && git config user.email t@t &&
+   git config user.name t && git checkout -q feature/p && echo q > q.txt && git add q.txt && git commit -qm q && git push -q origin feature/p)
+  check "new work isn't done" "$(J finish feature/p --pr 2>&1)" "start the feature review"
 }
 
 t_gh_finish_origin_conflict() {
@@ -1937,6 +1974,94 @@ t_gh_ci_rerun_at_merge() {
   local out; out=$(J merge "$id" 2>&1)
   check "stuck: back to build" "$out" "CI failed on PR #7 after syncing with master: build, test." &&
   check "stuck: waited for the restart" "[$(( $(grep -c '^pr view 7 --json statusCheckRollup' "$GH_LOG") > 4 ))]" "[1]"
+}
+
+MAIN_SHA=$(printf 'f00d%.0s' {1..10})
+
+main_checks() {  # main_checks <file> <integration conclusion> [status]: check runs on the merge commit
+  python3 - "$GH/$1" "$MAIN_SHA" "$2" "${3:-completed}" <<'EOF'
+import json, sys
+p, sha, integration, status = sys.argv[1:]
+t = "t2" if "rerun" in p else "t1"
+run = lambda name, conclusion, n, st="completed": {"name": name, "status": st, "conclusion": conclusion if st == "completed" else None,
+    "completed_at": t, "details_url": f"https://github.com/o/r/actions/runs/{n}/job/1"}
+json.dump({sha: [run("unit", "success", 200), run("integration", integration, 201, status),
+                 run("Docker Publish", "success" if integration == "success" else "skipped", 202)]}, open(p, "w"))
+EOF
+}
+
+t_gh_main_ci_after_merge() {
+  local case
+  for case in flaky fail; do
+    new_gh_repo "ghmainci-$case"; gh_issue 1 One
+    local inbox="$TMP_ROOT/ghmainci-$case/inbox"; notify_to "[{\"command\": \"cat >> '$inbox'\"}]"
+    local id; id=$(gh_to_merging 1) || return 1
+    main_checks commit-checks.json failure
+    main_checks commit-rerun.json "$([[ $case == flaky ]] && echo success || echo failure)"
+    local out; out=$(J merge "$id" 2>&1)
+    local ci; ci=$(cat "factory/jobs/$id/round-1/main-ci.md" 2>/dev/null)
+    check "$case: merged" "$out" "merged PR #7" &&
+    check "$case: stays merged" "$(field "$id" "d['stage']")" "merged" &&
+    check "$case: asks for the merge commit" "$(cat "$GH_LOG")" "pr view 7 --json mergeCommit" &&
+    check "$case: reads the check runs on it" "$(cat "$GH_LOG")" "api repos/{owner}/{repo}/commits/$MAIN_SHA/check-runs" &&
+    check "$case: reruns the failed run" "$(grep '^run rerun' "$GH_LOG")" "run rerun 201 --failed" &&
+    check "$case: once" "[$(grep -c '^run rerun' "$GH_LOG")]" "[1]" &&
+    check "$case: commit recorded" "$ci" "COMMIT: $MAIN_SHA" &&
+    check "$case: main_ci commit" "$(field "$id" "d['main_ci']['commit']")" "$MAIN_SHA" &&
+    check "$case: marker gone" "$(field "$id" "d.get('main_ci_wait')")" "None" || return 1
+    case $case in
+      flaky) check "flaky: passes" "$(head -1 <<< "$ci")" "CI: PASS" &&
+             check "flaky: flake named" "$ci" "- Passed on rerun: integration." &&
+             check "flaky: main_ci" "$(field "$id" "d['main_ci']['verdict']")" "PASS" &&
+             check "flaky: no comment" "[$(grep -c 'after the merge' "$GH_LOG")]" "[0]" &&
+             check "flaky: no notification" "[$(grep -c 'CI failed' "$inbox" 2>/dev/null)]" "[0]" &&
+             check "flaky: next is quiet" "[$(J next | grep -c tell)]" "[0]" ;;
+      fail) check "fail: recorded" "$(head -1 <<< "$ci")" "CI: FAIL" &&
+            check "fail: names the check" "$ci" "- Failing: integration." &&
+            check "fail: lists the skipped deploy" "$ci" "- Skipped: Docker Publish." &&
+            check "fail: check list" "$ci" "- Docker Publish: skipped" &&
+            check "fail: main_ci" "$(field "$id" "d['main_ci']['verdict']")" "FAIL" &&
+            check "fail: comments on the issue" "$(grep -A1 '^issue comment 1' "$GH_LOG" | tail -1)" "### Factory: CI failed on master after the merge" &&
+            check "fail: notifies" "$(cat "$inbox")" "Factory: $id (#1) CI failed on master" &&
+            check "fail: notification names the check" "$(cat "$inbox")" "failing: integration; skipped: Docker Publish" &&
+            check "fail: next tells" "$(J next)" "$id: tell: CI on master at f00df00 failed (integration) after PR #7 merged; skipped: Docker Publish" &&
+            check "fail: next for the job" "$(J next "$id")" "$id: tell: CI on master" || return 1
+            # Watching the same commit again doesn't comment twice.
+            J main-ci "$id" >/dev/null 2>&1
+            check "fail: one comment" "[$(grep -c 'CI failed on master after the merge' "$GH_LOG")]" "[1]" || return 1
+            # A later merge whose base CI passed clears the alert.
+            mkdir -p factory/jobs/zz-later
+            python3 -c "import json; d = json.load(open('factory/jobs/$id/job.json')); d.update(id='zz-later', main_ci=dict(d['main_ci'], verdict='PASS', at='9999')); json.dump(d, open('factory/jobs/zz-later/job.json', 'w'))"
+            check "fail: a later green base clears it" "[$(J next | grep -c tell)]" "[0]" ;;
+    esac || return 1
+  done
+}
+
+t_gh_main_ci_background() {
+  new_gh_repo ghmainci-bg; gh_issue 1 One; unset FACTORY_MAIN_CI_SYNC; set_config ci_wait_minutes 0.05
+  local id; id=$(gh_to_merging 1) || return 1
+  main_checks commit-checks.json "" in_progress
+  local out; out=$(J merge "$id" 2>&1)
+  check "merge returns at once" "$out" "watching CI on master at f00df00 in the background" &&
+  check "pid recorded" "$(field "$id" "type(d['main_ci_wait']['pid']).__name__")" "int" || return 1
+  for _ in $(seq 50); do grep -q 'waiting for CI on master' "factory/jobs/$id/main-ci.log" 2>/dev/null && break; sleep 0.1; done
+  check "a second watcher refuses" "$(J main-ci "$id" 2>&1)" "has watched CI on master since" || return 1
+  for _ in $(seq 100); do [[ "$(field "$id" "d['main_ci']['verdict']")" == PENDING ]] || break; sleep 0.1; done
+  check "times out" "$(field "$id" "d['main_ci']['verdict']")" "TIMEOUT" &&
+  check "recorded as pending" "$(head -1 "factory/jobs/$id/round-1/main-ci.md")" "CI: PENDING" &&
+  check "logged" "$(cat "factory/jobs/$id/main-ci.log")" "CI on master at f00df00: TIMEOUT" &&
+  check "comments" "$(cat "$GH_LOG")" "### Factory: CI on master still running after the merge" &&
+  check "marker gone" "$(field "$id" "d.get('main_ci_wait')")" "None" &&
+  check "next tells" "$(J next)" "tell: CI on master at f00df00 was still running"
+}
+
+t_main_ci_off() {
+  new_gh_repo ghmainci-off; gh_issue 1 One; set_config main_ci false
+  local id; id=$(gh_to_merging 1) || return 1
+  J merge "$id" >/dev/null 2>&1
+  check "merged" "$(field "$id" "d['stage']")" "merged" &&
+  check "not watched" "[$(grep -c 'mergeCommit\|check-runs' "$GH_LOG")]" "[0]" &&
+  check "no main_ci" "$(field "$id" "d.get('main_ci')")" "None"
 }
 
 t_first_build_and_resume_sync_with_base() {

@@ -307,6 +307,8 @@
   .sd { width: 8px; height: 8px; border-radius: 2px; background: var(--merged); }
   .sd.rejected { background: var(--faint); }
   .drow.rejected .dt { color: var(--subtle); }
+  .sd.ci-fail { background: var(--human); }
+  .stg.ci-fail { color: var(--human); box-shadow: inset 0 0 0 1px var(--human); }
   .stg { display: inline-block; font: 12px/1.5 var(--mono); padding: 0 7px; border-radius: 4px; margin-right: 6px; white-space: nowrap; color: var(--muted); box-shadow: inset 0 0 0 1px var(--faint); }
   .more { background: none; border: 0; color: var(--active); font: 12px var(--mono); cursor: pointer; padding: 8px 10px; }
   .calm { color: var(--subtle); font-size: 13px; padding: 10px 0; }
@@ -676,10 +678,16 @@ function links(job) {
   return out.join('')
 }
 
+// A merged job whose push CI on the base branch failed (or never finished) after the merge: job.json main_ci.
+const mainCiFailed = (job) => job.stage === 'merged' && ['FAIL', 'TIMEOUT'].includes(job.main_ci?.verdict)
+const mainCiNote = (job) => `CI on ${job.base || 'the base'} ${job.main_ci.verdict === 'FAIL' ? 'failed' : 'timed out'} after the merge`
+  + (job.main_ci.failing?.length ? `: ${job.main_ci.failing.join(', ')}` : '')
+  + (job.main_ci.skipped?.length ? ` · skipped: ${job.main_ci.skipped.join(', ')}` : '')
+
 // What the person has to do, said plainly. The overview's cards use the same words.
 const CMD = '<code>/factory &lt;anything&gt;</code>'
 function flagOf(job) {
-  return job.stage === 'needs-human' ? 'Your call'
+  return mainCiFailed(job) ? 'Main CI failed' : job.stage === 'needs-human' ? 'Your call'
     : job.stage === 'paused' ? `Paused after ${(job.paused || {}).after || 'a stage'}`
     : job.stage === 'needs-info' ? 'Waiting for author' : job.stage === 'rejected' ? 'Rejected' : ''
 }
@@ -687,6 +695,7 @@ function todoOf(job) {
   if (job.stage === 'needs-human') return job.pr ? `Merge PR #${esc(job.pr)} or give feedback with ${CMD}` : `Open the job to approve, or give feedback with ${CMD}`
   if (job.stage === 'paused') return 'Open the job to continue'
   if (job.stage === 'needs-info') return 'Waiting for the issue author to answer'
+  if (mainCiFailed(job)) return esc(mainCiNote(job))
   return ''
 }
 
@@ -1377,10 +1386,11 @@ function dayLabel(key) {
 
 function doneRow(j) {
   const f = feature(j)
+  const ciFail = mainCiFailed(j)
   const risk = j.intake?.risk || ''
   return `<div class="drow ${esc(j.stage)}" data-job="${esc(j.id)}" tabindex="0">
-    <span class="sd ${esc(j.stage)}" data-tip="${esc(j.stage)}"></span><span class="num">${esc(numOf(j))}</span>
-    <span class="dt" title="${esc(j.title)}">${hub && hub.repo === 'all' ? repoChip(j) + ' ' : ''}${j.stage === 'rejected' ? '<span class="stg">rejected</span>' : ''}${esc(j.title)}</span>
+    <span class="sd ${esc(j.stage)} ${ciFail ? 'ci-fail' : ''}" data-tip="${esc(ciFail ? mainCiNote(j) : j.stage)}"></span><span class="num">${esc(numOf(j))}</span>
+    <span class="dt" title="${esc(ciFail ? `${j.title} · ${mainCiNote(j)}` : j.title)}">${hub && hub.repo === 'all' ? repoChip(j) + ' ' : ''}${j.stage === 'rejected' ? '<span class="stg">rejected</span>' : ''}${ciFail ? '<span class="stg ci-fail">main CI failed</span>' : ''}${esc(j.title)}</span>
     ${f ? `<span class="tag" title="${esc(f)}">${esc(f.replace(/^feature\//, ''))}</span>` : '<span class="tag notag"></span>'}
     ${roundDots(j)}<span class="risk-${esc(risk)}">${esc(risk)}</span>
     <span class="n cell">${money(j.cost_usd)}${splitBar(partsOf(j))}</span><span class="n">${elapsed(j)}</span></div>`

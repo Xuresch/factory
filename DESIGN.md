@@ -278,6 +278,17 @@ reach a human. When that round only merged the base (the change compared to the 
 approved one), the reviews and the approval carry over and nobody reviews the
 same change twice. `job approve` merges an escalated job the same way.
 
+**A merge is watched until the base's CI says so.** Green PR checks don't
+mean a green base: push workflows (integration tests, a deploy that runs only
+when they pass) start after the merge, and nobody looks. `job merge` starts
+`job main-ci` detached, so neither it nor the orchestrator waits; it waits for
+the check runs on the merge commit, reruns a failing Actions run once (the
+same once-per-commit rule as the PR), and writes `main-ci.md` and `main_ci`.
+A failure can't send a merged job back, so it goes to the people instead: one
+comment on the issue, a notification, a red mark on the dashboard, and a
+`tell` line in `job next` until a later merge brings the base back to green.
+A skipped check is listed, not failed: a skipped deploy is the thing to see.
+
 **Every job keeps a timeline and its follow-ups.** `job advance` appends each
 stage with its round and time to `history`; the dashboard's overview shows how
 long each stage took. When intake leaves work out, it lists it under

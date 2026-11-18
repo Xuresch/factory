@@ -306,6 +306,7 @@
   "gate_parallel": 1,
   "lockfile_regenerate": {},
   "ci_wait_minutes": 30,
+  "main_ci": true,
   "ci_start_grace_seconds": 180,
   "min_risk_for_surface": {
     "security": "medium"

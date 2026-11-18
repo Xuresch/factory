@@ -190,6 +190,17 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
   it to a human; no check within the grace period means the repo has no CI,
   and it merges. Raise the minutes if CI takes longer; a repo without CI loses
   the grace period on every merge, so lower it there (`0` skips the wait).
+- `main_ci` (default `true`), GitHub only: after a merge (by `job merge`, or a
+  PR merged by hand that `job queue` finds), the factory watches the CI the
+  merge starts on the base branch, in a background `job main-ci <job>` (log:
+  `factory/jobs/<job>/main-ci.log`). It waits for the check runs on the merge
+  commit (`ci_start_grace_seconds`, `ci_wait_minutes`), reruns a failing
+  Actions run once, and writes `round-<N>/main-ci.md` and job.json `main_ci`.
+  Skipped checks (a deploy whose `needs` failed, say) are listed, not counted.
+  When CI fails or is still running at the timeout, it comments on the issue
+  and notifies you on the `notify` channels; the job stays merged, the
+  dashboard marks it `main CI failed` and `job next` says so until a later
+  merge passes CI on that base. `false` turns the watch off.
 - `rerun_every_round`: which lenses review every round, by risk (default
   code always, security at high). From round 2 on every other lens that passed
   carries its PASS forward; only the lenses that asked for CHANGES run again,

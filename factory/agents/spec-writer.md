@@ -193,6 +193,9 @@ What this slice builds, in two or three lines.
   and the reviewer checks it.
 - Include the doc updates the change needs (AGENTS.md and any docs it lists) as
   requirements.
+- When the spec names a command for the builder to run (a test runner flag, a
+  script), run it once yourself first, with `--help` or a dry run (`vitest run
+  <file> --repeats 2`, say), and write the form that works.
 - `factory/checks.sh` runs the repo's tests, lint and build on every round, so
   don't restate it as a criterion. Ask for new tests where the repo has a test
   runner and the behaviour can be tested.

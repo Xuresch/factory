@@ -95,6 +95,7 @@ through the scripts. `factory/jobs/` is gitignored runtime state.
 <repo>/factory/jobs/<job-id>/round-<N>/review-<r>.md    one per routed reviewer
 <repo>/factory/jobs/<job-id>/round-<N>/base-sync.md     the base merged in before round N's build
 <repo>/factory/jobs/<job-id>/round-<N>/merge-ci.md      the PR's CI on the head `job merge` merged
+<repo>/factory/jobs/<job-id>/round-<N>/main-ci.md       the base branch's CI on the merge commit (`job main-ci`)
 <repo>/factory/jobs/<job-id>/decision.md                APPROVE or ESCALATE
 <repo>/factory/jobs/<job-id>/feedback-<k>.md            the user's feedback on an escalated job
 <repo>/factory/jobs/_features/<branch>-review.md        the feature review (`job finish`)
@@ -233,6 +234,11 @@ Each line is `<job>: <verb>: <what>`:
   `job summary` don't wait for it; other commands on that job say so and wait.
   Let the merge finish; don't start a second one.
 - `done: merged` or `done: rejected`.
+- `tell: CI on <base> at <sha> failed (...) after PR #N merged`: the base
+  branch's own CI broke after this job's merge (`round-<N>/main-ci.md`). The
+  job stays merged and nothing in the factory fixes it: tell the user in your
+  next message, with the failing and skipped checks. `job next` (no job)
+  repeats it until a later merge passes CI on that base.
 
 Run it again after each step for that job, until it says `wait`. A worker's
 file counts only once it is newer than the step it answers and Orca no longer
@@ -396,6 +402,10 @@ finished:
   with no round left does it go to `needs-human`, and CI still pending after
   `ci_wait_minutes` goes there too. No check within `ci_start_grace_seconds`
   means the repo has no CI: it merges, with `CI: NONE` in `merge-ci.md`.
+  After the merge `job merge` starts `job main-ci <id>` in the background
+  (config.json `main_ci`): it watches the CI on the base branch at the merge
+  commit and on a failure comments on the issue and notifies the user. Don't
+  wait for it or start a second one; `job next` says `tell:` when it failed.
 - `ESCALATE`: `factory/bin/job advance <id> needs-human`. It marks the PR ready,
   posts the decision on it and labels the issue `ready-for-human`.
 
@@ -447,6 +457,8 @@ triaged as ticket makes the review CHANGES, which goes to the user like any
 other. Only `PR OPEN` with every comment triaged is done; tell the user what
 the triage decided (its `## PR comments` section). The same check runs
 before `job finish <branch>` merges an existing PR.
+When a human already merged that PR, `job finish` says `the branch is done`
+(`FINISH: MERGED`) and removes the kept worktree: the feature is finished.
 
 **Mid-feature reviews.** With `feature_review_every: N` in `config.json`
 (default 0, off), `job merge` starts a mid-feature review itself after every
@@ -471,7 +483,8 @@ A job is finished for this run when it reaches `merged`, `rejected`,
 
 **Notifications.** `job advance` itself tells the user, on the channels in
 `config.json` `notify`, each time a job starts waiting on them (with why and
-what to do), and when one is merged or rejected; `job queue` says `run finished`
+what to do), when one is merged or rejected, and when the base's CI fails after a merge
+(`job main-ci`); `job queue` says `run finished`
 once when nothing is left to start or running. Don't send notifications
 yourself, and don't change `notify`; if the user asks for phone push, point
 them to the Notifications section of the factory's INSTALL.md (ntfy, the URL in
@@ -552,7 +565,10 @@ new feature, ask.
   `intake.md` or `spec.md` while it was paused are binding. When the spec's
   `## Needs a human` lists items, first ask the user for the result of each,
   and add one line per item after the first, `- <item>: <their result>`: the
-  approver escalates every item without a recorded result.
+  approver escalates every item without a recorded result. An item the user
+  explicitly keeps for themselves ("I run the migration after the merge")
+  counts as answered: record it that way, and the approver lists it as a
+  step for after the merge instead of escalating.
 - **Changing course** on a running or waiting job ("anderer Ansatz", "back to
   the spec", "redo the build with X"): stop the job's running workers, then
   pass their words verbatim:
