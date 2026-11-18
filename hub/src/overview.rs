@@ -255,43 +255,32 @@ impl Hub {
                 "last_activity": last}));
         }
 
-        // the job lists
-        let list = |group: &str, limit: Option<i64>| {
-            format!(
-                "SELECT r.slug AS repo, m.name AS machine, j.job_key AS id, j.doc AS doc {JOBS} \
-                 WHERE j.removed_at IS NULL AND c.removed_at IS NULL AND j.stage_group IN ({group}) \
-                 ORDER BY j.last_activity DESC{}",
-                limit.map_or(String::new(), |n| format!(" LIMIT {n}"))
-            )
-        };
-        let entry = |row: &Row| -> Value {
-            let repo = get_or_empty(row, "repo");
-            let id = get_or_empty(row, "id");
-            let machine = get_or_empty(row, "machine");
-            let sid = if meta.get(repo).is_some_and(|m| m.prefixed) {
-                format!("{machine}~{id}")
+        // Share the same projected summaries as the read API.
+        let summaries = self.summaries(crate::api::SummaryScope::Overview).await?;
+        let mut live = Vec::new();
+        let mut attn = Vec::new();
+        let mut done = Vec::new();
+        for mut job in summaries {
+            let repo = job["repo"].as_str().unwrap_or("").to_owned();
+            let machine = job["machine"].as_str().unwrap_or("").to_owned();
+            let key = job["key"].as_str().unwrap_or("").to_owned();
+            let id = if meta.get(&repo).is_some_and(|m| m.prefixed) {
+                format!("{machine}~{key}")
             } else {
-                id.to_owned()
+                key
             };
-            let mut job: Value =
-                serde_json::from_str(get_or_empty(row, "doc")).unwrap_or(Value::Null);
-            if let Some(o) = job.as_object_mut() {
-                o.insert("id".to_owned(), Value::String(sid.clone()));
+            let href = format!("/r/{}/dashboard.html#job={}", quote(&repo), quote(&id));
+            job["id"] = json!(id);
+            job["href"] = json!(href);
+            let group = job["stage_group"].as_str().unwrap_or("").to_owned();
+            let entry = json!({"repo":repo,"machine":machine,"id":id,"href":href,"job":job});
+            match group.as_str() {
+                "live" => live.push(entry),
+                "attention" => attn.push(entry),
+                "merged" | "rejected" if done.len() < 20 => done.push(entry),
+                _ => {}
             }
-            json!({"repo": repo, "machine": machine, "id": sid,
-                   "href": format!("/r/{}/dashboard.html#job={}", quote(repo), quote(&sid)),
-                   "job": job})
-        };
-        let mut lists = Vec::new();
-        for (group, limit) in [
-            ("'live'", None),
-            ("'attention'", None),
-            ("'merged', 'rejected'", Some(20)),
-        ] {
-            let rows = self.store.query(&list(group, limit), vec![]).await?;
-            lists.push(rows.iter().map(entry).collect::<Vec<_>>());
         }
-        let [live, attn, done]: [Vec<Value>; 3] = lists.try_into().unwrap_or_default();
 
         let week_ago = iso_from_epoch(now_secs - WEEK);
         let merged_week = self
@@ -367,12 +356,11 @@ impl Hub {
         let events: Vec<Value> = self
             .store
             .query(
-                &"SELECT s.at AS at, m.name AS machine, r.slug AS repo, j.job_key AS job, \
+                "SELECT s.at AS at, m.name AS machine, r.slug AS repo, j.job_key AS job, \
                      j.title AS title, s.from_stage AS from_stage, s.stage AS to_stage \
                      FROM job_stages s JOIN jobs j ON j.id=s.job_id \
                      JOIN checkouts c ON c.id=j.checkout_id JOIN repos r ON r.id=c.repo_id \
-                     JOIN machines m ON m.id=c.machine_id ORDER BY s.at DESC, s.seq DESC LIMIT 100"
-                    .to_string(),
+                     JOIN machines m ON m.id=c.machine_id ORDER BY s.at DESC, s.seq DESC LIMIT 100",
                 vec![],
             )
             .await?

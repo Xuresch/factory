@@ -77,7 +77,7 @@ pub fn repo_served_ids(keys: &[(&str, &str)]) -> Vec<String> {
 
 /// Served ids across repos: `<name>~<id>`, escalating on a clash to
 /// `<name>~<machine>~<id>`, then `<owner>~<name>~<machine>~<id>`.
-fn all_served_ids(keys: &[(&str, &str, &str)]) -> Vec<String> {
+pub fn all_served_ids(keys: &[(&str, &str, &str)]) -> Vec<String> {
     type Form = fn(&str, &str, &str, &str) -> String;
     let forms: [Form; 3] = [
         |_, n, _, i| format!("{n}~{i}"),

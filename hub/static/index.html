@@ -534,38 +534,16 @@ function todoOf(j) {
   return 'Waiting for the issue author to answer'
 }
 
-// Round verdict chips, read from the job's own files through the hub (gate first, then each reviewer).
+// Round verdict chips come from the projected summary.
 const SHORT = { code: 'code', ux: 'ux', ui: 'ui', security: 'sec' }
-const verdicts = new Map()   // "href|stage|round" -> {gate, reviews}
-const asking = new Set()
-async function firstLine(u) {
-  try { const r = await fetch(u, { cache: 'no-store' }); return r.ok ? (await r.text()).split('\n')[0].trim() : null } catch { return null }
-}
-const verdictOf = (l) => (l === null ? 'pending' : (l.match(/^(?:VERDICT|GATE):\s*(PASS|CHANGES|FAIL)$/) || [])[1] || 'invalid')
-function jobBase(e) {
-  const m = String(e.href).match(/^(.*\/)dashboard\.html#job=(.+)$/)
-  return m && safe(m[1]) ? `${m[1]}jobs/${encodeURIComponent(decodeURIComponent(m[2]))}/` : null
-}
-async function askRound(e, key) {
-  const base = jobBase(e)
-  const dir = `${base}round-${e.job.round}/`
-  const v = { gate: verdictOf(await firstLine(`${dir}checks.md`)), reviews: {} }
-  if (v.gate === 'PASS') {
-    await Promise.all(Object.keys(e.job.agents?.reviewers || {}).map(async (r) => { v.reviews[r] = verdictOf(await firstLine(`${dir}review-${r}.md`)) }))
-  }
-  verdicts.set(key, v)
-  asking.delete(key)
-  render()
-}
 const chip = (label, v, title) => `<span class="chip ${['PASS', 'CHANGES', 'FAIL'].includes(v) ? v : v === 'pending' ? '' : 'bad'}" title="${esc(title)}: ${esc(v)}">${esc(label)}</span>`
 function roundsOf(e) {
   const j = e.job
-  if (!j.round || !jobBase(e)) return ''
-  const key = `${e.href}|${j.stage}|${j.round}`
-  const v = verdicts.get(key)
-  if (!v) { if (!asking.has(key)) { asking.add(key); askRound(e, key) } return '' }
-  const cells = [chip('gate', v.gate, 'gate')]
-  if (v.gate === 'PASS') for (const r of Object.keys(j.agents?.reviewers || {})) cells.push(chip(SHORT[r] || r, v.reviews[r], r))
+  if (!j.round) return ''
+  const round = (j.rounds || []).find((r) => r.round === j.round)
+  const gate = round?.gate || 'pending'
+  const cells = [chip('gate', gate, 'gate')]
+  if (gate === 'PASS') for (const r of Object.keys(j.agents?.reviewers || {})) cells.push(chip(SHORT[r] || r, round?.reviews?.[r] || 'pending', r))
   return `<div class="rounds"><div class="round"><span class="r">R${esc(j.round)}</span>${cells.join('')}</div></div>`
 }
 
