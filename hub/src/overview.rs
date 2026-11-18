@@ -256,7 +256,7 @@ impl Hub {
         }
 
         // Share the same projected summaries as the read API.
-        let summaries = self.summaries(None, false).await?;
+        let summaries = self.summaries(crate::api::SummaryScope::Overview).await?;
         let mut live = Vec::new();
         let mut attn = Vec::new();
         let mut done = Vec::new();

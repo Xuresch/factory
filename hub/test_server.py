@@ -507,3 +507,17 @@ class TestReadApi(HubCase):
         self.assertEqual(len(self.get_json("/api/repos/o/r/jobs")["jobs"]), 1)
         self.assertEqual(next(j["id"] for j in removed if not j["removed"]), "001")
         self.assertEqual(sum(r["cost_usd"] for r in self.get_json("/api/costs?group=repo")["rows"]), 5)
+
+    def test_repo_summary_children_are_scoped(self):
+        a = entry("001", intake={"surfaces": ["alpha"]},
+                  slices=[{"n": 1, "title": "alpha", "state": "done"}],
+                  cost_breakdown=[{"role": "builder", "agent": "claude", "model": "alpha"}])
+        b = entry("001", intake={"surfaces": ["beta"]},
+                  slices=[{"n": 1, "title": "beta", "state": "running"}],
+                  cost_breakdown=[{"role": "builder", "agent": "codex", "model": "beta"}])
+        self.ok(push("neo", [repo("o/a", [a]), repo("o/b", [b])]))
+        result = self.get_json("/api/repos/o/a/jobs")["jobs"]
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["intake"]["surfaces"], ["alpha"])
+        self.assertEqual(result[0]["slices"][0]["title"], "alpha")
+        self.assertEqual(result[0]["cost_breakdown"][0]["model"], "alpha")

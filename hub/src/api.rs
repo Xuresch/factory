@@ -24,42 +24,112 @@ fn fields(row: &Row, names: &[&str]) -> Value {
     )
 }
 
+const JOB_FROM: &str = "FROM jobs j JOIN checkouts c ON c.id=j.checkout_id \
+     JOIN repos r ON r.id=c.repo_id JOIN machines m ON m.id=c.machine_id";
+
+#[derive(Clone, Copy)]
+pub enum SummaryScope<'a> {
+    List {
+        repo: Option<&'a str>,
+        removed: bool,
+    },
+    Detail {
+        repo: Option<&'a str>,
+        job_id: i64,
+        served: &'a str,
+        prefixed: bool,
+    },
+    Overview,
+}
+
+impl<'a> SummaryScope<'a> {
+    fn repo(self) -> Option<&'a str> {
+        match self {
+            Self::List { repo, .. } | Self::Detail { repo, .. } => repo,
+            Self::Overview => None,
+        }
+    }
+
+    fn filter(self) -> (String, Vec<store::Param>) {
+        let mut conditions = Vec::new();
+        let mut params = Vec::new();
+        if let Some(repo) = self.repo() {
+            conditions.push("r.slug=?");
+            params.push(store::text(repo));
+        }
+        if !matches!(self, Self::List { removed: true, .. }) {
+            conditions.push("j.removed_at IS NULL AND c.removed_at IS NULL");
+        }
+        match self {
+            Self::Detail { job_id, .. } => {
+                conditions.push("j.id=?");
+                params.push(store::int(job_id));
+            }
+            Self::Overview => conditions.push(
+                "(j.stage_group IN ('live', 'attention') OR j.id IN (\
+                SELECT recent.id FROM jobs recent JOIN checkouts rc ON rc.id=recent.checkout_id \
+                WHERE recent.removed_at IS NULL AND rc.removed_at IS NULL \
+                AND recent.stage_group IN ('merged', 'rejected') \
+                ORDER BY recent.last_activity DESC LIMIT 20))",
+            ),
+            Self::List { .. } => {}
+        }
+        let filter = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", conditions.join(" AND "))
+        };
+        (filter, params)
+    }
+}
+
 impl Hub {
-    /// Load all summaries in a bounded number of queries, then select in memory.
-    pub async fn summaries(
-        &self,
-        repo: Option<&str>,
-        include_removed: bool,
-    ) -> Result<Vec<Value>, Error> {
-        let rows = self.store.query("SELECT j.id, j.job_key, j.title, j.stage, j.stage_group, j.round, j.round_limit, j.issue_ref, j.issue_url, j.pr, j.pr_url, j.base, j.branch, j.gate, j.spec_skipped, j.intake_decision, j.intake_risk, j.intake_size, j.intake_split, j.intake_rescoped, j.builder_agent, j.builder_model, j.builder_effort, j.paused_after, j.started, j.ended, j.last_activity, j.duration_s, j.wait_s, j.work_s, j.cost_usd, j.cost_claude, j.cost_codex, j.cost_other, j.input_tokens, j.cached_tokens, j.output_tokens, j.findings, j.findings_disputed, j.builder_changes, j.continues, j.human_approvals, j.review_problems, j.removed_at, r.slug AS repo, m.name AS machine, c.removed_at AS checkout_removed FROM jobs j JOIN checkouts c ON c.id=j.checkout_id JOIN repos r ON r.id=c.repo_id JOIN machines m ON m.id=c.machine_id ORDER BY j.last_activity DESC", vec![]).await?;
-        let rows: Vec<_> = rows
-            .into_iter()
-            .filter(|r| repo.is_none_or(|s| store::get(r, "repo") == Some(s)))
-            .filter(|r| {
-                include_removed
-                    || (val(r, "removed_at").is_null() && val(r, "checkout_removed").is_null())
-            })
-            .collect();
+    /// Load selected summaries in a bounded number of queries.
+    pub async fn summaries(&self, scope: SummaryScope<'_>) -> Result<Vec<Value>, Error> {
+        let repo = scope.repo();
+        let (filter, params) = scope.filter();
+        let rows = self
+            .store
+            .query(
+                &format!(
+                    "SELECT j.id, j.job_key, j.title, j.stage, j.stage_group, j.round, \
+                 j.round_limit, j.issue_ref, j.issue_url, j.pr, j.pr_url, j.base, j.branch, \
+                 j.gate, j.spec_skipped, j.intake_decision, j.intake_risk, j.intake_size, \
+                 j.intake_split, j.intake_rescoped, j.builder_agent, j.builder_model, \
+                 j.builder_effort, j.paused_after, j.started, j.ended, j.last_activity, \
+                 j.duration_s, j.wait_s, j.work_s, j.cost_usd, j.cost_claude, j.cost_codex, \
+                 j.cost_other, j.input_tokens, j.cached_tokens, j.output_tokens, j.findings, \
+                 j.findings_disputed, j.builder_changes, j.continues, j.human_approvals, \
+                 j.review_problems, j.removed_at, r.slug AS repo, m.name AS machine, \
+                 c.removed_at AS checkout_removed {JOB_FROM}{filter} ORDER BY j.last_activity DESC"
+                ),
+                params.clone(),
+            )
+            .await?;
         let mut children: HashMap<&str, HashMap<i64, Vec<Row>>> = HashMap::new();
-        for (table, order) in [
-            ("job_surfaces", "surface"),
-            ("job_slices", "n"),
-            ("job_stages", "seq"),
-            ("job_rounds", "round"),
-            ("job_round_reviews", "round, lens"),
-            ("job_reviewers", "lens"),
-            ("job_costs", "seq"),
+        for (table, columns, order) in [
+            ("job_surfaces", "surface", "surface"),
+            ("job_slices", "n, title, state", "n"),
+            ("job_stages", "stage, from_stage, round, at, duration_s", "seq"),
+            ("job_rounds", "round, gate_verdict, files, insertions, deletions, continues", "round"),
+            ("job_round_reviews", "round, lens, verdict", "round, lens"),
+            ("job_reviewers", "lens, agent, model, effort, verdict", "lens"),
+            ("job_costs", "role, role_base, agent, model, sessions, input_tokens, cached_tokens, output_tokens, cost_usd", "seq"),
         ] {
             let mut grouped: HashMap<i64, Vec<Row>> = HashMap::new();
-            for row in self
-                .store
-                .query(&format!("SELECT * FROM {table} ORDER BY {order}"), vec![])
-                .await?
-            {
-                grouped
-                    .entry(store::get_int(&row, "job_id").unwrap_or(0))
-                    .or_default()
-                    .push(row);
+            let (sql, child_params) = match scope {
+                SummaryScope::Detail { job_id, .. } => (
+                    format!("SELECT job_id, {columns} FROM {table} WHERE job_id=? ORDER BY {order}"),
+                    vec![store::int(job_id)],
+                ),
+                _ => (
+                    format!("SELECT job_id, {columns} FROM {table} \
+                         WHERE job_id IN (SELECT j.id {JOB_FROM}{filter}) ORDER BY {order}"),
+                    params.clone(),
+                ),
+            };
+            for row in self.store.query(&sql, child_params).await? {
+                grouped.entry(store::get_int(&row, "job_id").unwrap_or(0)).or_default().push(row);
             }
             children.insert(table, grouped);
         }
@@ -110,7 +180,10 @@ impl Hub {
         let mut out = Vec::new();
         for (r, id) in rows.iter().zip(ids) {
             let job_id = store::get_int(r, "id").unwrap_or(0);
-            let id = visible_ids.get(&job_id).cloned().unwrap_or(id);
+            let id = match scope {
+                SummaryScope::Detail { served, .. } => served.to_owned(),
+                _ => visible_ids.get(&job_id).cloned().unwrap_or(id),
+            };
             let child = |table: &str| -> &[Row] {
                 children
                     .get(table)
@@ -132,7 +205,11 @@ impl Hub {
                 json!({"round":n,"gate":val(x,"gate_verdict"),"reviews":rv,"files":val(x,"files"),"insertions":val(x,"insertions"),"deletions":val(x,"deletions"),"continues":val(x,"continues")})
             }).collect();
             let repo_name = store::get_or_empty(r, "repo");
-            let repo_id = if repo_machines.get(repo_name).is_some_and(|m| m.len() > 1) {
+            let prefixed = match scope {
+                SummaryScope::Detail { prefixed, .. } => prefixed,
+                _ => repo_machines.get(repo_name).is_some_and(|m| m.len() > 1),
+            };
+            let repo_id = if prefixed {
                 format!(
                     "{}~{}",
                     store::get_or_empty(r, "machine"),
@@ -185,7 +262,19 @@ impl Hub {
         repo: Option<&str>,
         removed: bool,
     ) -> Result<Option<Value>, Error> {
-        let machines = self.store.query("SELECT DISTINCT m.name FROM machines m JOIN checkouts c ON c.machine_id=m.id JOIN repos r ON r.id=c.repo_id WHERE (? IS NULL OR r.slug=?) AND (c.removed_at IS NULL OR ?=1) ORDER BY m.name", vec![store::opt(repo),store::opt(repo),store::int(i64::from(removed))]).await?;
+        let machines = self
+            .store
+            .query(
+                "SELECT DISTINCT m.name FROM machines m \
+             JOIN checkouts c ON c.machine_id=m.id JOIN repos r ON r.id=c.repo_id \
+             WHERE (? IS NULL OR r.slug=?) AND (c.removed_at IS NULL OR ?=1) ORDER BY m.name",
+                vec![
+                    store::opt(repo),
+                    store::opt(repo),
+                    store::int(i64::from(removed)),
+                ],
+            )
+            .await?;
         if let Some(repo) = repo {
             if self
                 .store
@@ -196,26 +285,48 @@ impl Hub {
                 return Ok(None);
             }
         }
-        let jobs = self.summaries(repo, removed).await?;
+        let jobs = self.summaries(SummaryScope::List { repo, removed }).await?;
         Ok(Some(
             json!({"repo":repo,"machines":machines.iter().map(|r| val(r,"name")).collect::<Vec<_>>(),"jobs":jobs}),
         ))
     }
 
     pub async fn api_detail(&self, repo: Option<&str>, id: &str) -> Result<Option<Value>, Error> {
+        let identities = self.all_jobs(repo).await?;
+        let Some(identity) = identities.iter().find(|job| job.served == id) else {
+            return Ok(None);
+        };
+        let prefixed = identities
+            .iter()
+            .filter(|x| x.repo == identity.repo)
+            .map(|x| x.machine.as_str())
+            .collect::<HashSet<_>>()
+            .len()
+            > 1;
         let Some(mut job) = self
-            .summaries(repo, false)
+            .summaries(SummaryScope::Detail {
+                repo,
+                job_id: identity.job_id,
+                served: &identity.served,
+                prefixed,
+            })
             .await?
             .into_iter()
-            .find(|j| j["id"] == id)
+            .next()
         else {
             return Ok(None);
         };
-        let rows = self.store.query("SELECT j.id, j.fork_point, j.review_head FROM jobs j JOIN checkouts c ON c.id=j.checkout_id JOIN repos r ON r.id=c.repo_id JOIN machines m ON m.id=c.machine_id WHERE r.slug=? AND m.name=? AND j.job_key=?", vec![store::text(job["repo"].as_str().unwrap_or("")),store::text(job["machine"].as_str().unwrap_or("")),store::text(job["key"].as_str().unwrap_or(""))]).await?;
+        let rows = self
+            .store
+            .query(
+                "SELECT fork_point, review_head FROM jobs WHERE id=?",
+                vec![store::int(identity.job_id)],
+            )
+            .await?;
         let Some(row) = rows.first() else {
             return Ok(None);
         };
-        let id = store::get_int(row, "id").unwrap_or(0);
+        let id = identity.job_id;
         let o = job.as_object_mut().expect("object");
         o.insert("fork_point".into(), val(row, "fork_point"));
         o.insert("review_head".into(), val(row, "review_head"));
@@ -287,7 +398,10 @@ impl Hub {
             let rows = self
                 .store
                 .query(
-                    &format!("SELECT * FROM {table} WHERE job_id=? ORDER BY {order}"),
+                    &format!(
+                        "SELECT {} FROM {table} WHERE job_id=? ORDER BY {order}",
+                        cols.join(", ")
+                    ),
                     vec![store::int(id)],
                 )
                 .await?;
@@ -349,7 +463,21 @@ impl Hub {
             ""
         };
         let prefix = if costs { "k" } else { "j" };
-        let sql = format!("SELECT {key} AS key, SUM({prefix}.cost_usd) AS cost_usd, SUM({prefix}.input_tokens) AS input_tokens, SUM({prefix}.cached_tokens) AS cached_tokens, SUM({prefix}.output_tokens) AS output_tokens, COUNT(DISTINCT j.id) AS jobs FROM jobs j JOIN checkouts c ON c.id=j.checkout_id JOIN repos r ON r.id=c.repo_id {join} WHERE (? IS NULL OR r.slug=?) AND (? IS NULL OR j.started_day>=?) AND (? IS NULL OR j.started_day<=?) GROUP BY {key} ORDER BY {}", if matches!(group,"day"|"month") {"key"} else {"cost_usd DESC, key"});
+        let sql = format!(
+            "SELECT {key} AS key, SUM({prefix}.cost_usd) AS cost_usd, \
+             SUM({prefix}.input_tokens) AS input_tokens, \
+             SUM({prefix}.cached_tokens) AS cached_tokens, \
+             SUM({prefix}.output_tokens) AS output_tokens, COUNT(DISTINCT j.id) AS jobs \
+             FROM jobs j JOIN checkouts c ON c.id=j.checkout_id \
+             JOIN repos r ON r.id=c.repo_id {join} \
+             WHERE (? IS NULL OR r.slug=?) AND (? IS NULL OR j.started_day>=?) \
+             AND (? IS NULL OR j.started_day<=?) GROUP BY {key} ORDER BY {}",
+            if matches!(group, "day" | "month") {
+                "key"
+            } else {
+                "cost_usd DESC, key"
+            }
+        );
         let rows = self
             .store
             .query(
