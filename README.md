@@ -84,7 +84,8 @@ Each job gets its own git worktree and branch. All state lives in
 
 When a job starts waiting on you (paused, needs a human, needs info), the
 factory says so on your desktop, or as a push on your phone with
-[ntfy](https://ntfy.sh): which job, why, and what to do. `notify` in
+[ntfy](https://ntfy.sh): which job, why, and what to do. It also tells you when
+the base branch's CI fails after a merge. `notify` in
 `factory/config.json` picks the channels; [`INSTALL.md`](INSTALL.md#notifications)
 sets up ntfy.
 

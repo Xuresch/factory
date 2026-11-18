@@ -35,6 +35,10 @@ Usage:
                                  rerun once per commit; CI fails only when a check fails twice. A
                                  conflict, a failing gate or CI goes back to build; CI still pending
                                  at the timeout, to a human
+  job main-ci <job>              after a merge on GitHub (job merge starts it in the background): wait
+                                 for the CI on the base branch at the merge commit, rerun a failing
+                                 Actions run once, write round-N/main-ci.md and job.json main_ci; on
+                                 FAIL or TIMEOUT comment on the issue and notify. The job stays merged
   job reply <issue>              post your words (stdin) on the issue as the operator, not the factory
   job continue <job>             build.md says STATUS: PARTIAL → the builder goes on, same round
   job slices <job>               a split job's slices and which to start next
@@ -1021,33 +1025,55 @@ def fetch_base(branch, cwd=REPO):
     raise Refused(f"`git fetch origin {branch}` failed: {(res.stderr or res.stdout).strip()}")
 
 
-def ci_checks(job):
-    """The PR's CI checks (GitHub Checks and statuses): {verdict, rows, failing,
-    pending, passed, head, runs, ended}, verdict PASS | FAIL | PENDING | NONE;
-    runs maps a failing check to its GitHub Actions run id (from detailsUrl;
-    an external status has none), ended each check to its completedAt. Raises
-    Refused when `gh pr view` fails."""
-    pr = gh_json("pr", "view", str(job["pr"]), "--json", "statusCheckRollup,headRefOid")
-    rows, failing, pending, passed, runs, ended = [], [], [], [], {}, {}
-    for c in pr.get("statusCheckRollup") or []:
+FAILED_STATES = {"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"}
+PENDING_STATES = {"PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED", "WAITING", "REQUESTED", ""}
+
+
+def classify_checks(checks, head):
+    """Checks as {name, status, conclusion, state, detailsUrl, completedAt} (a
+    check run, or a commit status with only `state`) → {verdict, rows, failing,
+    pending, passed, skipped, head, runs, ended}, verdict PASS | FAIL | PENDING |
+    NONE; runs maps a failing check to its GitHub Actions run id (from
+    detailsUrl; an external status has none), ended each check to its
+    completedAt. A skipped check is no failure: it is listed, not counted."""
+    rows, failing, pending, passed, skipped, runs, ended = [], [], [], [], [], {}, {}
+    for c in checks:
         name = c.get("name") or c.get("context") or "?"
         state = (c.get("conclusion") or c.get("state") or c.get("status") or "").upper()
         if c.get("status") and c["status"].upper() != "COMPLETED":
             state = "PENDING"
-        if state in {"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"}:
+        if state in FAILED_STATES:
             failing.append(name)
             m = re.search(r"/actions/runs/(\d+)", c.get("detailsUrl") or "")
             if m:
                 runs[name] = m.group(1)
-        elif state in {"PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED", "WAITING", ""}:
+        elif state in PENDING_STATES:
             pending.append(name)
+        elif state == "SKIPPED":
+            skipped.append(name)
         else:
             passed.append(name)
         ended[name] = c.get("completedAt") or ""
         rows.append(f"- {name}: {state.lower() or 'pending'}")
     verdict = "FAIL" if failing else "PENDING" if pending else "PASS" if rows else "NONE"
     return {"verdict": verdict, "rows": rows, "failing": failing, "pending": pending, "passed": passed,
-            "head": pr.get("headRefOid", ""), "runs": runs, "ended": ended}
+            "skipped": skipped, "head": head, "runs": runs, "ended": ended}
+
+
+def ci_checks(job):
+    """The PR's CI checks (GitHub Checks and statuses), as classify_checks
+    returns them for the PR's head. Raises Refused when `gh pr view` fails."""
+    pr = gh_json("pr", "view", str(job["pr"]), "--json", "statusCheckRollup,headRefOid")
+    return classify_checks(pr.get("statusCheckRollup") or [], pr.get("headRefOid", ""))
+
+
+def commit_checks(sha):
+    """The check runs on a commit (on the base branch after a merge), as
+    classify_checks returns them. Raises Refused when `gh api` fails."""
+    data = gh_json("api", f"repos/{{owner}}/{{repo}}/commits/{sha}/check-runs?per_page=100")
+    return classify_checks([{"name": c.get("name"), "status": c.get("status"), "conclusion": c.get("conclusion"),
+                             "completedAt": c.get("completed_at"), "detailsUrl": c.get("details_url") or c.get("html_url")}
+                            for c in data.get("check_runs") or []], sha)
 
 
 def ci_status(job):
@@ -1076,25 +1102,27 @@ def ci_poll_seconds():
     return float(os.environ.get("FACTORY_CI_POLL_SECONDS") or CONFIG.get("ci_poll_seconds", 20))
 
 
-def wait_for_ci(job, head, rerun=None):
+def wait_for_ci(job, head, rerun=None, checks=None):
     """Poll the PR's checks for the pushed `head` until none is pending. Returns
     {verdict, rows, failing, pending, passed, waited}: verdict PASS, FAIL, NONE (no
     check showed up within `ci_start_grace_seconds`: a repo without CI) or TIMEOUT
     (still pending after `ci_wait_minutes`). Results for another head count as
     not started yet: GitHub hasn't seen the push. After a rerun (rerun_failed's
     record), a rerun check still showing its old failure hasn't restarted yet,
-    for up to the grace period."""
+    for up to the grace period. `checks` (default: the PR's, ci_checks) is
+    what is asked each time."""
+    checks = checks or (lambda: ci_checks(job))
     grace = float(CONFIG.get("ci_start_grace_seconds", 180))
     limit = float(CONFIG.get("ci_wait_minutes", 30)) * 60
     start = time.monotonic()
     while True:
         waited = time.monotonic() - start
         try:
-            ci = ci_checks(job)
+            ci = checks()
         except Refused:
-            ci = {"verdict": "NONE", "rows": [], "failing": [], "pending": [], "head": ""}
+            ci = classify_checks([], "")
         if ci["head"] != head:
-            ci.update(verdict="NONE", rows=[], failing=[], pending=[], passed=[])
+            ci.update(verdict="NONE", rows=[], failing=[], pending=[], passed=[], skipped=[])
         old = [n for n in ci["failing"] if rerun and rerun["failed"].get(n)
                and ci["ended"].get(n) == rerun["failed"][n]]
         if old and waited < grace:
@@ -3659,6 +3687,7 @@ def cmd_queue(args=()):
     for j in jobs.values():
         if j["stage"] not in TERMINAL and not busy(j) and is_merged(j):
             save(advance(sync(j), "merged"))
+            start_main_ci(j)  # merged by hand: its CI on the base is watched too
     issues = list_issues(LABELS["queue"], FACTORY_LABEL)
     if only is not None:
         issues = [i for i in issues if i["number"] in only]
@@ -3845,6 +3874,7 @@ def cmd_merge(job):
     if is_merged(job):
         save(advance(sync(job), "merged"))
         print(f"{job['id']}: merged " + (f"PR #{job['pr']}" if GITHUB else f"{job['branch']} into {jbase(job)}"))
+        start_main_ci(job)
         return
 
     def fail(why):
@@ -3905,6 +3935,7 @@ def cmd_merge(job):
         run(["git", "push", "origin", "--delete", job["branch"]], check=False)
     save(advance(sync(job), "merged"))
     print(f"{job['id']}: merged " + (f"PR #{job['pr']}" if GITHUB else f"{job['branch']} into {jbase(job)}"))
+    start_main_ci(job)
     why = retro_reason(job)
     if why:
         # Started here, not left to the orchestrator: it skipped the hint in two of twelve demo jobs.
@@ -3981,6 +4012,165 @@ def merge_ci(job):
                                f"Nothing was merged. When CI passes, merge PR #{job['pr']} on GitHub (the "
                                f"factory then marks the job merged), or give feedback. See {where}.")
     return None
+
+
+# ---- CI on the base branch after a merge -------------------------------------
+#
+# A merge starts the base branch's own CI (push workflows: integration tests, a
+# deploy that runs only when they pass). `job merge` starts `job main-ci` in the
+# background to watch it (config.json `main_ci`, default on): the job stays
+# merged, and a failure goes to the issue, the user's notify channels and
+# `job next`, so a broken base or a skipped deploy doesn't go unnoticed.
+
+
+def main_ci_waiting(job):
+    """The `job main-ci` process watching this job's merge commit, while it lives; else None."""
+    w = job.get("main_ci_wait")
+    if w and w["pid"] != os.getpid() and pid_alive(w["pid"], w.get("start")):
+        return w
+    return None
+
+
+def merge_commit(job):
+    """The commit the PR's merge made on the base branch, or ""."""
+    try:
+        return (gh_json("pr", "view", str(job["pr"]), "--json", "mergeCommit").get("mergeCommit") or {}).get("oid") or ""
+    except Refused:
+        return ""
+
+
+def start_main_ci(job):
+    """After a merge on GitHub: start `job main-ci <job>` detached (its own
+    session, so it outlives this command and the orchestrator's terminal),
+    logging to factory/jobs/<job>/main-ci.log, its pid in job.json
+    `main_ci_wait`. FACTORY_MAIN_CI_SYNC=1 runs it in this process (the tests)."""
+    if not (GITHUB and job.get("pr") and CONFIG.get("main_ci", True)):
+        return
+    w = main_ci_waiting(job)
+    if w:
+        return print(f"{job['id']}: `job main-ci` (pid {w['pid']}) already watches CI on {jbase(job)}")
+    sha = merge_commit(job)
+    if not sha:
+        return print(f"{job['id']}: GitHub names no merge commit for PR #{job['pr']}; not watching CI on "
+                     f"{jbase(job)} (`factory/bin/job main-ci {job['id']}` watches it later)")
+    job["main_ci"] = {"verdict": "PENDING", "commit": sha, "at": now()}
+    save(job)
+    if os.environ.get("FACTORY_MAIN_CI_SYNC"):
+        return cmd_main_ci(job)
+    with open(job_dir(job["id"]) / "main-ci.log", "a") as log:
+        p = subprocess.Popen([str(BIN / "job"), "main-ci", job["id"]], cwd=REPO, stdin=subprocess.DEVNULL,
+                             stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    job["main_ci_wait"] = {"pid": p.pid, "start": proc_start(p.pid), "since": now(), "commit": sha}
+    save(job)  # before the child gets the job's lock: it finds its own pid here
+    print(f"{job['id']}: watching CI on {jbase(job)} at {sha[:7]} in the background (pid {p.pid}, "
+          f"factory/jobs/{job['id']}/main-ci.log); a failure goes to the issue, your notifications and `job next`")
+
+
+def ci_summary(job, head, ci):
+    """The `## Summary` bullets of a CI record: the verdict, flakes, skipped checks."""
+    note = {"NONE": "No check reported within ci_start_grace_seconds.",
+            "TIMEOUT": f"Checks still pending after ci_wait_minutes: {', '.join(ci['pending'])}.",
+            "FAIL": f"Failing: {', '.join(ci['failing'])}.", "PASS": "Every check passed."}[ci["verdict"]]
+    flaky = passed_on_rerun(job, dict(ci, head=head))
+    note += f"\n- Passed on rerun: {', '.join(flaky)}." if flaky else ""
+    note += f"\n- Skipped: {', '.join(ci['skipped'])}." if ci.get("skipped") else ""
+    return note
+
+
+def main_ci_alert(job):
+    """One line on a merged job whose CI on the base failed or timed out after
+    its merge, or None."""
+    m = job.get("main_ci") or {}
+    if job["stage"] != "merged" or m.get("verdict") not in {"FAIL", "TIMEOUT"}:
+        return None
+    what = (f"failed ({', '.join(m.get('failing') or []) or 'see the checks'})" if m["verdict"] == "FAIL"
+            else "was still running after ci_wait_minutes")
+    skipped = f"; skipped: {', '.join(m['skipped'])}" if m.get("skipped") else ""
+    return (f"CI on {jbase(job)} at {m['commit'][:7]} {what} after PR #{job['pr']} merged{skipped}; "
+            f"see factory/jobs/{job['id']}/{m.get('file', 'main-ci.md')}")
+
+
+def main_ci_alerts(jobs):
+    """Merged jobs whose base CI failed, unless a later merge into the same base passed it since."""
+    passed = {}
+    for j in jobs:
+        m = j.get("main_ci") or {}
+        if m.get("verdict") == "PASS":
+            passed[jbase(j)] = max(passed.get(jbase(j), ""), m.get("at", ""))
+    return [(j, main_ci_alert(j)) for j in jobs if main_ci_alert(j)
+            and (j["main_ci"].get("at", "") > passed.get(jbase(j), ""))]
+
+
+def commit_url(job, sha):
+    """The commit's page on GitHub, from the PR's URL; else the job's link."""
+    url = job.get("pr_url") or ""
+    return re.sub(r"/pull/\d+$", f"/commit/{sha}", url) if re.search(r"^https?://.*/pull/\d+$", url) else link_of(job)
+
+
+def cmd_main_ci(job):
+    """Wait for the check runs on the merge commit on the base branch; a failing
+    Actions run is rerun once (once per commit, like the PR's). Writes
+    round-<N>/main-ci.md and job.json `main_ci` ({verdict, commit, at}: PASS,
+    FAIL, NONE or TIMEOUT); on FAIL or TIMEOUT comments on the issue once and
+    notifies. The job stays merged."""
+    if not GITHUB:
+        die("main-ci watches GitHub CI; this repo uses local tickets")
+    if job["stage"] != "merged" or not job.get("pr"):
+        die(f"{job['id']} is {job['stage']}, not merged from a PR")
+    w = main_ci_waiting(job)
+    if w:
+        die(f"{job['id']}: `job main-ci` (pid {w['pid']}) has watched CI on {jbase(job)} since {w['since']}")
+    sha = (job.get("main_ci") or {}).get("commit") or merge_commit(job)
+    if not sha:
+        die(f"{job['id']}: GitHub names no merge commit for PR #{job['pr']}")
+    base, minutes = jbase(job), CONFIG.get("ci_wait_minutes", 30)
+    job["main_ci_wait"] = {"pid": os.getpid(), "start": proc_start(os.getpid()), "since": now(), "commit": sha}
+    job["main_ci"] = {"verdict": "PENDING", "commit": sha, "at": now()}
+    save(job)
+    print(f"{job['id']}: waiting for CI on {base} at {sha[:7]} (PR #{job['pr']}), up to {minutes} min", flush=True)
+    checks = lambda: commit_checks(sha)
+    with unlocked(job):  # every other command on this job goes on meanwhile
+        ci = wait_for_ci(job, sha, checks=checks)
+    rerun = rerun_failed(job, ci) if ci["verdict"] == "FAIL" else None
+    if rerun:
+        print(f"{job['id']}: CI on {base} failed ({', '.join(ci['failing'])}); rerunning once and waiting", flush=True)
+        with unlocked(job):
+            ci = wait_for_ci(job, sha, rerun, checks)
+    rel = f"round-{job['round']}/main-ci.md"
+    state = "PENDING" if ci["verdict"] == "TIMEOUT" else ci["verdict"]
+    (job_dir(job["id"]) / rel).write_text(
+        f"CI: {state}\nCOMMIT: {sha}\n\n## Summary\n- {ci_summary(job, sha, ci)}\n"
+        f"- Waited {int(ci['waited'])}s for CI on {base} after PR #{job['pr']} merged.\n\n"
+        f"## Checks on {base} at {sha[:7]}\n" + ("\n".join(ci["rows"]) or "No checks reported.") + "\n")
+    job.pop("main_ci_wait", None)
+    job["main_ci"] = {"verdict": ci["verdict"], "commit": sha, "at": now(), "failing": ci["failing"],
+                      "pending": ci["pending"], "skipped": ci["skipped"], "file": rel}
+    reported = job.setdefault("main_ci_reported", [])
+    tell = ci["verdict"] in {"FAIL", "TIMEOUT"} and sha not in reported
+    if tell:
+        reported.append(sha)
+    save(job)
+    print(f"{job['id']}: CI on {base} at {sha[:7]}: {ci['verdict']} ({rel})"
+          + (f"; skipped: {', '.join(ci['skipped'])}" if ci["skipped"] else ""))
+    if not tell:
+        return
+    failed = ci["verdict"] == "FAIL"
+    head = (f"### Factory: CI failed on {base} after the merge" if failed
+            else f"### Factory: CI on {base} still running after the merge")
+    try:
+        comment("issue", job["issue"], f"{head}\n\nPR #{job['pr']} merged as {sha[:7]}.\n\n"
+                + "\n".join(f"- {l}" if not l.startswith("- ") else l
+                            for l in ci_summary(job, sha, ci).splitlines())
+                + f"\n\nThe job stays merged; fix it on {base}. Details: factory/jobs/{job['id']}/{rel}"
+                + (f", checks: {commit_url(job, sha)}" if (commit_url(job, sha) or "").endswith(sha) else "") + ".")
+    except Refused as e:
+        print(f"{job['id']}: couldn't comment on issue #{job['issue']}: {e}", file=sys.stderr)
+    what = (f"failing: {', '.join(ci['failing'])}" if failed
+            else f"still pending after {minutes} min: {', '.join(ci['pending']) or 'no result'}")
+    skipped = f"; skipped: {', '.join(ci['skipped'])}" if ci["skipped"] else ""
+    notify(f"Factory: {job['id']} (#{job['issue']}) CI {'failed' if failed else 'timed out'} on {base}",
+           f"PR #{job['pr']} merged as {sha[:7]}, {what}{skipped}\nDo: look at the checks on {base} at {sha[:7]}",
+           "high", commit_url(job, sha), ["rotating_light"])
 
 
 def base_moved(error):
@@ -4822,7 +5012,8 @@ def next_steps(job):
     if busy(job):  # another command (a merge) holds the job: its steps can wait
         return [("wait", busy(job))]
     if job["stage"] in TERMINAL:
-        return [("done", job["stage"])]
+        alert = main_ci_alert(job)
+        return [("done", job["stage"])] + ([("tell", alert)] if alert else [])
     try:
         return NEXT[job["stage"]](job, entered(job))
     except Refused as e:
@@ -4839,9 +5030,12 @@ def cmd_next(args):
         for verb, what in next_steps(job):
             print(f"{job['id']}: {verb}: {what}")
         return
-    jobs = [j for j in all_jobs() if j["stage"] not in TERMINAL]
+    every = all_jobs()
+    jobs = [j for j in every if j["stage"] not in TERMINAL]
     for j in jobs:
         print(f"{j['id']}: " + "; ".join(f"{verb}: {what}" for verb, what in next_steps(j)))
+    for j, alert in main_ci_alerts(every):
+        print(f"{j['id']}: tell: {alert}")
     if not jobs:
         print(f"no job in flight; `{JOB} queue` lists new work")
 
@@ -4924,6 +5118,8 @@ def main(argv):
                       "start a new builder worker")
         elif cmd == "merge" and len(args) == 1:
             cmd_merge(resolve(args[0]))
+        elif cmd == "main-ci" and len(args) == 1:
+            cmd_main_ci(resolve(args[0]))
         elif cmd == "slices" and len(args) == 1:
             cmd_slices(resolve(args[0]))
         elif cmd == "slice-start" and len(args) == 2:
