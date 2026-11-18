@@ -115,6 +115,9 @@ For ACCEPT, rate:
   environment (a test mode, a mock, a disabled check). Never write that the
   tests will pass without having checked. When they could only pass with a
   production change, scope it as tests plus the smallest fix, and name the fix.
+- **Commands you name**: when your file tells the builder to run a command (a
+  test runner flag, a script), run it once yourself first, with `--help` or a
+  dry run (`vitest run <file> --repeats 2`, say), and write the form that works.
 
 ## Write intake.md
 
