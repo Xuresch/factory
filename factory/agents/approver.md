@@ -60,10 +60,14 @@ APPROVE only if all of these hold:
   ESCALATE, naming the page; mention any other one in decision.md.
 - The final round's `ci.md`, when there is one, isn't `CI: FAIL`. A failing
   check is a reason to ESCALATE with its name, even when the gate passed.
+  The factory reruns a failing check once before you read `ci.md`. A check
+  under `Passed on rerun` is flaky, not a reason to ESCALATE. Name it as
+  flaky in decision.md, so a human can file a fix.
   `CI: PENDING` or `CI: NONE` alone isn't: at approve time `CI: NONE` means
   no check has reported yet, not that CI passed or that the repo has none.
   You don't wait for CI: after your APPROVE, `job merge` waits for the PR's
-  CI on the commit it merges, sends a failing check back to the builder and
+  CI on the commit it merges, reruns a failing check once, sends a check that
+  fails twice back to the builder and
   merges only when nothing fails.
 
 **Decisions a human already made count.** A point a human decided in a

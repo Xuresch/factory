@@ -10,6 +10,10 @@
 # `git diff --name-only "$FACTORY_BASE_REF"...HEAD`; on merge, and when the
 # variables are unset (a manual run), run everything.
 #
+# A diff that touches only Markdown can skip the suites and builds, on round
+# and on merge, when no code in the repo reads .md files; GitHub CI still runs
+# everything. Run `git diff --check "$FACTORY_BASE_REF"...HEAD` instead.
+#
 # INSTALL.md replaces the line below with this project's real commands, e.g.:
 #
 #   npm ci --prefer-offline
