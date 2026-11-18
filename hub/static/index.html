@@ -589,7 +589,7 @@ function liveRow(e) {
       <p class="feature"><a class="stretch" href="${url(e.href)}">${esc(j.title)}</a></p><div class="where">on ${esc(e.machine)}</div></div>
     <div><div class="segs">${segs}</div>
       <div class="pnow"><b>${esc(j.stage)}</b>${j.round ? ` · R${esc(j.round)}` : ''}${sliceNote} · for ${T(lastAt(j), 'dur')} · ${who(j)}</div></div>
-    <div class="pside"><div class="mny">${money(j.cost_usd)}${split(byOf(j.cost_by_agent, j.cost_usd), 'mid')}</div>
+    <div class="pside">${roundsOf(e)}<div class="mny">${money(j.cost_usd)}${split(byOf(j.cost_by_agent, j.cost_usd), 'mid')}</div>
       <div class="meta">${risk ? `<span class="risk-${esc(risk)}">${esc(risk)} risk</span>` : ''}<span>${T(j.started, 'dur')} total</span></div></div>
   </article>`
 }
