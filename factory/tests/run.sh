@@ -1361,6 +1361,23 @@ t_resume_records_acceptance() {
   check "default line without a note" "$(cat "factory/jobs/$id2/accepted.md")" "accepted spec.md as written"
 }
 
+t_resume_records_needs_a_human_results() {
+  new_repo needsresult; ticket 01 One; ticket 02 Two; commit_all
+  local id; id=$(J create f/01); intake "$id" high security
+  factory/bin/route "$id" >/dev/null; J advance "$id" spec >/dev/null
+  printf '# S\n\n## Needs a human\n- count private orgs: psql -c ...; done when 0\n' > "factory/jobs/$id/spec.md"
+  J advance "$id" build >/dev/null
+  printf 'spec ok\n- count private orgs: 0 rows\n' | J resume "$id" >/dev/null &&
+  check "headline kept" "$(cat "factory/jobs/$id/accepted.md")" "risk high): spec ok" &&
+  check "result under it" "$(cat "factory/jobs/$id/accepted.md")" $'spec ok\n  - count private orgs: 0 rows' &&
+  check "result in job.json" "$(field "$id" "d['accepted'][0]['answers']")" "['count private orgs: 0 rows']" || return 1
+  local id2; id2=$(J create f/02); intake "$id2" high security
+  factory/bin/route "$id2" >/dev/null; J advance "$id2" spec >/dev/null
+  printf '# S\n\n## Needs a human\n- count private orgs: psql -c ...; done when 0\n' > "factory/jobs/$id2/spec.md"
+  J advance "$id2" build >/dev/null
+  check "warns when no result was given" "$(J resume "$id2" 2>&1 </dev/null)" "no result recorded for 1 Needs-a-human item"
+}
+
 t_gh_clean_merge_closes_issue() {
   new_gh_repo ghclose; gh_issue 1 One
   local id; id=$(gh_to_merging 1) || return 1
