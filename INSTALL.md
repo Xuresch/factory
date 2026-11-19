@@ -217,6 +217,16 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
   lines bigger, the file says `DIFF: GROWN`; the reviewers look for what can
   be cut and the approver escalates growth nothing asked for. `null` turns
   the flag off.
+- `trusted_commenters` (default `"write"`), GitHub: whose issue comments go
+  into `issue.md` besides the issue's author and the operator. `"write"`:
+  anyone with write access to the repo (admin, maintain or write; the factory
+  asks `gh api repos/{owner}/{repo}/collaborators/<login>/permission` once per
+  login, so read and triage members don't count). `"author"`: only the author
+  and the operator. Bots never count; the local tracker always uses the author
+  and the operator. `comment_check_minutes` (default 5): while a job runs,
+  `job next` looks for new trusted comments at most this often per job (and
+  `job advance` at every transition); one it finds is a `tell:` line until a
+  human makes it feedback or dismisses it with `job comments <job> --seen`.
 - `review_skip`: leave it `{}`, or name a lens's files so it runs again when a
   later round touches them:
   `{"ui": {"paths": ["src/components/*"], "except": ["*.test.tsx"]}}`.
