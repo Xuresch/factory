@@ -185,7 +185,10 @@ break this.
   `labels.factory` is set) run. Labels need triage or write access, so the
   label is the trust boundary.
 - Issue text reaches agents as quoted data in `issue.md`, with comments only
-  from the issue's author and the factory's operator. It is never part of a
+  from the issue's author, the factory's operator and (GitHub, config.json
+  `trusted_commenters`) people with write access to the repo; bots never
+  count. Comments that come while a job runs only produce a `tell:` line in
+  `job next`; a human decides whether one becomes feedback. It is never part of a
   worker spec or message. Intake, which reads it first, now runs as a full
   Claude Code session with a shell: see Orca and Codex below.
 - Agents push only `factory/*` branches. Only `factory/bin/job merge` merges,

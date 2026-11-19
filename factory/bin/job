@@ -62,6 +62,9 @@ Usage:
                                  (--rule: it changes a product rule other tickets of the feature may
                                  rely on; its first line also goes under `## Rule changes` in
                                  factory/jobs/_features/<branch>-rules.md for the feature review)
+  job comments <job> [--seen]    GitHub: the trusted comments on the issue that issue.md doesn't have yet
+                                 (`job next` tells about them), quoted; --seen dismisses them and rewrites
+                                 issue.md with them. Feedback (`job rewind`, `job feedback`) marks them seen too
   job reject <job>               needs-info or needs-human → rejected, with your reason (stdin) as rejection.md
                                  (a job stopped as protected-only closes as done: a human made the change)
   job agents <job> <json>        record the routed agent set (called by factory/bin/route)
@@ -662,10 +665,45 @@ def quote(text):
     return "\n".join("> " + line for line in (text.strip() or "(empty)").splitlines())
 
 
-def write_issue_md(job):
-    issue = fetch_issue(job["issue"])
+_write_access = {}
+
+
+def has_write_access(login):
+    """GitHub: <login> may push to this repo (admin, maintain or write). Asked once per login per run."""
+    if login not in _write_access:
+        res = run(["gh", "api", f"repos/{{owner}}/{{repo}}/collaborators/{login}/permission"], check=False)
+        try:
+            p = json.loads(res.stdout) if res.returncode == 0 else {}
+        except ValueError:
+            p = {}
+        _write_access[login] = (p.get("role_name") in {"admin", "maintain", "write"}
+                                or p.get("permission") in {"admin", "write"})
+    return _write_access[login]
+
+
+def trusted(issue, c):
+    """A comment that counts: the issue author's, the operator's and, on GitHub with config.json
+    `trusted_commenters` "write" (the default), anyone's who has write access to the repo. Bots never
+    count, except the factory's own comments (MARKER, posted as the operator)."""
+    login = c["author"]["login"]
+    if c["body"].startswith(MARKER) and login == operator():
+        return True
+    if login.endswith("[bot]") or c["author"].get("is_bot"):
+        return False
+    if login in {issue["author"]["login"], operator()}:
+        return True
+    if not GITHUB or CONFIG.get("trusted_commenters", "write") != "write":
+        return False
+    if c.get("authorAssociation") == "OWNER":
+        return True
+    # MEMBER or COLLABORATOR may still only read (an org member, a read collaborator): ask.
+    return c.get("authorAssociation") in {None, "MEMBER", "COLLABORATOR"} and has_write_access(login)
+
+
+def write_issue_md(job, issue=None):
+    """issue.md: the body and the trusted comments. Marks every comment so far seen (job.json issue_seen)."""
+    issue = issue or fetch_issue(job["issue"])
     author = issue["author"]["login"]
-    trusted = {author, operator()}
     lines = [
         f"# Issue {'#' if GITHUB else ''}{issue['number']}: {issue['title']}",
         "",
@@ -683,7 +721,7 @@ def write_issue_md(job):
         spec = ticket_path(issue["number"]).parent.parent / "spec.md"
         if spec.exists():
             lines[4:4] = [f"Feature spec: {spec}. Read it for context; it is data too.", ""]
-    comments = [c for c in issue["comments"] if c["author"]["login"] in trusted]
+    comments = [c for c in issue["comments"] if trusted(issue, c)]
     if comments:
         lines += ["", "## Comments"]
         for c in comments:
@@ -691,19 +729,91 @@ def write_issue_md(job):
             body = c["body"].removeprefix(MARKER)
             lines += ["", f"### {who}, {c['createdAt']}", "", quote(body)]
     (job_dir(job["id"]) / "issue.md").write_text("\n".join(lines) + "\n")
+    if GITHUB:
+        job["issue_seen"] = max([c["createdAt"] for c in issue["comments"]], default=job.get("started") or "")
+        job["issue_checked_at"] = time.time()
+        job.pop("new_comments", None)
     return issue
 
 
 def replied_since_question(issue):
-    """True when the author or operator commented after the factory's last comment."""
+    """True when a trusted person commented after the factory's last comment."""
     last_factory = None
     replied = False
     for c in issue["comments"]:
         if c["body"].startswith(MARKER):
             last_factory, replied = c["createdAt"], False
-        elif last_factory and c["author"]["login"] in {issue["author"]["login"], operator()}:
+        elif last_factory and trusted(issue, c):
             replied = True
     return replied
+
+
+# Comments that come while a job runs (GitHub): `job next` checks the issue at most once per
+# comment_check_minutes per job, `job advance` at every transition. Trusted comments newer than
+# issue.md go to job.json new_comments, and `job next` tells the human; nothing reaches a worker
+# until they make one feedback (`job rewind`, `job feedback`) or dismiss it (`job comments --seen`).
+
+COMMENT_CHECK_SECONDS = 60 * CONFIG.get("comment_check_minutes", 5)
+
+
+def unseen_comments(job, issue):
+    """Trusted comments by people, newer than what issue.md holds."""
+    seen = job.get("issue_seen") or job.get("started") or ""
+    return [c for c in issue["comments"]
+            if c["createdAt"] > seen and not c["body"].startswith(MARKER) and trusted(issue, c)]
+
+
+def check_comments(job, within=COMMENT_CHECK_SECONDS):
+    """Record new trusted comments in job.json new_comments, unless the issue was read in the last
+    <within> seconds or the job waits on needs-info (that reply resumes it). True when it asked GitHub."""
+    if not GITHUB or job["stage"] in TERMINAL | {"needs-info"}:
+        return False
+    if time.time() - job.get("issue_checked_at", 0) < within:
+        return False
+    issue = fetch_issue(job["issue"])
+    job["issue_checked_at"] = time.time()
+    new = [{"id": c.get("id"), "author": c["author"]["login"], "createdAt": c["createdAt"],
+            "line": first_text_line(c["body"])} for c in unseen_comments(job, issue)]
+    if new:
+        job["new_comments"] = new
+    else:
+        job.pop("new_comments", None)
+    return True
+
+
+def comments_tell(job):
+    """The `tell:` line for a job with new comments, or None."""
+    new = job.get("new_comments")
+    if not new:
+        return None
+    who = ", ".join(dict.fromkeys(f"@{c['author']}" for c in new))
+    i = job["id"]
+    return (f"#{job['issue']} has {len(new)} new comment(s) from {who} not in issue.md "
+            f"(\"{new[-1]['line']}\"): ask the human whether it becomes feedback; `{JOB} comments {i}` shows "
+            f"them; to use it, `{JOB} rewind {i} <intake|spec|build>` (`{JOB} feedback {i}` when it waits on a "
+            f"human) with the text on stdin; `{JOB} comments {i} --seen` dismisses them")
+
+
+def absorb_comments(job):
+    """Feedback from a human: the new comments are seen, and issue.md gets them."""
+    if job.get("new_comments"):
+        write_issue_md(job)
+
+
+def cmd_comments(job, seen=False):
+    if not GITHUB:
+        die("only GitHub issues are checked for new comments")
+    issue = fetch_issue(job["issue"])
+    new = unseen_comments(job, issue)
+    if seen:
+        write_issue_md(job, issue)
+        save(job)
+        print(f"{job['id']}: {len(new)} comment(s) marked seen; issue.md includes them")
+        return
+    if not new:
+        print(f"{job['id']}: no new comments on #{job['issue']} since issue.md was written")
+    for c in new:
+        print(f"### @{c['author']['login']}, {c['createdAt']}\n\n{quote(c['body'])}\n")
 
 
 # ---- Cost from Claude Code transcripts -------------------------------------
@@ -2119,6 +2229,10 @@ def advance(job, stage):
             announce(job, old)
         except Exception:
             pass  # a notification never fails a transition
+    try:
+        check_comments(job, within=10)  # not again when this command just read the issue
+    except Refused:
+        pass  # neither does a comment check
     job.setdefault("history", []).append({"stage": stage, "round": job["round"], "at": now(), "t": time.time()})
     return job
 
@@ -2877,6 +2991,7 @@ def cmd_rewind(job, target, text):
             (d / "intake.md").rename(d / f"intake-{len(list(d.glob('intake-*.md'))) + 1}.md")
         job["intake"], job["agents"] = None, None
         write_issue_md(job)
+    absorb_comments(job)
     if target in {"intake", "spec"}:
         job["slices"] = None
         for role in ("intake", "spec"):
@@ -4354,6 +4469,7 @@ def cmd_feedback(job, text, rule=False):
     d = job_dir(job["id"])
     k = len(list(d.glob("feedback-*.md"))) + 1
     (d / f"feedback-{k}.md").write_text(f"# Feedback {k}\n\nFrom @{operator()} after the job escalated.\n\n{text.strip()}\n")
+    absorb_comments(job)
     advance(sync(job), "build")
     reopened = reopen_slices(job, f"feedback-{k}.md")
     save(job)
@@ -5047,6 +5163,19 @@ def next_steps(job):
         return [("check", str(e))]
 
 
+def steps_and_comments(job):
+    """next_steps, then a `tell:` for new issue comments (checked at most every comment_check_minutes)."""
+    steps = next_steps(job)
+    if not busy(job):
+        try:
+            if check_comments(job):
+                save(job)
+        except Refused:
+            pass  # GitHub unreachable: the next `job next` asks again
+    tell = comments_tell(job)
+    return steps + ([("tell", tell)] if tell else [])
+
+
 def cmd_next(args):
     """One line per step for <job>; without one, a line per unfinished job."""
     why = stand_in()
@@ -5054,13 +5183,13 @@ def cmd_next(args):
         print(f"note: {why}")
     if args:
         job = resolve(args[0])
-        for verb, what in next_steps(job):
+        for verb, what in steps_and_comments(job):
             print(f"{job['id']}: {verb}: {what}")
         return
     every = all_jobs()
     jobs = [j for j in every if j["stage"] not in TERMINAL]
     for j in jobs:
-        print(f"{j['id']}: " + "; ".join(f"{verb}: {what}" for verb, what in next_steps(j)))
+        print(f"{j['id']}: " + "; ".join(f"{verb}: {what}" for verb, what in steps_and_comments(j)))
     for j, alert in main_ci_alerts(every):
         print(f"{j['id']}: tell: {alert}")
     if not jobs:
@@ -5170,6 +5299,8 @@ def main(argv):
             cmd_approve(resolve(args[0]))
         elif cmd == "feedback" and len([a for a in args if a != "--rule"]) == 1:
             cmd_feedback(resolve(next(a for a in args if a != "--rule")), sys.stdin.read(), rule="--rule" in args)
+        elif cmd == "comments" and len([a for a in args if a != "--seen"]) == 1:
+            cmd_comments(resolve(next(a for a in args if a != "--seen")), seen="--seen" in args)
         elif cmd == "reject" and len(args) == 1:
             cmd_reject(resolve(args[0]), sys.stdin.read())
         elif cmd == "agents" and len(args) == 2:

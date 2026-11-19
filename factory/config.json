@@ -325,5 +325,7 @@
   "diff_growth": {
     "ratio": 1.5,
     "min_lines": 50
-  }
+  },
+  "trusted_commenters": "write",
+  "comment_check_minutes": 5
 }
