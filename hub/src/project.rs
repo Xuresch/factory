@@ -775,14 +775,31 @@ mod tests {
                 let p = e.unwrap().path();
                 if p.is_dir() {
                     walk(&p, root, out);
-                } else if p.extension().is_some_and(|x| x == "md") {
-                    let text = String::from_utf8_lossy(&std::fs::read(&p).unwrap()).into_owned();
+                } else {
                     let rel = p
                         .strip_prefix(root)
                         .unwrap()
                         .to_string_lossy()
                         .replace('\\', "/");
-                    out.insert(rel, first_line(&text).to_owned());
+                    let (rel, bytes) = if rel.ends_with(".md") {
+                        (rel.as_str(), std::fs::read(&p).unwrap())
+                    } else if let Some(rel) =
+                        rel.strip_suffix(".hex").filter(|p| p.ends_with(".md"))
+                    {
+                        // Keep invalid UTF-8 out of the old updater's input.
+                        let bytes = std::fs::read_to_string(&p)
+                            .unwrap()
+                            .split_ascii_whitespace()
+                            .map(|byte| u8::from_str_radix(byte, 16).unwrap())
+                            .collect();
+                        (rel, bytes)
+                    } else {
+                        continue;
+                    };
+                    out.insert(
+                        rel.to_owned(),
+                        first_line(&String::from_utf8_lossy(&bytes)).to_owned(),
+                    );
                 }
             }
         }
@@ -808,7 +825,7 @@ mod tests {
         };
         let p = project(&doc, &lines, &seen());
         let rounds = rows(&p, INS_ROUND);
-        assert_eq!(rounds.len(), 13);
+        assert_eq!(rounds.len(), 16);
         for r in &rounds {
             let path = format!(
                 "round-{}/checks.md",

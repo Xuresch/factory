@@ -44,6 +44,9 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import jobfiles  # noqa: E402
+
 REPO = Path(__file__).resolve().parents[2]
 FACTORY = REPO / "factory"
 SCRATCH = REPO / ".scratch"
@@ -300,6 +303,14 @@ def subscriptions():
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
+    def send_error(self, code, message=None, explain=None):
+        if code == 404:
+            path = Path(self.translate_path(self.path))
+            if path.is_relative_to(FACTORY / "jobs") and jobfiles.kind_of(path) and path.is_file():
+                # SimpleHTTPRequestHandler reports even an unreadable present file as 404.
+                code, message = 403, None
+        super().send_error(code, message, explain)
+
     def do_GET(self):
         if self.path.split("?", 1)[0] == "/_subscriptions.json":
             try:

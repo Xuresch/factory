@@ -189,7 +189,10 @@ def read_jobs(path):
             if entry["job"] is not None:
                 for f in sorted(folder.rglob("*.md")):
                     if f.is_file():
-                        text = read_text(f)
+                        # An unreadable Verdict artifact still has an invalid first line.
+                        # The sentinel cannot collide with a raw-byte SHA-1.
+                        unreadable = ("", "unreadable") if jobfiles.kind_of(f) else None
+                        text = jobfiles.snapshot(f, unreadable=unreadable)
                         if text:
                             entry["files"][f.relative_to(folder).as_posix()] = text
             jobs[folder.name] = entry

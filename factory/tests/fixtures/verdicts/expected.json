@@ -24,7 +24,10 @@
     "round-10/checks.md": "invalid",
     "round-11/checks.md": "invalid",
     "round-12/checks.md": "invalid",
-    "round-13/checks.md": "pending"
+    "round-13/checks.md": "invalid",
+    "round-14/checks.md": "PASS",
+    "round-15/checks.md": "invalid",
+    "round-16/checks.md": "pending"
   },
   "reviewers": {
     "1": {

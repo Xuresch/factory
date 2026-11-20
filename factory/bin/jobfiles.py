@@ -31,6 +31,11 @@ DECLARATIONS = {
     "review": ("VERDICT", ("PASS", "CHANGES")),
     "checks": ("GATE", ("PASS", "FAIL")),
 }
+# Unicode White_Space, matching Rust trim and JavaScript \p{White_Space}.
+VERDICT_SPACE = (
+    "\t\n\v\f\r \x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005"
+    "\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
+)
 
 
 # ---- job.json ----------------------------------------------------------------
@@ -70,13 +75,15 @@ def job_snapshot(path):
 # ---- Markdown ----------------------------------------------------------------
 
 
-def snapshot(path):
-    """(text, sha1 of the raw bytes) of a file, None when it can't be read. Bytes
-    that aren't UTF-8 become U+FFFD in the text; the hash is of the bytes."""
+def snapshot(path, *, unreadable=None):
+    """(text, sha1 of the raw bytes) of a file, None when missing, the supplied
+    fallback on other read errors. Bytes that aren't UTF-8 become U+FFFD."""
     try:
         raw = Path(path).read_bytes()
-    except OSError:
+    except FileNotFoundError:
         return None
+    except OSError:
+        return unreadable
     return raw.decode("utf-8", errors="replace"), hashlib.sha1(raw).hexdigest()
 
 
@@ -90,8 +97,12 @@ def header(path):
     """KEY: value lines at the top of an agent's file, up to the first blank line.
     Metadata only (a checks.md's COMMIT, CHECKS_SH; intake's RISK): a Verdict
     comes from `verdict`."""
+    return _parse_header(Path(path).read_text(encoding="utf-8"))
+
+
+def _parse_header(text):
     fields = {}
-    for line in Path(path).read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         if not line.strip():
             break
         key, _, value = line.partition(":")
@@ -125,8 +136,17 @@ def declared(kind, line):
     if line is None:
         return PENDING
     prefix, values = DECLARATIONS[kind]
-    m = re.fullmatch(rf"{prefix}:\s*(\w+)", line.strip())
-    return m.group(1) if m and m.group(1) in values else INVALID
+    key, colon, value = line.strip(VERDICT_SPACE).partition(":")
+    value = value.lstrip(VERDICT_SPACE)
+    return value if key == prefix and colon and value in values else INVALID
+
+
+def _decode_verdict(kind, raw):
+    try:
+        line = raw.partition(b"\n")[0].decode("utf-8")
+    except UnicodeDecodeError:
+        return INVALID
+    return declared(kind, line)
 
 
 def verdict(kind, path):
@@ -140,20 +160,19 @@ def verdict(kind, path):
         return PENDING
     except OSError:
         return INVALID
-    try:
-        line = raw.decode("utf-8").split("\n", 1)[0]
-    except UnicodeDecodeError:
-        return INVALID
-    return declared(kind, line)
+    return _decode_verdict(kind, raw)
 
 
 def checks(path):
-    """A checks.md as the gate and the lifecycle read it: {verdict, commit,
-    checks_sh}. commit and checks_sh come from its header block; None when absent."""
-    path = Path(path)
-    v = verdict("checks", path)
+    """Read the Verdict, COMMIT and CHECKS_SH from the same checks.md contents.
+    Metadata comes from the header block and is None when unavailable."""
+    v, h = INVALID, {}
     try:
-        h = header(path) if path.is_file() else {}
+        raw = Path(path).read_bytes()
+        v = _decode_verdict("checks", raw)
+        h = _parse_header(raw.decode("utf-8"))
+    except FileNotFoundError:
+        v = PENDING
     except (OSError, UnicodeDecodeError):
-        h = {}
+        pass
     return {"verdict": v, "commit": h.get("COMMIT"), "checks_sh": h.get("CHECKS_SH")}
