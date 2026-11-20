@@ -74,6 +74,9 @@ the dev server won't start), don't skip it silently: write a `## Notes` line
 - When the diff widens who can reach a page or screen (new route access, a
   role that now sees it), review that whole surface for them, not only the
   changed lines.
+- UI that depends on a permission or role query shows a neutral state (a
+  disabled control, a skeleton) while the query is pending. A refusal ("you
+  can't do this") that flashes before the answer arrives is a finding.
 - The copy is short, plain and consistent with the rest of the app.
 - Accessibility: real buttons and links, labels, focus order, keyboard use, and
   alt text.

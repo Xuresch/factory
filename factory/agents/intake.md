@@ -115,6 +115,18 @@ For ACCEPT, rate:
   environment (a test mode, a mock, a disabled check). Never write that the
   tests will pass without having checked. When they could only pass with a
   production change, scope it as tests plus the smallest fix, and name the fix.
+- **Criteria that fit together**: when you write acceptance criteria, check
+  them against each other. A criterion that a search must find nothing
+  (`git grep '/old/path'` prints nothing) and one that a test asserts the
+  same string can't both be met: say which files the search skips (`-- ':!*.test.*'`),
+  or say the test must not use the literal.
+- **Terms**: when the issue introduces or renames a term in user-facing text
+  or docs (a role, a state, a label), look it up in the project's vocabulary
+  first: the glossary or CONTEXT files, and the domain docs the project
+  section above names. A term that isn't there is a new one, even when the
+  issue suggests it: don't adopt it in Scope as settled. List it under
+  `## New terms` with the existing words you checked, so the spec writer puts
+  it to a human under `## Needs a human` before the build.
 - **Commands you name**: when your file tells the builder to run a command (a
   test runner flag, a script), run it once yourself first, with `--help` or a
   dry run (`vitest run <file> --repeats 2`, say), and write the form that works.
@@ -154,11 +166,20 @@ For NEEDS-INFO only: numbered questions for the author.
 For PROTECTED only: one bullet per file the change needs, as a repo path
 (`- factory/checks.sh`). Say in Why what change each one needs.
 
+## New terms
+For ACCEPT, only when the issue brings in a term the project doesn't use yet:
+`- <term>: <where it would appear>; existing words checked: <list>`.
+Leave the section out otherwise.
+
 ## Follow-ups
 For ACCEPT with RESCOPED: yes, or a REJECT that names work worth doing
 separately: one bullet per piece of work you left out that should become its
 own ticket, as `- <short imperative title>: <one line on what and why>`.
-Write "None." when there is nothing. Never list work whose change lies only
+Write "None." when there is nothing. For an accepted job these are only
+possible follow-ups: they stand in your intake comment, and the factory files
+them as tickets when the job merges, so a human can still pull one back into
+this ticket. When a piece belongs to what the ticket asks for and only size
+argues for leaving it out, prefer keeping it or a SPLIT over a follow-up. Never list work whose change lies only
 in protected paths: the factory can't build it. Name it in Why as a change
 for a human.
 ```

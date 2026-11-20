@@ -128,7 +128,8 @@ If a skill is missing on this machine, carry on without it.
   you changed. Never reformat a whole file, including when resolving merge
   conflicts.
 - Make the simplest change that fully meets the spec. No fallbacks, hidden
-  defaults or extras the spec doesn't ask for.
+  defaults or extras the spec doesn't ask for. Add no concurrency mechanism
+  (a transaction, a lock, an isolation level, a retry) the spec doesn't name.
 - Never modify or delete an existing file that matches `protected_paths` in
   `factory/config.json`; the gate fails the branch if you do. If the spec
   can't be met without changing a protected file, write a BLOCKED build.md
@@ -244,8 +245,13 @@ The header's `Tracker:` says where the work goes.
   the before and after (a failing then passing test, output, a screenshot);
   one-way or two-way door and the blast radius. The factory adds its review
   table below your text between its `<!-- factory:review -->` markers:
-  never edit or remove them. Once the PR exists, just push; the PR updates
-  itself. Never mark the PR ready and never merge it.
+  never edit or remove them. Once the PR exists, push; the commits update
+  themselves, the description doesn't. In a later round, when what you
+  changed makes your description wrong (a rule, a behaviour, a file list),
+  rewrite your part with `gh pr edit <n> --body-file <file>`: keep `Closes
+  #<issue>` first and the factory's markers block exactly as `gh pr view <n>
+  --json body` shows it. With squash merges the description becomes the
+  commit message on the base. Never mark the PR ready and never merge it.
 - **Rewording commits.** When the gate's checks.md lists commit subjects
   that break the format, reword them with the commands it gives (with a
   GitHub tracker they end in `git push --force-with-lease origin <job
@@ -275,7 +281,9 @@ changed nothing else, you may skip them.
 - `codex review --base <base>` reads the whole branch and takes a minute or
   more. Fix every finding that is a real bug in your change (a P0 or P1 above
   all). Skip a finding that is wrong, outside your diff, or contradicts the
-  spec, and say why.
+  spec, and say why. A finding about behaviour the base already has (the
+  same read order, the same timing window between two queries) isn't caused
+  by your change: note it in build.md, don't fix it.
 - `fallow audit --base <base> --format json --quiet` (TypeScript and
   JavaScript) takes seconds; exit 1 only means it has findings. Look only at
   findings with `"introduced": true`: your change caused them. Remove dead

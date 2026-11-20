@@ -791,7 +791,10 @@ def comments_tell(job):
     return (f"#{job['issue']} has {len(new)} new comment(s) from {who} not in issue.md "
             f"(\"{new[-1]['line']}\"): ask the human whether it becomes feedback; `{JOB} comments {i}` shows "
             f"them; to use it, `{JOB} rewind {i} <intake|spec|build>` (`{JOB} feedback {i}` when it waits on a "
-            f"human) with the text on stdin; `{JOB} comments {i} --seen` dismisses them")
+            f"human) with the text on stdin; `{JOB} comments {i} --seen` dismisses them"
+            + (f". The factory asked the human the spec's Needs-a-human questions on the issue: a reply that "
+               f"only answers them needs no feedback, `{JOB} comments {i} --seen` puts it in issue.md for the "
+               f"approver; rewind only when the answer changes what to build" if job.get("human_asked") else ""))
 
 
 def absorb_comments(job):
@@ -1212,7 +1215,7 @@ def ci_poll_seconds():
     return float(os.environ.get("FACTORY_CI_POLL_SECONDS") or CONFIG.get("ci_poll_seconds", 20))
 
 
-def wait_for_ci(job, head, rerun=None, checks=None):
+def wait_for_ci(job, head, rerun=None, checks=None, grace=None):
     """Poll the PR's checks for the pushed `head` until none is pending. Returns
     {verdict, rows, failing, pending, passed, waited}: verdict PASS, FAIL, NONE (no
     check showed up within `ci_start_grace_seconds`: a repo without CI) or TIMEOUT
@@ -1220,9 +1223,9 @@ def wait_for_ci(job, head, rerun=None, checks=None):
     not started yet: GitHub hasn't seen the push. After a rerun (rerun_failed's
     record), a rerun check still showing its old failure hasn't restarted yet,
     for up to the grace period. `checks` (default: the PR's, ci_checks) is
-    what is asked each time."""
+    what is asked each time; `grace` overrides ci_start_grace_seconds."""
     checks = checks or (lambda: ci_checks(job))
-    grace = float(CONFIG.get("ci_start_grace_seconds", 180))
+    grace = float(CONFIG.get("ci_start_grace_seconds", 180) if grace is None else grace)
     limit = float(CONFIG.get("ci_wait_minutes", 30)) * 60
     start = time.monotonic()
     while True:
@@ -1306,10 +1309,35 @@ def approve_ci_rerun(job):
     return sync(job)
 
 
+def note_pr_ci(job, ci_md):
+    """At approve: remember (job.json no_pr_ci) when the reviewed commit, pushed
+    a whole review ago, still has no check: the PR's base runs no CI. `job merge`
+    then doesn't wait ci_start_grace_seconds for checks that won't come."""
+    if ci_md and ci_md.startswith("CI: NONE") and job.get("review_head") and "isn't the reviewed commit" not in ci_md:
+        job["no_pr_ci"] = job["review_head"]
+    else:
+        job.pop("no_pr_ci", None)
+
+
+def ci_grace(job):
+    """The start grace for the merge's CI wait: a short one when the PR had no CI
+    at approve and the branch doesn't touch .github/workflows/; else None (the
+    configured ci_start_grace_seconds)."""
+    if not job.get("no_pr_ci"):
+        return None
+    changed = git(job, "diff", "--name-only", f"{jref(job)}...HEAD", check=False).stdout.split()
+    if any(f.startswith(".github/workflows/") for f in changed):
+        return None
+    return 2 * ci_poll_seconds()
+
+
 def record_ci(job, head, ci):
     """round-<N>/merge-ci.md: the CI state `job merge` saw on the head it merges."""
     state = "PENDING" if ci["verdict"] == "TIMEOUT" else ci["verdict"]
-    note = {"NONE": "No check reported within ci_start_grace_seconds: the repo has no CI for this PR.",
+    note = {"NONE": ("No CI for this PR: no check on the reviewed commit at approve, none now, and the branch "
+                     "changes no workflow; the factory didn't wait ci_start_grace_seconds."
+                     if ci.get("no_ci") else
+                     "No check reported within ci_start_grace_seconds: the repo has no CI for this PR."),
             "TIMEOUT": f"Checks still pending after ci_wait_minutes: {', '.join(ci['pending'])}.",
             "FAIL": f"Failing: {', '.join(ci['failing'])}.", "PASS": "Every check passed."}[ci["verdict"]]
     flaky = passed_on_rerun(job, dict(ci, head=head))
@@ -1944,6 +1972,11 @@ def advance(job, stage):
     if stage == "merged":
         require(is_merged(job), "the PR isn't merged" if GITHUB else f"{jbase(job)} doesn't contain {job['branch']}")
         rough = problems(job)
+        if (d / "intake.md").exists():
+            try:  # the scope held to the end: what intake left out becomes tickets now
+                create_follow_ups(job)
+            except Exception as e:
+                print(f"{job['id']}: couldn't file the follow-ups: {str(e).strip()[:200]}", file=sys.stderr)
         body = merge_summary(job, rough)
         if not GITHUB:
             set_status(job["issue"], "done")
@@ -2004,7 +2037,8 @@ def advance(job, stage):
                 job["fork_point"] = run(["git", "rev-parse", jref(job)]).stdout.strip()
                 setup_worktree(job["worktree"], job_dir(job["id"]) / "worktree-setup.log")
         comment("issue", job["issue"], f"{title}\n\n{intake_body()}")
-        create_follow_ups(job)
+        if stage != "spec":  # an accepted job files them when it merges: a human may still take them back in
+            create_follow_ups(job)
         if stage == "spec" and spec_from_intake(job):
             if protected_only(job):  # intake wrote the spec: the same backstop as after the spec writer
                 stop_protected(job, protected_only(job), section(d / "intake.md", "Why"))
@@ -2133,6 +2167,9 @@ def advance(job, stage):
             ci = ci_status(job)
             if ci:  # the approver weighs it before a human is ever asked
                 (round_dir(job) / "ci.md").write_text(ci)
+            note_pr_ci(job, ci)
+            if GITHUB and job.get("human_asked"):
+                write_issue_md(job)  # the replies to the early questions reach the approver
             job.pop("approve_carried", None)
             carry_approval(job)
         else:
@@ -2220,6 +2257,12 @@ def advance(job, stage):
         stage = "paused"
     elif stage == "build" and old in {"spec", "gate", "review", "needs-human", "merging"}:
         sync_with_base(job)  # a paused job syncs when it resumes
+    if stage == "build" and old in {"spec", "paused"}:
+        try:
+            ask_human_early(job)
+        except Exception as e:  # a comment never fails a transition
+            print(f"{job['id']}: couldn't post the spec's Needs-a-human questions: {str(e).strip()[:200]}",
+                  file=sys.stderr)
     job["stage"] = stage
     job["ended"] = now() if stage in TERMINAL | WAITING else None
     if stage in TERMINAL | WAITING:
@@ -2523,7 +2566,9 @@ def follow_ups(intake):
 
 def create_follow_ups(job):
     """File each follow-up once, as needs-triage: a human triages it like any
-    ticket. With labels.factory set it carries that label too, so it comes
+    ticket. An accepted job files them when it merges, not at intake: until
+    then they stand in the intake comment, and a human who wants one in this
+    ticket says so before it becomes an issue. With labels.factory set it carries that label too, so it comes
     back to the factory once triage makes it ready-for-agent."""
     d = job_dir(job["id"])
     done = {f["title"] for f in job.get("follow_ups") or []}
@@ -2742,6 +2787,15 @@ def wait_reason(job):
     return why or "escalated", action
 
 
+def human_ask(job, limit=600):
+    """decision.md `## For the human`, squeezed onto a few lines for a
+    notification: the question and the line ranges to check, so the human can
+    answer without opening the job folder. "" without one."""
+    f = job_dir(job["id"]) / "decision.md"
+    text = " ".join(l.strip() for l in (section(f, "For the human") or "").splitlines() if l.strip()) if f.exists() else ""
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
 def announce(job, old):
     """One message when a job moves into a waiting or a final stage."""
     stage = job["stage"]
@@ -2749,7 +2803,8 @@ def announce(job, old):
     if stage in WAITING:
         why, action = wait_reason(job)
         what = f"paused after {job['paused']['after']}" if stage == "paused" else stage
-        notify(f"Factory: {name} waits for you", f"{what}: {why}\nDo: {action}",
+        ask = human_ask(job) if stage == "needs-human" else ""
+        notify(f"Factory: {name} waits for you", f"{what}: {why}\nDo: {action}" + (f"\nAsks: {ask}" if ask else ""),
                "high", link_of(job), ["hourglass"])
     elif stage == "merged":
         how = f"PR #{job['pr']} merged" if job["pr"] else f"merged into {jbase(job)}"
@@ -2832,6 +2887,28 @@ def new_dependencies(job):
 def needs_a_human(job):
     """What only a human can check or do before this job ships (spec.md `## Needs a human`)."""
     return spec_bullets(job, "Needs a human")
+
+
+def ask_human_early(job):
+    """The build starts and spec.md has `## Needs a human` items nobody answered
+    yet: post them on the issue now (job.json human_asked), so a human answers
+    while the builder works instead of after the approver stops. Not when a human
+    already resumed a hold after the spec (accepted.md has their answers), nor
+    twice for the same items. The approver reads the replies in issue.md."""
+    items = needs_a_human(job) if GITHUB else []  # locally the session asks the user itself
+    if not items or items == (job.get("human_asked") or {}).get("items"):
+        return
+    if any(a.get("after") == "spec" for a in job.get("accepted") or []):
+        return
+    comment("issue", job["issue"],
+            f"### Factory: questions for a human while {job['id']} builds\n\n"
+            + "\n".join(f"{i}. {t}" for i, t in enumerate(items, 1))
+            + "\n\nReply here, numbered like the list. The build goes on meanwhile; an item still open "
+              "when the job is ready to merge stops it for you then.")
+    job["human_asked"] = {"at": now(), "items": items}
+    notify(f"Factory: {job['id']} (#{job['issue']}) has {len(items)} question(s) for you",
+           f"{items[0]}" + (f" (+{len(items) - 1} more)" if len(items) > 1 else "")
+           + "\nAnswer on the issue; the build goes on meanwhile.", "default", link_of(job), ["question"])
 
 
 def hold_point(job, old, stage):
@@ -3349,8 +3426,7 @@ def start_feature_reviewer(branch, worktree, tip, write, lines, title):
     cmd = [orca_cli(), "orchestration", "worker-start", "--agent", entry["agent"]]
     if entry.get("model"):
         cmd += ["--model", entry["model"]]
-    if entry.get("effort"):
-        cmd += ["--effort", entry["effort"]]
+    cmd += effort_flags(entry)
     cmd += ["--worktree", f"path:{worktree}", "--task-title", title, "--spec-file", "-", "--json"]
     res = subprocess.run(cmd, cwd=REPO, input=spec, capture_output=True, text=True)
     try:
@@ -4132,8 +4208,11 @@ def merge_ci(job):
           f"{CONFIG.get('ci_wait_minutes', 30)} min", flush=True)
     job["ci_wait"] = {"pid": os.getpid(), "start": proc_start(os.getpid()), "since": now(), "head": head}
     save(job)
+    grace = ci_grace(job)
     with unlocked(job):  # `job queue`, `job next` and the other jobs go on meanwhile
-        ci = wait_for_ci(job, head)
+        ci = wait_for_ci(job, head, grace=grace)
+    if grace is not None and ci["verdict"] == "NONE":
+        ci["no_ci"] = True
     rerun = rerun_failed(job, ci) if ci["verdict"] == "FAIL" and job["stage"] == "merging" else None
     if rerun:  # a flaky check shouldn't cost a builder round: FAIL only when it fails twice
         print(f"{job['id']}: CI failed ({', '.join(ci['failing'])}); rerunning once and waiting", flush=True)
@@ -4536,6 +4615,15 @@ def cmd_worker(job, role):
 # orchestrator's hands.
 
 
+def effort_flags(entry):
+    """`--effort <level>` for a worker entry. Claude Haiku has no effort setting and
+    Orca refuses one, so a Haiku entry's effort (say, merged in from an older
+    template) is dropped."""
+    if not entry.get("effort") or (entry["agent"] == "claude" and "haiku" in (entry.get("model") or "")):
+        return []
+    return ["--effort", entry["effort"]]
+
+
 def orca_cli():
     """The Orca executable, as the orchestration skill resolves it."""
     if os.environ.get("ORCA_CLI_COMMAND"):
@@ -4757,8 +4845,7 @@ def cmd_start(job, role, extra):
     cmd = [orca_cli(), "orchestration", "worker-start", "--agent", entry["agent"]]
     if entry.get("model"):
         cmd += ["--model", entry["model"]]
-    if entry.get("effort"):
-        cmd += ["--effort", entry["effort"]]
+    cmd += effort_flags(entry)
     cmd += ["--worktree", where, "--task-title", f"{job['id']} {role} r{job['round']}",
             "--spec-file", "-", "--json"]
     # Orca releases a worker's terminal soon after worker_done. The builder is

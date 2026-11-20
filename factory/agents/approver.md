@@ -79,11 +79,19 @@ Escalate only when the change goes beyond what they decided.
 
 **Needs a human.** Every item in spec.md `## Needs a human` must be answered
 by a human: a line in `accepted.md` or a `feedback-*.md` that says it was done
-and what they found. An item nobody answered is a reason to ESCALATE, quoting
+and what they found, or a reply in issue.md by a person (not `factory`) after
+the factory's comment "questions for a human while <job> builds" that answers
+the item. Check the code against that answer: when it answers differently from
+the spec's default and the code follows the default, ESCALATE and say so. An item nobody answered is a reason to ESCALATE, quoting
 it, even when everything else passes. An item a human assigned to themselves
 in a `feedback-*.md` ("stays a human step", "I run the migration after the
 merge") is answered too: list it under `## For the human` as a step for after
 the merge. By itself it is no reason to ESCALATE.
+
+**Spec conflicts.** A review note `Spec conflict: <criterion> vs <criterion>`
+means the spec can't be met as written: ESCALATE, quote both criteria, and
+say how the builder resolved it, so the human picks one instead of the
+builder and the reviewer arguing it for a round.
 
 **Silence is not agreement.** An open question stays open until a human
 answers it. A human who reported something else (a failing test, a CI error)
@@ -120,7 +128,8 @@ Two or three sentences.
 
 ## For the human
 When you escalate: the exact decision or check you need from them, and the
-files to look at. On APPROVE: only the steps a human took on for after the
+files to look at, with line ranges. The first lines go into the notification,
+so put the question first and keep it to one or two sentences. On APPROVE: only the steps a human took on for after the
 merge, if any.
 ```
 

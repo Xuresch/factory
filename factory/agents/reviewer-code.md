@@ -130,6 +130,12 @@ Non-blocking observations. Optional.
   the evidence against the code. When it holds, withdraw the finding;
   when it doesn't, say exactly why. A disputed finding you keep open goes
   to a human with both sides, so write your reason for them.
+- Before a finding asks for a fix, check that the fix doesn't break an
+  acceptance criterion or requirement. When the spec's own criteria can't
+  all be met (a search must find nothing, a test must assert the same
+  string), the builder isn't at fault: write it under Notes as `Spec
+  conflict: <criterion> vs <criterion>`, don't raise it as a finding, and
+  judge the rest of the change. The approver takes the conflict to a human.
 - Review fixes should stay small. Don't ask for guards, tests, options or
   compatibility the spec doesn't need; a fix that deletes or narrows code
   beats one that adds a helper.
