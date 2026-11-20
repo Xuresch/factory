@@ -390,6 +390,8 @@
   svg.ch .hit { fill: transparent; cursor: default; outline: none; }
   svg.ch .hit[data-job] { cursor: pointer; }
   svg.ch .hit:hover { fill: rgba(255, 255, 255, .05); }
+  svg.ch g[data-bar] path { transition: opacity .12s; }
+  svg.ch g.hl path:not(.on) { opacity: .35; }
   svg.ch .hit:focus-visible { fill: rgba(139, 233, 253, .08); stroke: var(--active); stroke-width: 2; }
   svg.ch circle.hit { fill: transparent; }
   svg.ch .pt { fill: var(--muted); stroke: var(--bg); }
@@ -487,6 +489,9 @@
   #tip { position: fixed; z-index: 50; pointer-events: none; background: #0d0e12; border: 1px solid var(--line); border-radius: 8px;
     padding: 8px 10px; font: 12px/1.55 var(--mono); color: var(--text); white-space: pre; display: none; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
   #tip .sw { width: 8px; height: 8px; margin-right: 6px; }
+  #tip .tl { display: block; }
+  #tip .tl.on { font-weight: 600; background: rgba(255, 255, 255, .08); margin: 0 -6px; padding: 0 6px; border-radius: 4px; }
+  #tip .tl.off { color: var(--muted); }
 
   /* Rounds legend: always shown on desktop, behind a "?" on a phone. */
   .qbtn { display: none; width: 24px; height: 24px; padding: 0; border-radius: 50%; border: 1px solid var(--faint); background: none; color: var(--muted);
@@ -1576,25 +1581,27 @@ function barChart({ W, H, items, title, desc, maxBar = 64, line, labelAll = fals
     let cum = 0
     const drawn = it.segs.filter((s) => s.v > 0)
     let svg = ''
+    const ranges = [] // where each segment sits, so the tooltip can name the one under the cursor
     drawn.forEach((s, k) => {
       const yTop = F.y(cum + s.v)
       let yBot = F.y(cum)
       cum += s.v
       if (yBot - yTop <= 0.4) return
+      ranges.push([k, yTop.toFixed(1), yBot.toFixed(1), s.key || '', s.role ?? '', s.v.toFixed(4), s.part || ''].join(','))
       if (k > 0 && yBot - yTop > 4) yBot -= gap // 2px of surface between fills
       const h = yBot - yTop
       const last = k === drawn.length - 1 || F.y(cum) <= F.y0 + 0.5
       const r = last ? Math.min(4, bw / 2) : 0
       const top = yTop
       svg += s.stroke
-        ? `<path d="${topPath(x + 0.75, top + 0.75, bw - 1.5, Math.max(h - 1.5, 0.5), r)}" style="fill:${s.fill}" stroke="${s.stroke}" stroke-width="1.5"/>`
-        : `<path d="${topPath(x, top, bw, h, r)}" style="fill:${s.fill}"/>`
+        ? `<path d="${topPath(x + 0.75, top + 0.75, bw - 1.5, Math.max(h - 1.5, 0.5), r)}" style="fill:${s.fill}" stroke="${s.stroke}" stroke-width="1.5" data-si="${k}"/>`
+        : `<path d="${topPath(x, top, bw, h, r)}" style="fill:${s.fill}" data-si="${k}"/>`
     })
     if (it.ghost > it.total) {
       const yg = F.y(it.ghost), yt = F.y(it.total)
       svg += `<rect x="${x + 0.75}" y="${yg + 0.75}" width="${bw - 1.5}" height="${Math.max(yt - yg - 1.5, 0)}" fill="url(#${F.id}h)" stroke="var(--viz-median)" stroke-width="1" stroke-dasharray="3 3"/>`
     }
-    bars += `<g${it.dim ? ' opacity=".55"' : ''}>${svg}</g>`
+    bars += `<g data-bar="${i}"${it.dim ? ' opacity=".55"' : ''}>${svg}</g>`
     const topV = Math.max(it.total, it.ghost || 0)
     if (topV > max) { // clipped: a break in the bar and the value above it
       const yb = F.y0 + 7
@@ -1612,7 +1619,7 @@ function barChart({ W, H, items, title, desc, maxBar = 64, line, labelAll = fals
         + (it.mark.label ? `<text class="lab" x="${cx + bw / 2 + 16}" y="${ym + (it.mark.label.length > 1 ? -1 : 4)}">${it.mark.label.map((l, k) => `<tspan x="${cx + bw / 2 + 16}" dy="${k ? 12 : 0}">${esc(l)}</tspan>`).join('')}</text>` : '')
     }
     const aria = it.tip.replace(/\{(\w+)\}/g, '$1').replace(/\s*\n\s*/g, ', ').replace(/\s{2,}/g, ' ')
-    hits += `<rect class="hit" x="${band * i + F.x0}" y="${F.y0 - 14}" width="${band}" height="${F.y1 - F.y0 + 14}" data-tip="${esc(it.tip)}" aria-label="${esc(aria)}" role="${it.job ? 'button' : 'img'}"${n <= 45 ? ' tabindex="0"' : ''}${it.job ? ` data-job="${esc(it.job)}"` : ''}/>`
+    hits += `<rect class="hit" x="${band * i + F.x0}" y="${F.y0 - 14}" width="${band}" height="${F.y1 - F.y0 + 14}" data-tip="${esc(it.tip)}" data-bar="${i}" data-segs="${esc(ranges.join(';'))}" aria-label="${esc(aria)}" role="${it.job ? 'button' : 'img'}"${n <= 45 ? ' tabindex="0"' : ''}${it.job ? ` data-job="${esc(it.job)}"` : ''}/>`
   })
   let ref = ''
   if (line && line.v > 0) {
@@ -1718,8 +1725,8 @@ function bucketList(js, per, byRole, from, to) {
     }
     const segs = []
     for (const k of AGENT_KEYS) {
-      if (!byRole || k === 'other') { const v = acc[k].reduce((a, c) => a + c, 0); if (v > 0) segs.push({ v, fill: `var(--${k})` }) }
-      else acc[k].forEach((v, s) => { if (v > 0) segs.push({ v, fill: `var(--${k}-r${s + 1})` }) })
+      if (!byRole || k === 'other') { const v = acc[k].reduce((a, c) => a + c, 0); if (v > 0) segs.push({ v, key: k, fill: `var(--${k})` }) }
+      else acc[k].forEach((v, s) => { if (v > 0) segs.push({ v, key: k, role: s, fill: `var(--${k}-r${s + 1})` }) })
     }
     const parts = Object.fromEntries(AGENT_KEYS.map((k) => [k, acc[k].reduce((a, c) => a + c, 0)]))
     const steps = [0, 1, 2, 3].map((s) => AGENT_KEYS.reduce((a, k) => a + acc[k][s], 0))
@@ -1733,7 +1740,7 @@ function barItems(list, per, byRole) {
     const j = b.jobs[0]
     // The newest day or week is still filling up: say so, and draw it lighter.
     const sofar = b.start !== undefined && i === list.length - 1 && Date.now() - b.start < (per === 'week' ? 7 : 1) * 864e5
-    const roles = byRole ? `\n${b.steps.map((v, s) => (v > 0.004 ? `  ${ROLE_STEP_NAMES[s].padEnd(17)}${money(v)}` : '')).filter(Boolean).join('\n')}` : ''
+    const roles = byRole ? `\n${b.steps.map((v, s) => (v > 0.004 ? `  ${ROLE_STEP_NAMES[s].padEnd(18)}${money(v)}` : '')).filter(Boolean).join('\n')}` : ''
     const head = per === 'job'
       ? `${numOf(j)} · ${j.title}\n${money(b.total)} · ${j.round} round${j.round > 1 ? 's' : ''} · ${j.stage}`
       : `${per === 'week' ? 'week of ' : ''}${b.label}${sofar ? ' (so far)' : ''} · ${b.jobs.length} job${b.jobs.length === 1 ? '' : 's'}\n${money(b.total)}`
@@ -1911,9 +1918,40 @@ function applyLegend() {
 document.addEventListener('toggle', (e) => { if (e.target.matches?.('[data-old]')) ui.old = e.target.open }, true)
 document.addEventListener('input', (e) => { if (e.target.id === 'q') { ui.q = e.target.value; ui.limit = 0; render() } })
 const tip = $('tip')
-const tipHtml = (s) => esc(s).replace(/\{(claude|codex|other)\}/g, '<i class="sw $1" style="background:var(--$1)"></i>')
-function showTip(el, x, y, above) {
-  tip.innerHTML = tipHtml(el.dataset.tip)
+const swHtml = (s) => s.replace(/\{(claude|codex|other)\}/g, '<i class="sw $1" style="background:var(--$1)"></i>')
+// With a segment under the cursor ({key, role, v, part}), its agent row and role row light up and the other
+// agent and role rows step back; a role or a factory/outside part also gets its own value on the first line.
+function tipHtml(s, seg) {
+  if (!seg) return swHtml(esc(s))
+  const lines = s.split('\n').map((l) => {
+    const a = l.match(/\{(claude|codex|other)\}/)?.[1]
+    const r = ROLE_STEP_NAMES.findIndex((n) => l.startsWith(`  ${n}`) && !/[a-z]/.test(l[n.length + 2] || ''))
+    return { l, cls: a ? (a === seg.key ? 'on' : 'off') : r >= 0 ? (seg.role !== '' && r === Number(seg.role) ? 'on' : 'off') : '' }
+  })
+  const what = seg.role !== '' ? ROLE_STEP_NAMES[seg.role] : seg.part
+  if (seg.key && what) lines.unshift({ l: `{${seg.key}} ${seg.key} · ${what}  ${money(seg.v)}`, cls: 'on' })
+  return lines.map(({ l, cls }) => `<span class="tl ${cls}">${swHtml(esc(l)) || ' '}</span>`).join('')
+}
+// The segment of a bar-chart column under the cursor, from the ranges barChart wrote on the column's hit rect.
+function segAt(el, e) {
+  const m = el.dataset.segs && el.ownerSVGElement?.getScreenCTM()
+  if (!m) return null
+  const y = new DOMPoint(e.clientX, e.clientY).matrixTransform(m.inverse()).y
+  for (const r of el.dataset.segs.split(';')) {
+    const [si, top, bot, key, role, v, part] = r.split(',')
+    if (y >= +top - 1 && y <= +bot + 1) return { si, key, role, v: +v, part }
+  }
+  return null
+}
+let hlBar = null
+function highlight(el, seg) {
+  if (hlBar) { hlBar.classList.remove('hl'); hlBar.querySelectorAll('.on').forEach((p) => p.classList.remove('on')) }
+  hlBar = seg ? el.ownerSVGElement.querySelector(`g[data-bar="${el.dataset.bar}"]`) : null
+  if (hlBar) { hlBar.classList.add('hl'); hlBar.querySelector(`[data-si="${seg.si}"]`)?.classList.add('on') }
+}
+const hideTip = () => { tip.style.display = 'none'; highlight(null, null) }
+function showTip(el, x, y, above, seg = null) {
+  tip.innerHTML = tipHtml(el.dataset.tip, seg)
   tip.style.display = 'block'
   const left = Math.max(8, Math.min(x, innerWidth - tip.offsetWidth - 8))
   const flip = above ? y - tip.offsetHeight - 8 : y + 16 + tip.offsetHeight > innerHeight ? y - tip.offsetHeight - 10 : y + 16
@@ -1921,16 +1959,18 @@ function showTip(el, x, y, above) {
 }
 document.addEventListener('mousemove', (e) => {
   const el = e.target.closest?.('[data-tip]')
-  if (!el) { tip.style.display = 'none'; return }
-  showTip(el, e.clientX + 14, e.clientY)
+  if (!el) { hideTip(); return }
+  const seg = segAt(el, e)
+  highlight(el, seg)
+  showTip(el, e.clientX + 14, e.clientY, false, seg)
 })
 // The same tooltip on keyboard focus.
 document.addEventListener('focusin', (e) => {
   const el = e.target.closest?.('[data-tip]')
   if (el && el.matches(':focus-visible')) { const r = el.getBoundingClientRect(); showTip(el, r.left + r.width / 2, r.top, true) }
 })
-document.addEventListener('focusout', () => { tip.style.display = 'none' })
-addEventListener('scroll', () => { tip.style.display = 'none' }, { passive: true })
+document.addEventListener('focusout', hideTip)
+addEventListener('scroll', hideTip, { passive: true })
 let rz
 addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => { lastCosts = ''; lastPlan = ''; render() }, 150) })
 
@@ -2092,8 +2132,8 @@ function planPage() {
     const isCur = m === cur
     const segs = []
     for (const a of AGENTS) {
-      if (m.fac[a] > 0) segs.push({ v: m.fac[a], fill: `var(--${a})` })
-      if (m.out[a] > 0) segs.push({ v: m.out[a], fill: `var(--${a}-soft)`, stroke: `var(--${a})` })
+      if (m.fac[a] > 0) segs.push({ v: m.fac[a], key: a, part: 'in factory jobs', fill: `var(--${a})` })
+      if (m.out[a] > 0) segs.push({ v: m.out[a], key: a, part: 'outside the factory', fill: `var(--${a}-soft)`, stroke: `var(--${a})` })
     }
     const ghost = isCur && pace && pace.T > m.apiT ? pace.T : 0
     const tip = `${m.label}${m.share < 1 ? ' (so far)' : ''} · ${plural(m.jobs, 'factory job')}\n${money(m.apiT)} API-equivalent\n`
