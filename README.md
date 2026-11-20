@@ -114,6 +114,7 @@ factory/
   bin/job                     the only writer of job.json; refuses illegal moves; merges
   bin/gate                    runs checks.sh in a job's worktree → round-N/checks.md
   bin/route                   risk + surfaces → the job's builder, reviewers and models
+  bin/jobfiles.py             reads a job folder: job.json, headers, sections, Verdicts
   bin/dashboard               serves the board on 127.0.0.1, with local tickets
   bin/report                  pushes this machine's jobs to the hub (optional)
   dashboard.html              the board

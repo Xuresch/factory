@@ -45,6 +45,9 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import jobfiles  # noqa: E402  (factory/bin/jobfiles.py: how a job folder reads)
+
 REPO = Path(__file__).resolve().parents[2]
 FACTORY = REPO / "factory"
 CONFIG = json.loads((FACTORY / "config.json").read_text())
@@ -301,18 +304,18 @@ def checks_hash():
 
 
 def reusable(checks_md, commit):
-    """True when the round's checks.md passed this very commit with this very checks.sh,
-    and checks.sh runs the same at merge as in a round (it never reads FACTORY_GATE)."""
-    if not checks_md.exists():
+    """True when the round's checks.md declares PASS for this very commit with this very
+    checks.sh, and checks.sh runs the same at merge as in a round (it never reads FACTORY_GATE)."""
+    got = jobfiles.checks(checks_md)
+    if got["verdict"] != "PASS":
         return False
-    head = dict(l.split(": ", 1) for l in checks_md.read_text().split("\n\n", 1)[0].splitlines() if ": " in l)
     code = [l for l in CHECKS.read_text().splitlines() if not l.lstrip().startswith("#")]
-    return (head.get("GATE") == "PASS" and head.get("COMMIT") == commit
-            and head.get("CHECKS_SH") == checks_hash() and not any("FACTORY_GATE" in l for l in code))
+    return (got["commit"] == commit and got["checks_sh"] == checks_hash()
+            and not any("FACTORY_GATE" in l for l in code))
 
 
 def gate(job_id, merge):
-    job = json.loads((FACTORY / "jobs" / job_id / "job.json").read_text())
+    job = jobfiles.load_job(FACTORY / "jobs", job_id)
     worktree = job["worktree"]
     if job["round"] < 1:
         die(f"{job_id} hasn't started a build round")
@@ -388,7 +391,7 @@ def hook():
         content = json.loads(f.readline())["message"]["content"]
     prompt = content if isinstance(content, str) else " ".join(b.get("text", "") for b in content)
     job_id = prompt.split("Job: ", 1)[1].split(".", 1)[0]
-    job = json.loads((FACTORY / "jobs" / job_id / "job.json").read_text())
+    job = jobfiles.load_job(FACTORY / "jobs", job_id)
     code, log, _ = run_checks(job["worktree"])
     if code != 0:
         tail = "\n".join(log.rstrip().splitlines()[-40:])
