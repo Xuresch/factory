@@ -16,6 +16,7 @@ import http.client
 import json
 import os
 import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -59,6 +60,7 @@ class HubCase(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         tmp = Path(self.tmp.name)
         (tmp / "dashboard.html").write_text("<title>dash</title>")
+        (tmp / "job-summary.js").write_text("// summary")
         (tmp / "static").mkdir()
         (tmp / "static" / "index.html").write_text("<h1>overview</h1>")
         (tmp / "static" / "app.js").write_text("1")
@@ -372,7 +374,7 @@ class TestTree(HubCase):
         self.assertEqual(data["config"], "factory hub")
         self.assertEqual(data["projects"], [{"name": "o/r", "missing": False, "jobs": [
             {"id": "001", "stage": "merged", "started": "2026-11-17T10:00:00Z", "ended": None,
-             "cost_usd": 2.0, "cost_by_agent": {"claude": 2.0}}]}])
+             "cost_usd": 2.0, "cost_by_agent": {"claude": 2.0, "codex": 0.0}}]}])
         self.assertEqual(data["outside"], {"status": "scanning"})
 
     def test_subscriptions_aggregate_two_machines(self):
@@ -521,3 +523,82 @@ class TestReadApi(HubCase):
         self.assertEqual(result[0]["intake"]["surfaces"], ["alpha"])
         self.assertEqual(result[0]["slices"][0]["title"], "alpha")
         self.assertEqual(result[0]["cost_breakdown"][0]["model"], "alpha")
+
+FACTORY = Path(__file__).resolve().parent.parent / "factory"
+SUMMARY_FIXTURES = json.loads((FACTORY / "tests" / "job_summary_fixtures.json").read_text())["jobs"]
+# Prints {key: split} for raw job.json documents (the local adapter) and hub summaries (the hub adapter).
+SPLITS_JS = """
+const J = require(process.argv[1]); const input = JSON.parse(require('fs').readFileSync(0, 'utf8'))
+const out = { local: {}, hub: {} }
+for (const d of input.docs) out.local[d.id] = J.fromLocal(d).split
+for (const [repo, jobs] of Object.entries(input.hub)) for (const j of jobs) out.hub[repo + ' ' + j.id] = J.fromHub(j, { repo }).split
+console.log(JSON.stringify(out))
+"""
+
+
+class TestJobSummary(HubCase):
+    """The evidence the pages' job summary (factory/job-summary.js) resolves the Agent split from."""
+
+    def push_fixtures(self, machines=("m1",)):
+        for m in machines:
+            self.ok(push(m, [repo("o/r", [{"id": f["doc"]["id"], "job": f["doc"], "files": {"spec.md": "x"}}
+                                          for f in SUMMARY_FIXTURES])]))
+
+    def test_served_next_to_the_dashboard(self):
+        self.ok(push("m1", [repo("o/r", [entry("001")])]))
+        for path in ("/r/o/r/job-summary.js", "/all/job-summary.js"):
+            status, text, res = self.get(path)
+            self.assertEqual((status, text), (200, "// summary"), path)
+            self.assertIn("javascript", res.getheader("Content-Type"))
+
+    def test_cost_split_is_the_recorded_split(self):
+        self.push_fixtures()
+        jobs = {j["id"]: j for j in self.get_json("/api/repos/o/r/jobs")["jobs"]}
+        for f in SUMMARY_FIXTURES:
+            d = f["doc"]
+            self.assertEqual(jobs[d["id"]]["cost_split"], d.get("cost_by_agent"), d["id"])
+        # an explicit zero stays a zero, an empty split stays empty, none stays none
+        self.assertEqual(jobs["011-zero-split"]["cost_split"], {"claude": 0, "codex": 0})
+        self.assertEqual(jobs["012-empty-split"]["cost_split"], {})
+        self.assertIsNone(jobs["014-total-only"]["cost_split"])
+        detail = self.get_json("/api/repos/o/r/jobs/011-zero-split")
+        self.assertEqual(detail["cost_split"], {"claude": 0, "codex": 0})
+
+    def test_repo_and_period_totals_unchanged(self):
+        # The derived columns, as before cost_split: claude and codex from the split (else the rows),
+        # other the rest of the total above half a cent.
+        self.push_fixtures()
+        jobs = {j["id"]: j["cost_by_agent"] for j in self.get_json("/api/repos/o/r/jobs")["jobs"]}
+        self.assertEqual(jobs["014-total-only"], {"claude": 0.0, "codex": 0.0, "other": 12.0})
+        self.assertEqual(jobs["012-empty-split"], {"claude": 0.0, "codex": 0.0, "other": 4.0})
+        self.assertEqual(jobs["013-missing-split"], {"claude": 0.0, "codex": 4.0, "other": 0.0})
+        ov = self.get_json("/api/overview")
+        self.assertEqual(ov["repos"][0]["cost_usd"], 41.004)
+        self.assertEqual(ov["repos"][0]["cost_by_agent"], {"claude": 7.0, "codex": 12.0, "other": 22.0})
+        subs = {j["id"]: j["cost_by_agent"] for j in self.get_json("/r/o/r/_subscriptions.json")["projects"][0]["jobs"]}
+        self.assertEqual(subs["014-total-only"], {"claude": 0.0, "codex": 0.0})
+        self.assertEqual(subs["010-split-wins"], {"claude": 0.0, "codex": 5.0})
+
+    def test_duplicate_keys_and_job_links(self):
+        self.push_fixtures(("m1", "m2"))
+        one = [j["id"] for j in self.get_json("/api/repos/o/r/jobs")["jobs"]]
+        self.assertEqual(len(one), 2 * len(SUMMARY_FIXTURES))
+        self.assertEqual(len(set(one)), len(one))
+        self.assertIn("m2~014-total-only", one)
+        for j in self.get_json("/api/all/jobs")["jobs"]:
+            self.assertIn(unquote(j["href"].split("#job=")[1]), one, j["href"])
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_both_adapters_give_the_same_split(self):
+        self.push_fixtures(("m1", "m2"))
+        hub = {"o/r": self.get_json("/api/repos/o/r/jobs")["jobs"], "all": self.get_json("/api/all/jobs")["jobs"]}
+        res = subprocess.run(["node", "-e", SPLITS_JS, str(FACTORY / "job-summary.js")], capture_output=True, text=True, check=True,
+                             input=json.dumps({"docs": [f["doc"] for f in SUMMARY_FIXTURES], "hub": hub}))
+        out = json.loads(res.stdout)
+        for f in SUMMARY_FIXTURES:
+            key = f["doc"]["id"]
+            splits = [out["local"][key]] + [s for k, s in out["hub"].items() if k.endswith(key)]
+            self.assertEqual(len(splits), 1 + 4, key)  # local, two machines in o/r and in all
+            for s in splits:
+                for agent, want in f["expect"].items():
+                    self.assertAlmostEqual(s[agent], want, 9, f"{key} {agent}")

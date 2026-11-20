@@ -583,6 +583,7 @@
 
 <div id="tip"></div>
 
+<script src="job-summary.js"></script>
 <script>
 const POLL_MS = 2000
 const LIVE = new Set(['intake', 'spec', 'build', 'gate', 'review', 'approve', 'merging'])
@@ -597,7 +598,6 @@ let jobs = []
 let lastRender = ''
 let lastCosts = ''
 let costSort = { key: 'started', dir: -1 }
-const roundCache = new Map() // "<job>/<n>" -> verdicts of a finished round
 let openJobId = null
 let openPath = null
 let openText = null
@@ -608,38 +608,7 @@ async function fetchText(url) {
   return res.text()
 }
 
-async function fetchFirst(url) {
-  try { return (await fetchText(url)).split('\n')[0].trim() } catch { return null }
-}
-
 // ---- Board ---------------------------------------------------------------
-
-function verdictOf(line) {
-  if (line === null) return 'pending'
-  const m = line.match(/^(?:VERDICT|GATE):\s*(PASS|CHANGES|FAIL)$/)
-  return m ? m[1] : 'invalid'
-}
-
-// A round's verdicts come from its files: the gate first, then each routed reviewer.
-async function roundVerdicts(job, n) {
-  if (hub) {
-    const round = (job.rounds || []).find((r) => r.round === n)
-    return { gate: round?.gate || 'pending', reviews: Object.fromEntries(
-      Object.keys(job.agents?.reviewers || {}).map((lens) => [lens, round?.reviews?.[lens] || 'pending'])) }
-  }
-  const key = `${job.id}/${n}`
-  if (roundCache.has(key)) return roundCache.get(key)
-  const dir = `jobs/${job.id}/round-${n}/`
-  const v = { gate: verdictOf(await fetchFirst(dir + 'checks.md')), reviews: {} }
-  if (v.gate === 'PASS') {
-    await Promise.all(Object.keys(job.agents?.reviewers || {}).map(async (r) => {
-      v.reviews[r] = verdictOf(await fetchFirst(`${dir}review-${r}.md`))
-    }))
-  }
-  const settled = v.gate === 'FAIL' || (v.gate === 'PASS' && Object.values(v.reviews).every((x) => x === 'PASS' || x === 'CHANGES'))
-  if (settled && n < job.round) roundCache.set(key, v)
-  return v
-}
 
 function chip(label, v, waiting, title, extra = '') {
   const cls = ['PASS', 'CHANGES', 'FAIL'].includes(v) ? v : v === 'pending' ? (waiting ? 'wait' : '') : 'bad'
@@ -707,7 +676,7 @@ function card(job, rounds) {
   const risk = job.intake?.risk
   const meta = [
     risk ? `<span class="risk-${esc(risk)}">${esc(risk)}</span>` : '',
-    `<span>${money(job.cost_usd)}</span>${splitBar(partsOf(job))}`,
+    `<span>${money(job.cost_usd)}</span>${splitBar(job.split)}`,
     `<span>${elapsed(job)}</span>`,
   ].join('')
   const todo = todoOf(job)
@@ -756,7 +725,7 @@ async function render() {
   }
   const running = jobs.filter((j) => LIVE.has(j.stage)).length
   const cost = jobs.reduce((sum, j) => sum + Number(j.cost_usd), 0)
-  const part = (a) => jobs.reduce((sum, j) => sum + Number((j.cost_by_agent || {})[a] || 0), 0)
+  const part = (a) => jobs.reduce((sum, j) => sum + j.split[a], 0)
   $('totals').textContent = `${running} running · ${money(cost)} API-equivalent`
     + ` (claude ${money(part('claude'))} · codex ${money(part('codex'))})`
 }
@@ -792,43 +761,14 @@ async function poll() {
   if (!window.FactoryNav) setFavicon(jobs.filter((j) => ATTN.has(j.stage)).length)
 }
 
-// factory/bin/job writes each jobs/<id>/job.json.
-async function loadJobs() {
-  if (hub) return (await fetchJSON(`${apiJobs()}`)).jobs
-  let listing
-  try { listing = await fetchText('jobs/') } catch { return [] }
-  const doc = new DOMParser().parseFromString(listing, 'text/html')
-  const ids = [...doc.querySelectorAll('a')]
-    .map((a) => decodeURIComponent(a.getAttribute('href')))
-    .filter((h) => h.endsWith('/'))
-    .map((h) => h.slice(0, -1))
-    // _features/ and other _-prefixed folders hold factory state, not jobs
-    .filter((id) => !id.startsWith('_'))
-    .sort()
-  return Promise.all(ids.map(async (id) => JSON.parse(await fetchText(`jobs/${id}/job.json`))))
-}
-
-function apiJobs() {
-  return hub.repo === 'all' ? '/api/all/jobs' : `/api/repos/${hub.repo.split('/').map(encodeURIComponent).join('/')}/jobs`
-}
-
-async function fetchJSON(url) {
-  return JSON.parse(await fetchText(url))
-}
+// The job summaries (factory/job-summary.js): read from jobs/ locally, from the hub's API under the hub.
+let source = null
+const jobSource = () => source || (source = hub
+  ? JobSummary.hubAdapter({ fetchText, repo: hub.repo })
+  : JobSummary.localAdapter({ fetchText }))
+const loadJobs = () => jobSource().list()
 
 // ---- Drawer --------------------------------------------------------------
-
-// python -m http.server serves an HTML index for directories; read its links.
-async function listFiles(dir) {
-  const doc = new DOMParser().parseFromString(await fetchText(dir), 'text/html')
-  const hrefs = [...doc.querySelectorAll('a')].map((a) => decodeURIComponent(a.getAttribute('href')))
-  const out = []
-  for (const h of hrefs) {
-    if (h.endsWith('/')) out.push(...(await listFiles(dir + h)).map((f) => h + f))
-    else if (h.endsWith('.md')) out.push(h)
-  }
-  return out
-}
 
 const ORDER = ['issue.md', 'intake.md', 'spec.md', 'build.md', 'decision.md', 'rejection.md']
 const ROUND_ORDER = ['checks', 'diff', 'review-code', 'review-security', 'review-ux', 'review-ui', 'merge-checks']
@@ -854,27 +794,28 @@ function tone(first) {
   return null
 }
 
-const firstLines = new Map()
-
+// One drawer refresh at a time decides what the drawer shows: a reply for an older refresh, or for
+// a job no longer open, is dropped.
+let drawerSeq = 0
 async function refreshDrawer() {
   const id = openJobId
-  let job = jobs.find((j) => j.id === id)
-  if (!job) return
-  if (hub) {
-    job = await fetchJSON(`${apiJobs()}/${encodeURIComponent(id)}`)
-    if (openJobId !== id) return
-  }
+  const seq = ++drawerSeq
+  const stale = () => seq !== drawerSeq || openJobId !== id
+  const listed = jobs.find((j) => j.id === id)
+  if (!listed) return
+  const detail = await jobSource().detail(listed)
+  if (stale()) return
+  const job = detail.job
   const tail = `${job.stage}${job.round ? ` · round ${job.round}` : ''} · ${money(job.cost_usd)} · ${elapsed(job)}`
-  $('d-ref').hidden = !hub
-  if (hub) $('d-ref').innerHTML = `${repoChip(job, true)}<span class="num">${esc(ref(job))}</span>`
-  $('d-num').textContent = hub ? tail : `${job.id} · ${tail}`
-  $('d-split').innerHTML = splitBar(partsOf(job), 'dsplit')
+  $('d-ref').hidden = !job.repo
+  if (job.repo) $('d-ref').innerHTML = `${repoChip(job, true)}<span class="num">${esc(ref(job))}</span>`
+  $('d-num').textContent = job.repo ? tail : `${job.id} · ${tail}`
+  $('d-split').innerHTML = splitBar(job.split, 'dsplit')
   $('d-title').textContent = job.title
   $('d-links').innerHTML = links(job)
 
-  const base = `jobs/${job.id}/`
   // "costs" is not a file: it renders job.cost_breakdown. Finished jobs open on it.
-  const jobFiles = sortFiles(hub ? (job.files || []).filter((f) => f.endsWith('.md')) : await listFiles(base))
+  const jobFiles = sortFiles(detail.files)
   const files = [COSTS, ...(isLocal(job) ? [TICKET] : []), ...jobFiles]
   if (!openPath || !files.includes(openPath)) {
     openPath = DONE.has(job.stage) || !jobFiles.length ? COSTS : jobFiles[0]
@@ -887,12 +828,9 @@ async function refreshDrawer() {
     text = await fetchText(job.issue_url).catch(() =>
       `Can't load ${job.issue_url}.\n\nStart the dashboard with \`factory/bin/dashboard\`: plain \`python3 -m http.server\` serves only factory/, not the tickets in .scratch/.`)
   } else if (openPath) {
-    text = await fetchText(base + openPath)
-    firstLines.set(base + openPath, text.split('\n')[0].trim())
+    text = await jobSource().read(job, openPath)
   }
-  if (!hub) await Promise.all(files.filter((f) => f !== COSTS && f !== TICKET && !firstLines.has(base + f)).map(async (f) => {
-    firstLines.set(base + f, (await fetchText(base + f)).split('\n')[0].trim())
-  }))
+  if (stale()) return
 
   let group = null
   $('d-files').innerHTML = files.map((f) => {
@@ -904,10 +842,7 @@ async function refreshDrawer() {
       : f === TICKET ? `ticket · ${esc(job.issue)}` : round
       ? `<span class="rn">R${round[1]} </span>${esc(f.split('/')[1].replace(/^review-|\.md$/g, ''))}`
       : esc(f.replace(/\.md$/, ''))
-    const match = f.match(/^round-(\d+)\/(checks|review-(.+))\.md$/)
-    const roundData = match && (job.rounds || []).find((r) => r.round === Number(match[1]))
-    const verdict = match && (match[2] === 'checks' ? roundData?.gate : roundData?.reviews?.[match[3]])
-    const t = tone(firstLines.get(base + f) || (verdict ? `${match[2] === 'checks' ? 'GATE' : 'VERDICT'}: ${verdict}` : ''))
+    const t = f === COSTS || f === TICKET ? null : tone(detail.firstLine(f))
     return `${head}<button class="file ${f === openPath ? 'on' : ''}" data-file="${esc(f)}">
       <span class="v ${t || ''}"></span>${name}</button>`
   }).join('') || '<div class="empty">No files yet.</div>'
@@ -949,8 +884,7 @@ const dur = (ms) => (ms > 0 && ms < 60000 ? '<1m' : ms > 0 ? mins(ms) : '–')
 // The job's wall clock as a waterfall, from job.history (factory/bin/job advance): one row per stage,
 // bar offset = start, length = duration. Time spent waiting on a human is hatched, work wears its agent's colour.
 function timelineTable(job) {
-  const summary = hub && job.work_s != null && job.wait_s != null
-    ? `<p class="wf-tot"><b>${mins(job.work_s * 1000)}</b> agents working · <b>${mins(job.wait_s * 1000)}</b> waiting on you</p>` : ''
+  const summary = `<p class="wf-tot"><b>${mins(job.times.work)}</b> agents working · <b>${mins(job.times.wait)}</b> waiting on you · ${mins(job.times.total)} total</p>`
   const h = job.history || []
   if (!h.length) return summary + '<p class="note">No timeline: this job started before the factory recorded one.</p>'
   const t0 = Date.parse(h[0].at)
@@ -979,7 +913,6 @@ function timelineTable(job) {
   const part = (k, label) => (by[k] > 0 ? `<span>${k === 'wait' ? '<i class="sw wait"></i>' : sw(k)}${label} ${mins(by[k])}</span>` : '')
   return `${summary}<div class="wf">
     <div class="wf-sum" role="img" aria-label="${esc(`Agents working ${mins(work)}, waiting on you ${mins(by.wait)}, total ${mins(total)}`)}">${['claude', 'codex', 'other', 'wait'].map(seg).join('')}</div>
-    ${summary ? '' : `<p class="wf-tot"><b>${mins(work)}</b> agents working · <b>${mins(by.wait)}</b> waiting on you · ${mins(total)} total</p>`}
     <div class="legend">${part('claude', 'claude')}${part('codex', 'codex')}${part('other', 'checks and merge')}${part('wait', 'waiting on you (paused, needs-human, needs-info)')}</div>
     ${rows}
     <div class="wf-axis"><span></span><div><span>start</span><span>${mins(total / 2)}</span><span>${mins(total)}</span></div><span></span></div></div>`
@@ -989,7 +922,7 @@ function timelineTable(job) {
 function costTable(job) {
   const rows = job.cost_breakdown || []
   const total = rows.reduce((sum, r) => sum + Number(r.cost_usd), 0)
-  const parts = rows.length ? rows.reduce((p, r) => { p[agentKey(r.agent)] += Number(r.cost_usd); return p }, { claude: 0, codex: 0, other: 0 }) : partsOf(job)
+  const parts = job.split
   const share = (c) => (total ? Math.round((100 * c) / total) : 0)
   const body = rows.map((r) => `<tr>
       <td>${esc(r.role)}</td><td class="mdl" title="${esc(`${r.agent} · ${r.model || '?'}`)}">${sw(agentKey(r.agent))}${esc(shortModel(r.model))}</td>
@@ -1009,7 +942,7 @@ function costTable(job) {
     ${changes ? `<h2>Builder changes</h2><ul>${changes}</ul>` : ''}
     ${followUps ? `<h2>Follow-ups filed</h2><ul>${followUps}</ul>` : ''}
     <h2>Costs</h2>
-    <div class="cost-head"><b>${money(total || job.cost_usd)}</b><span>API-equivalent</span></div>
+    <div class="cost-head"><b>${money(job.cost_usd)}</b><span>API-equivalent</span></div>
     ${splitBar(parts, 'big')}
     <p class="cost-leg">${AGENT_KEYS.filter((k) => parts[k] > 0.004).map((k) => `<span>${sw(k)}${k} ${money(parts[k])} · ${pct(parts[k], pt)}%</span>`).join('')}</p>
     ${rows.length ? `<table class="costs">
@@ -1032,19 +965,6 @@ const agentKey = (a) => (a === 'claude' || a === 'codex' ? a : 'other')
 const bar = (share, agent) => `<span class="bar" style="--w:${share}%${agent ? `;--c:var(--${agentKey(agent)})` : ''}"></span>${share}%`
 const shortModel = (m) => String(m || '?').replace(/^claude-/, '').replace(/-\d+(-\d+)*$/, '')
 
-// Time a job spent working and waiting on a human, from job.history.
-function times(job) {
-  if (hub && job.work_s != null && job.wait_s != null) return { total: (job.duration_s || 0) * 1000, work: job.work_s * 1000, wait: job.wait_s * 1000 }
-  const h = job.history || []
-  const end = job.ended ? Date.parse(job.ended) : Date.now()
-  let wait = 0
-  h.forEach((e, i) => {
-    const to = i + 1 < h.length ? Date.parse(h[i + 1].at) : (TERMINAL_STAGES.has(e.stage) ? Date.parse(e.at) : end)
-    if (WAIT.has(e.stage)) wait += to - Date.parse(e.at)
-  })
-  const total = job.started ? end - Date.parse(job.started) : 0
-  return { total, wait, work: Math.max(0, total - wait) }
-}
 const TERMINAL_STAGES = new Set(['merged', 'rejected'])
 
 function group(rows, keyOf) {
@@ -1073,9 +993,9 @@ function costsTables() {
   if (!jobs.length) return '<p class="note">No jobs yet.</p>'
   const rows = jobs.flatMap((j) => (j.cost_breakdown || []).map((r) => ({ ...r, job: j.id })))
   const total = jobs.reduce((s, j) => s + Number(j.cost_usd || 0), 0)
-  const agent = (a) => jobs.reduce((s, j) => s + Number((j.cost_by_agent || {})[a] || 0), 0)
+  const agent = (a) => jobs.reduce((s, j) => s + j.split[a], 0)
   const merged = jobs.filter((j) => j.stage === 'merged')
-  const t = new Map(jobs.map((j) => [j.id, times(j)]))
+  const t = new Map(jobs.map((j) => [j.id, j.times]))
   const avg = (list, f) => (list.length ? list.reduce((s, j) => s + f(j), 0) / list.length : 0)
   const counts = { merged: merged.length, rejected: jobs.filter((j) => j.stage === 'rejected').length }
   counts.open = jobs.length - counts.merged - counts.rejected
@@ -1117,8 +1037,8 @@ function costsTables() {
     ['risk', 'risk · size', (j) => `${(j.intake || {}).risk || '?'} · ${(j.intake || {}).size || '?'}`],
     ['round', 'rounds', (j) => j.round], ['work', 'working', (j) => t.get(j.id).work],
     ['wait', 'waiting', (j) => t.get(j.id).wait],
-    ['claude', 'claude', (j) => Number((j.cost_by_agent || {}).claude || 0)],
-    ['codex', 'codex', (j) => Number((j.cost_by_agent || {}).codex || 0)],
+    ['claude', 'claude', (j) => j.split.claude],
+    ['codex', 'codex', (j) => j.split.codex],
     ['cost', 'total', (j) => Number(j.cost_usd || 0)], ['started', 'started', (j) => j.started || ''],
   ]
   const sortCol = cols.find((c) => c[0] === costSort.key) || cols[cols.length - 1]
@@ -1134,7 +1054,7 @@ function costsTables() {
       <td class="${stageCls(j.stage)}">${esc(j.stage)}${j.spec_skipped ? ' · no spec' : ''}</td>
       <td>${esc(cols[2][2](j))}</td><td class="n">${j.round}</td>
       <td class="n">${tj.work ? mins(tj.work) : '–'}</td><td class="n">${tj.wait ? mins(tj.wait) : '–'}</td>
-      <td class="n">${money((j.cost_by_agent || {}).claude)}</td><td class="n">${money((j.cost_by_agent || {}).codex)}</td>
+      <td class="n">${money(j.split.claude)}</td><td class="n">${money(j.split.codex)}</td>
       <td class="n">${money(j.cost_usd)}</td>
       <td class="n">${j.started ? esc(new Date(j.started).toLocaleDateString([], { day: '2-digit', month: '2-digit' })) : '–'}</td>
       <td>${esc(models(j))}</td></tr>`
@@ -1326,18 +1246,9 @@ for (const k of ['range', 'per', 'shade']) { const v = new URLSearchParams(locat
 const feature = (j) => (j.base && !/^(main|master)$/.test(j.base) ? j.base : null)
 const numOf = (j) => String(j.id).split('~').pop().split('-')[0]
 const ref = (j) => (j.issue ? `#${j.issue}` : `#${numOf(j)}`)
-// Under /all/ a job id reads <repo>~<id>; a repo's own page needs no repo chip.
-const repoOf = (j, forced = false) => {
-  if (!hub) return null
-  if (hub.repo !== 'all') return forced ? hub.repo : null
-  if (j.repo) return j.repo
-  const p = String(j.id).split('~')
-  if (p.length < 2) return null
-  const known = (window.FactoryNav?.data?.repos || []).map((r) => r.repo).filter((r) => r.split('/').pop() === p[0])
-  return known.length === 1 ? known[0] : p[0]
-}
+// A list shows a job's repo only when the view spans repos (repoLabel); the drawer always names it (repo).
 function repoChip(j, forced = false) {
-  const r = repoOf(j, forced)
+  const r = forced ? j.repo : j.repoLabel
   if (!r) return ''
   const [o, ...n] = r.split('/')
   return `<span class="rchip" title="${esc(r)}">${n.length ? `${forced ? `<span class="dim">${esc(o)}/</span>` : ''}<b>${esc(n.join('/'))}</b>` : `<b>${esc(o)}</b>`}</span>`
@@ -1390,10 +1301,10 @@ function doneRow(j) {
   const risk = j.intake?.risk || ''
   return `<div class="drow ${esc(j.stage)}" data-job="${esc(j.id)}" tabindex="0">
     <span class="sd ${esc(j.stage)} ${ciFail ? 'ci-fail' : ''}" data-tip="${esc(ciFail ? mainCiNote(j) : j.stage)}"></span><span class="num">${esc(numOf(j))}</span>
-    <span class="dt" title="${esc(ciFail ? `${j.title} · ${mainCiNote(j)}` : j.title)}">${hub && hub.repo === 'all' ? repoChip(j) + ' ' : ''}${j.stage === 'rejected' ? '<span class="stg">rejected</span>' : ''}${ciFail ? '<span class="stg ci-fail">main CI failed</span>' : ''}${esc(j.title)}</span>
+    <span class="dt" title="${esc(ciFail ? `${j.title} · ${mainCiNote(j)}` : j.title)}">${j.repoLabel ? repoChip(j) + ' ' : ''}${j.stage === 'rejected' ? '<span class="stg">rejected</span>' : ''}${ciFail ? '<span class="stg ci-fail">main CI failed</span>' : ''}${esc(j.title)}</span>
     ${f ? `<span class="tag" title="${esc(f)}">${esc(f.replace(/^feature\//, ''))}</span>` : '<span class="tag notag"></span>'}
     ${roundDots(j)}<span class="risk-${esc(risk)}">${esc(risk)}</span>
-    <span class="n cell">${money(j.cost_usd)}${splitBar(partsOf(j))}</span><span class="n">${elapsed(j)}</span></div>`
+    <span class="n cell">${money(j.cost_usd)}${splitBar(j.split)}</span><span class="n">${elapsed(j)}</span></div>`
 }
 
 function doneSection() {
@@ -1430,8 +1341,9 @@ function doneSection() {
     ${all.length ? legend : ''}${body || '<div class="calm">Nothing matches.</div>'}${more}`
 }
 
-async function currentRound(j) {
-  return j.round ? [roundRow(j, j.round, await roundVerdicts(j, j.round))] : []
+// The current round's Verdicts, from the summary.
+function currentRound(j) {
+  return j.round ? [roundRow(j, j.round, JobSummary.roundOf(j, j.round))] : []
 }
 
 async function boardPage() {
@@ -1467,7 +1379,7 @@ async function boardPage() {
       <div><div class="segs">${segs}</div>
         <div class="pnow"><b>${esc(j.stage)}</b>${j.round ? ` · round ${j.round}` : ''}${sliceNote} · for ${since(j)} · ${esc(who(j))}</div></div>
       <div class="pside"><div class="rounds">${(await currentRound(j)).join('')}</div>
-        <div class="meta">${risk ? `<span class="risk-${esc(risk)}">${esc(risk)}</span>` : ''}<span>${money(j.cost_usd)}</span>${splitBar(partsOf(j))}<span>${elapsed(j)} total</span></div></div>
+        <div class="meta">${risk ? `<span class="risk-${esc(risk)}">${esc(risk)}</span>` : ''}<span>${money(j.cost_usd)}</span>${splitBar(j.split)}<span>${elapsed(j)} total</span></div></div>
     </article>`
   }))
   const liveHtml = `<section class="b-sec"><div class="sec-h"><h2>Running</h2><span class="count">${live.length}</span></div>
@@ -1482,13 +1394,7 @@ async function boardPage() {
 const AGENT_KEYS = ['claude', 'codex', 'other']
 const sw = (k, extra = '') => `<i class="sw ${k} ${extra}"></i>`
 
-// A job's money by agent. Older jobs have no cost_by_agent: all of it was Claude's.
-function partsOf(j) {
-  const total = Number(j.cost_usd || 0), by = j.cost_by_agent
-  if (!by) return { claude: total, codex: 0, other: 0 }
-  const other = Object.entries(by).filter(([k]) => k !== 'claude' && k !== 'codex').reduce((s, [, v]) => s + Number(v || 0), 0)
-  return { claude: Number(by.claude || 0), codex: Number(by.codex || 0), other }
-}
+// A job's money by agent is its summary's Agent split (job.split, factory/job-summary.js).
 const addParts = (list) => list.reduce((a, p) => ({ claude: a.claude + p.claude, codex: a.codex + p.codex, other: a.other + p.other }), { claude: 0, codex: 0, other: 0 })
 const partsTotal = (p) => p.claude + p.codex + p.other
 const splitText = (p) => AGENT_KEYS.filter((k) => p[k] > 0.004).map((k) => `${k} ${money(p[k])} (${pct(p[k], partsTotal(p))}%)`).join(' · ')
@@ -1711,10 +1617,16 @@ function bucketList(js, per, byRole, from, to) {
   }
   return [...buckets.values()].map((b) => {
     const acc = { claude: [0, 0, 0, 0], codex: [0, 0, 0, 0], other: [0, 0, 0, 0] }
+    // Each agent's part of the Agent split, shaded by the roles of its priced rows (none: the second shade),
+    // so both shadings add up to the same agent totals.
     for (const j of b.jobs) {
-      const rows = j.cost_breakdown || []
-      if (rows.length) for (const r of rows) acc[agentKey(r.agent)][ROLE_STEP[roleGroup(r.role)]] += Number(r.cost_usd || 0)
-      else { const p = partsOf(j); for (const k of AGENT_KEYS) acc[k][1] += p[k] }
+      const roles = { claude: [0, 0, 0, 0], codex: [0, 0, 0, 0], other: [0, 0, 0, 0] }
+      for (const r of j.cost_breakdown || []) roles[agentKey(r.agent)][ROLE_STEP[roleGroup(r.role)]] += Number(r.cost_usd || 0)
+      for (const k of AGENT_KEYS) {
+        const priced = roles[k].reduce((a, c) => a + c, 0)
+        if (priced > 0) roles[k].forEach((v, s) => { acc[k][s] += (j.split[k] * v) / priced })
+        else acc[k][1] += j.split[k]
+      }
     }
     const segs = []
     for (const k of AGENT_KEYS) {
@@ -1753,7 +1665,7 @@ function agentLegend(byRole, hasOther) {
 function costsFor(jobs, allJobs) {
   const rows = jobs.flatMap((j) => (j.cost_breakdown || []).map((r) => ({ ...r, job: j.id })))
   const total = jobs.reduce((s, j) => s + Number(j.cost_usd || 0), 0)
-  const parts = addParts(jobs.map(partsOf))
+  const parts = addParts(jobs.map((j) => j.split))
   const merged = jobs.filter((j) => j.stage === 'merged').sort((a, b) => String(a.ended).localeCompare(String(b.ended)))
   const mc = merged.map((j) => Number(j.cost_usd || 0))
   const rework = jobs.filter((j) => j.round > 1)
@@ -1761,7 +1673,7 @@ function costsFor(jobs, allJobs) {
   const saving = rows.reduce((s, r) => s + cacheSaving(r), 0)
   const inTok = rows.reduce((s, r) => s + Number(r.input_tokens || 0), 0)
   const cTok = rows.reduce((s, r) => s + Number(r.cached_tokens || 0), 0)
-  const t = new Map(jobs.map((j) => [j.id, times(j)]))
+  const t = new Map(jobs.map((j) => [j.id, j.times]))
   const wait = jobs.reduce((s, j) => s + t.get(j.id).wait, 0)
   const top = [...jobs].sort((a, b) => b.cost_usd - a.cost_usd)[0]
 
@@ -1825,7 +1737,7 @@ function costsFor(jobs, allJobs) {
   const path = roll.map((v, i) => `${i ? 'L' : 'M'}${xs(i).toFixed(1)},${F2.y(v).toFixed(1)}`).join('')
   const dots = merged.map((j, i) => `<circle class="pt" cx="${xs(i)}" cy="${F2.y(mc[i])}" r="${rad}" stroke-width="1.5"/>`).join('')
   const hits = merged.map((j, i) => `<circle class="hit" cx="${xs(i)}" cy="${F2.y(mc[i])}" r="${Math.max(rad + 5, 9)}" data-job="${esc(j.id)}" role="button" aria-label="${esc(`${numOf(j)}: ${money(mc[i])}`)}"
-      data-tip="${esc(`${numOf(j)} · ${j.title}\n${money(mc[i])} · rolling mean ${money(roll[i])}\n${tipAgents(partsOf(j))}`)}"${mc.length <= 40 ? ' tabindex="0"' : ''}/>`).join('')
+      data-tip="${esc(`${numOf(j)} · ${j.title}\n${money(mc[i])} · rolling mean ${money(roll[i])}\n${tipAgents(j.split)}`)}"${mc.length <= 40 ? ' tabindex="0"' : ''}/>`).join('')
   const last = mc.length - 1
   const chart2 = !mc.length ? '<div class="trend"><h2>Is it getting cheaper?</h2><p class="sub">No merged jobs in this range yet.</p></div>' : `<div class="trend"><h2>Is it getting cheaper?</h2><p class="sub">Dots are merged jobs in the order they finished; the line is the mean of the last ${win}.</p>
     ${F2.open}${F2.grid}${dots}<path d="${path}" fill="none" stroke="var(--text)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
@@ -1955,8 +1867,8 @@ async function loadPlan() {
   } catch (err) { plan.data = null; plan.err = err.message }
 }
 
-// Older jobs have no cost_by_agent: all their cost was Claude's.
-const agentCost = (j, a) => Number(j.cost_by_agent ? j.cost_by_agent[a] || 0 : a === 'claude' ? j.cost_usd || 0 : 0)
+// A job's part of the month by agent: the same Agent split as every other view.
+const agentCost = (j, a) => JobSummary.agentSplit({ total: j.cost_usd, split: j.cost_by_agent, rows: j.cost_breakdown })[a]
 const monthOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
 
 // The directory an outside session ran in: "neo:/home/me/code/app/.claude/worktrees/agent-1" -> machine "neo", "…/worktrees/agent-1".

@@ -1704,6 +1704,12 @@ print(json.dumps(d.subscriptions()))'
   unset XDG_CONFIG_HOME
 }
 
+t_job_summary() {  # factory/job-summary.js and the dashboard's use of it, under node
+  if ! command -v node >/dev/null; then echo "    FAIL: needs node"; return 1; fi
+  local out; out=$(node --test "$FACTORY_SRC/tests/job_summary.test.js" 2>&1)
+  check "node --test factory/tests/job_summary.test.js" "$out" "ℹ fail 0"
+}
+
 t_dashboard_outside() {
   new_repo dashout; commit_all
   local h="$TMP_ROOT/dashout/home"; local cl="$h/.claude/projects/-x" cx="$h/.codex/sessions/2026/11/14"

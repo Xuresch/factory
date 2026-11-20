@@ -383,6 +383,7 @@
 </div>
 
 <script src="/static/nav.js"></script>
+<script src="/all/job-summary.js"></script>
 <script>
 const LIVE = new Set(['intake', 'spec', 'build', 'gate', 'review', 'approve', 'merging'])
 const ATTN = new Set(['needs-human', 'paused', 'needs-info'])
@@ -485,8 +486,10 @@ const T = (iso, k = 'ago', cls = '') => `<span ${cls ? `class="${cls}" data-c="$
 const AG = [['claude', 'c'], ['codex', 'x'], ['other', 'o']]
 const agentCls = (a) => (a === 'claude' ? 'c' : a === 'codex' ? 'x' : 'o')
 const sw = (a, extra = '') => `<span class="sw ${agentCls(a)}${extra}" aria-hidden="true"></span>`
-// A job or repo without a split is all "other" (the hub does the same).
+// A repo or day without a split is all "other" (the hub does the same).
 const byOf = (by, total) => (by && Object.keys(by).length ? by : { other: Number(total) || 0 })
+// A job's Agent split, the same as the dashboard's (factory/job-summary.js).
+const jobSplit = (j) => JobSummary.fromHub(j).split
 function splitText(by, pct) {
   const sum = AG.reduce((s, [a]) => s + (Number(by[a]) || 0), 0)
   return AG.filter(([a]) => Number(by[a]) >= 0.005)
@@ -558,7 +561,7 @@ function queueRow(e) {
     <div class="st">${stage(j.stage)}</div>
     <div class="main"><div class="top">${repoChip(e.repo)}<span class="num">${esc(ref(e))}</span><p class="feature" title="${esc(j.title)}">${esc(j.title)}</p></div>
       <p class="todo">${todoOf(j)}</p>
-      <div class="meta"><span>${esc(j.stage)}${j.round ? ` · round ${esc(j.round)}` : ''}</span><span>${money(j.cost_usd)}</span>${split(byOf(j.cost_by_agent, j.cost_usd))}</div>
+      <div class="meta"><span>${esc(j.stage)}${j.round ? ` · round ${esc(j.round)}` : ''}</span><span>${money(j.cost_usd)}</span>${split(jobSplit(j))}</div>
       ${roundsOf(e)}</div>
     <div class="wait">${T(lastAt(j), 'wait', 'wt')}<small>waiting</small></div>
     <div class="acts"><a class="btn primary stretch" href="${url(e.href)}">Open job →</a>${pr}${issue}</div></article>`
@@ -589,7 +592,7 @@ function liveRow(e) {
       <p class="feature"><a class="stretch" href="${url(e.href)}">${esc(j.title)}</a></p><div class="where">on ${esc(e.machine)}</div></div>
     <div><div class="segs">${segs}</div>
       <div class="pnow"><b>${esc(j.stage)}</b>${j.round ? ` · R${esc(j.round)}` : ''}${sliceNote} · for ${T(lastAt(j), 'dur')} · ${who(j)}</div></div>
-    <div class="pside">${roundsOf(e)}<div class="mny">${money(j.cost_usd)}${split(byOf(j.cost_by_agent, j.cost_usd), 'mid')}</div>
+    <div class="pside">${roundsOf(e)}<div class="mny">${money(j.cost_usd)}${split(jobSplit(j), 'mid')}</div>
       <div class="meta">${risk ? `<span class="risk-${esc(risk)}">${esc(risk)} risk</span>` : ''}<span>${T(j.started, 'dur')} total</span></div></div>
   </article>`
 }
@@ -891,7 +894,7 @@ function render() {
     ${recent.length ? `<div class="rec-h${filter ? ' norepo' : ''}" aria-hidden="true"><span></span>${filter ? '' : '<span>repo</span>'}<span>job</span><span>cost</span><span>took</span><span>ended</span></div>` : ''}
     ${recent.map((e) => `<div class="rec box ${esc(e.job.stage)}${filter ? ' norepo' : ''}"><span class="sdot s-${esc(e.job.stage)}"></span>${filter ? '' : repoChip(e.repo)}
       <span class="tt" title="${esc(e.job.title)}"><a class="stretch" href="${url(e.href)}">${esc(e.job.title)}</a>${e.job.stage === 'rejected' ? stage('rejected') : ''}</span>
-      <span class="cc">${split(byOf(e.job.cost_by_agent, e.job.cost_usd))}<span>${money(e.job.cost_usd)}</span></span>
+      <span class="cc">${split(jobSplit(e.job))}<span>${money(e.job.cost_usd)}</span></span>
       <span class="m">${e.job.ended ? span(e.job.started, e.job.ended) : '–'}</span>
       ${T(e.job.ended, 'ago', 'n')}</div>`).join('') || '<div class="calm">Nothing finished yet.</div>'}</div>`
 

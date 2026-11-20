@@ -71,7 +71,9 @@ factory/bin/update
 factory/agents/reviewer-feature.md
 factory/agents/retro.md
 factory/tests/run.sh
+factory/tests/job_summary.test.js
 factory/dashboard.html
+factory/job-summary.js
 ```
 
 ```bash

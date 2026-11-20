@@ -1,0 +1,178 @@
+{
+  "about": "Jobs whose Agent split factory/job-summary.js resolves; run through the local adapter (factory/tests/job_summary.test.js) and the hub adapter (hub/test_server.py). expect: {claude, codex, other}.",
+  "jobs": [
+    {
+      "doc": {
+        "id": "010-split-wins",
+        "title": "split wins",
+        "stage": "merged",
+        "started": "2026-11-15T10:00:00Z",
+        "ended": "2026-11-15T11:00:00Z",
+        "round": 1,
+        "cost_usd": 5,
+        "cost_by_agent": {
+          "claude": 0,
+          "codex": 5
+        },
+        "cost_breakdown": [
+          {
+            "role": "builder",
+            "agent": "claude",
+            "model": "claude-opus-5-5",
+            "sessions": 1,
+            "cost_usd": 5
+          }
+        ]
+      },
+      "expect": {
+        "claude": 0,
+        "codex": 5,
+        "other": 0
+      }
+    },
+    {
+      "doc": {
+        "id": "011-zero-split",
+        "title": "explicit zeroes",
+        "stage": "merged",
+        "started": "2026-11-15T12:00:00Z",
+        "ended": "2026-11-15T13:00:00Z",
+        "round": 1,
+        "cost_usd": 3,
+        "cost_by_agent": {
+          "claude": 0,
+          "codex": 0
+        },
+        "cost_breakdown": [
+          {
+            "role": "builder",
+            "agent": "claude",
+            "model": "claude-opus-5-5",
+            "sessions": 1,
+            "cost_usd": 3
+          }
+        ]
+      },
+      "expect": {
+        "claude": 0,
+        "codex": 0,
+        "other": 3
+      }
+    },
+    {
+      "doc": {
+        "id": "012-empty-split",
+        "title": "empty split",
+        "stage": "merged",
+        "started": "2026-11-16T10:00:00Z",
+        "ended": "2026-11-16T11:00:00Z",
+        "round": 1,
+        "cost_usd": 4,
+        "cost_by_agent": {},
+        "cost_breakdown": [
+          {
+            "role": "builder",
+            "agent": "claude",
+            "model": "claude-opus-5-5",
+            "sessions": 1,
+            "cost_usd": 1
+          },
+          {
+            "role": "reviewer-code",
+            "agent": "codex",
+            "model": "gpt-6.2-sol",
+            "sessions": 1,
+            "cost_usd": 3
+          }
+        ]
+      },
+      "expect": {
+        "claude": 1,
+        "codex": 3,
+        "other": 0
+      }
+    },
+    {
+      "doc": {
+        "id": "013-missing-split",
+        "title": "missing split",
+        "stage": "merged",
+        "started": "2026-11-16T12:00:00Z",
+        "ended": "2026-11-16T13:00:00Z",
+        "round": 1,
+        "cost_usd": 4,
+        "cost_breakdown": [
+          {
+            "role": "builder",
+            "agent": "codex",
+            "model": "gpt-6.2-sol",
+            "sessions": 1,
+            "cost_usd": 4
+          }
+        ]
+      },
+      "expect": {
+        "claude": 0,
+        "codex": 4,
+        "other": 0
+      }
+    },
+    {
+      "doc": {
+        "id": "014-total-only",
+        "title": "total only",
+        "stage": "merged",
+        "started": "2026-11-01T10:00:00Z",
+        "ended": "2026-11-01T11:00:00Z",
+        "round": 1,
+        "cost_usd": 12
+      },
+      "expect": {
+        "claude": 12,
+        "codex": 0,
+        "other": 0
+      }
+    },
+    {
+      "doc": {
+        "id": "015-unknown-agent",
+        "title": "unknown agent",
+        "stage": "merged",
+        "started": "2026-11-17T10:00:00Z",
+        "ended": "2026-11-17T11:00:00Z",
+        "round": 1,
+        "cost_usd": 6,
+        "cost_by_agent": {
+          "claude": 2,
+          "gemini": 3,
+          "codex": 1
+        }
+      },
+      "expect": {
+        "claude": 2,
+        "codex": 1,
+        "other": 3
+      }
+    },
+    {
+      "doc": {
+        "id": "016-residue",
+        "title": "residue",
+        "stage": "merged",
+        "started": "2026-11-17T12:00:00Z",
+        "ended": "2026-11-17T13:00:00Z",
+        "round": 1,
+        "cost_usd": 7.004,
+        "cost_by_agent": {
+          "claude": 5,
+          "codex": 2
+        }
+      },
+      "expect": {
+        "claude": 5,
+        "codex": 2,
+        "other": 0
+      }
+    }
+  ]
+}
