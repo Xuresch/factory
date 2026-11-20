@@ -47,8 +47,9 @@ moving from job.json to the API changes little.
 
 `cost_breakdown` is job_costs by seq (a handful of rows per job; the costs pages
 aggregate it per model and role over any range of jobs). `paused` is null unless `paused_after` is set. `rounds[].gate` / `reviews[lens]`
-are the verdicts read from `round-N/checks.md` / `round-N/review-<lens>.md`
-(`PASS`, `CHANGES`, `FAIL`, `invalid`, or null when the file is not there yet).
+are the Verdicts the first lines of `round-N/checks.md` / `round-N/review-<lens>.md`
+declare: `GATE: PASS|FAIL` and `VERDICT: PASS|CHANGES`, whitespace after the colon
+allowed; `invalid` for any other first line, null when the file is not there yet.
 
 ## Endpoints
 
