@@ -309,6 +309,7 @@
     }
   },
   "worktree_setup": "",
+  "worktree_teardown": "",
   "gate_parallel": 1,
   "lockfile_regenerate": {},
   "ci_wait_minutes": 30,

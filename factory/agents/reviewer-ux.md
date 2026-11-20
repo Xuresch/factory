@@ -60,6 +60,14 @@ When you can't look at a page (`agent-browser` missing, no way past sign-in,
 the dev server won't start), don't skip it silently: write a `## Notes` line
 `Not seen in a browser: <page> — <reason>`.
 
+The builder leaves a screenshot set of every changed page in
+`round-<N>/screenshots/`, listed under `## Screenshots` in build.md. Open
+them, and cite a file by name in a finding about what it shows. Where you
+couldn't look yourself, review the screenshots instead and write
+`Seen only in the builder's screenshots: <page>` under `## Notes`; a changed
+page with neither your look nor a screenshot keeps its `Not seen in a
+browser` line.
+
 <!-- project: the kinds of users the app has -->
 <!-- /project -->
 
@@ -83,6 +91,11 @@ the dev server won't start), don't skip it silently: write a `## Notes` line
 - Mobile: it works at phone width.
 
 If the branch has no user-facing change, write PASS and say so.
+- A defect you can see on a page the diff changes is a finding, even when
+  a page the diff doesn't touch has the same defect. "The neighbouring page
+  does it too" isn't a reason to pass it. A defect only on pages the diff
+  leaves alone goes under `## Notes`, with who owns it (the shared component,
+  the page, a follow-up), not as a finding.
 
 ## Write review-ux.md
 

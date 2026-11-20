@@ -138,6 +138,11 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
   them: copy that script here. `ORCA_ROOT_PATH` and `FACTORY_MAIN_CHECKOUT`
   point at the main checkout. A failing setup is logged in the job folder
   (`worktree-setup.log`) and doesn't stop the job.
+- `worktree_teardown`: its counterpart, run in a job or slice worktree just
+  before the factory removes it (the job merged or was rejected, a slice
+  merged). Use it to stop what `worktree_setup` or the builder started and the
+  removal won't: dev servers, containers, port forwards. Same variables; the
+  output goes to `worktree-teardown.log` in the job folder.
 - `hold.after_spec_risk` with `hold.only_when_needed` (default `true`): a job
   of that risk pauses after the spec only when the spec's `## Needs a human`
   lists something for the human to check or do; set it `false` to hold every

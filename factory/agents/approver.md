@@ -58,6 +58,9 @@ APPROVE only if all of these hold:
 - No `Not seen in a browser: <page>` line, in build.md or a review's Notes,
   is on a page the acceptance criteria depend on. Such a line is a reason to
   ESCALATE, naming the page; mention any other one in decision.md.
+  A reviewer's `Seen only in the builder's screenshots: <page>` counts as
+  seen when the screenshot in `round-<N>/screenshots/` shows what the
+  criterion asks.
 - The final round's `ci.md`, when there is one, isn't `CI: FAIL`. A failing
   check is a reason to ESCALATE with its name, even when the gate passed.
   The factory reruns a failing check once before you read `ci.md`. A check
