@@ -1740,7 +1740,7 @@ function barItems(list, per, byRole) {
     const j = b.jobs[0]
     // The newest day or week is still filling up: say so, and draw it lighter.
     const sofar = b.start !== undefined && i === list.length - 1 && Date.now() - b.start < (per === 'week' ? 7 : 1) * 864e5
-    const roles = byRole ? `\n${b.steps.map((v, s) => (v > 0.004 ? `  ${ROLE_STEP_NAMES[s].padEnd(17)}${money(v)}` : '')).filter(Boolean).join('\n')}` : ''
+    const roles = byRole ? `\n${b.steps.map((v, s) => (v > 0.004 ? `  ${ROLE_STEP_NAMES[s].padEnd(18)}${money(v)}` : '')).filter(Boolean).join('\n')}` : ''
     const head = per === 'job'
       ? `${numOf(j)} · ${j.title}\n${money(b.total)} · ${j.round} round${j.round > 1 ? 's' : ''} · ${j.stage}`
       : `${per === 'week' ? 'week of ' : ''}${b.label}${sofar ? ' (so far)' : ''} · ${b.jobs.length} job${b.jobs.length === 1 ? '' : 's'}\n${money(b.total)}`
