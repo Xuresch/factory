@@ -17,6 +17,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import jobfiles  # noqa: E402  (factory/bin/jobfiles.py: how a job folder reads)
+
 FACTORY = Path(__file__).resolve().parents[1]
 CONFIG = json.loads((FACTORY / "config.json").read_text())
 
@@ -34,7 +37,7 @@ def main(argv):
     res = subprocess.run([job_bin, "sync", job_id], capture_output=True, text=True)
     if res.returncode != 0:
         die(res.stderr.strip())
-    job = json.loads((FACTORY / "jobs" / job_id / "job.json").read_text())
+    job = jobfiles.load_job(FACTORY / "jobs", job_id)
     intake = job["intake"] or die(f"{job_id} has no intake.md")
     risk = CONFIG["routing"].get(intake["risk"]) or die(
         f"risk {intake['risk']!r} isn't in config.json routing ({', '.join(CONFIG['routing'])})")

@@ -50,6 +50,9 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import jobfiles  # noqa: E402  (factory/bin/jobfiles.py: how a job folder reads)
+
 REPO = Path(__file__).resolve().parents[2]
 FULL_EVERY = 600
 OUTSIDE_EVERY = 300
@@ -168,12 +171,8 @@ def discover(cfg):
 
 
 def read_text(path):
-    """(text, sha1) of a file, None when unreadable."""
-    try:
-        raw = path.read_bytes()
-    except OSError:
-        return None
-    return raw.decode("utf-8", errors="replace"), sha(raw)
+    """(text, sha1 of the raw bytes) of a file, None when unreadable."""
+    return jobfiles.snapshot(path)
 
 
 def read_jobs(path):
@@ -185,15 +184,8 @@ def read_jobs(path):
         if not folder.is_dir():
             continue
         try:
-            entry = {"job": None, "job_sha": None, "files": {}}
-            got = read_text(folder / "job.json")
-            if got:
-                try:
-                    job = json.loads(got[0])
-                    if isinstance(job, dict):
-                        entry["job"], entry["job_sha"] = job, got[1]
-                except ValueError:
-                    pass
+            job, job_sha = jobfiles.job_snapshot(folder / "job.json")
+            entry = {"job": job, "job_sha": job_sha, "files": {}}
             if entry["job"] is not None:
                 for f in sorted(folder.rglob("*.md")):
                     if f.is_file():

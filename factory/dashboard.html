@@ -602,21 +602,32 @@ let openJobId = null
 let openPath = null
 let openText = null
 
+// ---- verdicts: begin (factory/tests/dashboard-verdicts.mjs runs this block) ----
+
 async function fetchText(url) {
   const res = await fetch(url, { cache: 'no-store' })
   if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`)
   return res.text()
 }
 
+// A file's first line: null when there is no such file (or no answer), '' when it can't be read.
 async function fetchFirst(url) {
-  try { return (await fetchText(url)).split('\n')[0].trim() } catch { return null }
+  let res
+  try { res = await fetch(url, { cache: 'no-store' }) } catch { return null }
+  if (res.status === 404) return null
+  if (!res.ok) return ''
+  return (await res.text()).split('\n')[0].trim()
 }
 
 // ---- Board ---------------------------------------------------------------
 
-function verdictOf(line) {
+// The Verdict a round artifact's first line declares, the rule of factory/bin/jobfiles.py and the
+// hub: pending without the file, invalid unless it is its kind's prefix and one of its values.
+const DECLARATIONS = { review: /^VERDICT:\s*(PASS|CHANGES)$/, checks: /^GATE:\s*(PASS|FAIL)$/ }
+
+function verdictOf(kind, line) {
   if (line === null) return 'pending'
-  const m = line.match(/^(?:VERDICT|GATE):\s*(PASS|CHANGES|FAIL)$/)
+  const m = line.match(DECLARATIONS[kind])
   return m ? m[1] : 'invalid'
 }
 
@@ -630,16 +641,18 @@ async function roundVerdicts(job, n) {
   const key = `${job.id}/${n}`
   if (roundCache.has(key)) return roundCache.get(key)
   const dir = `jobs/${job.id}/round-${n}/`
-  const v = { gate: verdictOf(await fetchFirst(dir + 'checks.md')), reviews: {} }
+  const v = { gate: verdictOf('checks', await fetchFirst(dir + 'checks.md')), reviews: {} }
   if (v.gate === 'PASS') {
     await Promise.all(Object.keys(job.agents?.reviewers || {}).map(async (r) => {
-      v.reviews[r] = verdictOf(await fetchFirst(`${dir}review-${r}.md`))
+      v.reviews[r] = verdictOf('review', await fetchFirst(`${dir}review-${r}.md`))
     }))
   }
   const settled = v.gate === 'FAIL' || (v.gate === 'PASS' && Object.values(v.reviews).every((x) => x === 'PASS' || x === 'CHANGES'))
   if (settled && n < job.round) roundCache.set(key, v)
   return v
 }
+
+// ---- verdicts: end ----
 
 function chip(label, v, waiting, title, extra = '') {
   const cls = ['PASS', 'CHANGES', 'FAIL'].includes(v) ? v : v === 'pending' ? (waiting ? 'wait' : '') : 'bad'
