@@ -204,6 +204,8 @@ elif cmd[0] == "api" and any(a.startswith("repos/{owner}/{repo}/") for a in args
     pages = [items[i:i + 2] for i in range(0, len(items), 2)] or [[]]
     print("".join(json.dumps(p) for p in (pages if "--paginate" in args else pages[:1])))
 elif cmd == ["issue", "edit"]:  # --add-label / --remove-label (comma-separated) change issue-<n>.json
+    if (d / "edit-fail").exists():
+        sys.exit("HTTP 403: Resource not accessible by integration")
     i = load(f"issue-{args[2]}.json")
     drop = (opt("--remove-label") or "").split(",") + (opt("--add-label") or "").split(",")
     i["labels"] = [l for l in i["labels"] if l["name"] not in drop]
@@ -211,7 +213,9 @@ elif cmd == ["issue", "edit"]:  # --add-label / --remove-label (comma-separated)
     save(f"issue-{args[2]}.json", i)
 elif cmd in (["issue", "comment"], ["pr", "comment"], ["pr", "close"]):
     pass
-elif cmd == ["issue", "close"]:
+elif cmd == ["issue", "close"]:  # close-fail: GitHub refuses
+    if (d / "close-fail").exists():
+        sys.exit("HTTP 403: Resource not accessible by integration")
     i = load(f"issue-{args[2]}.json"); i["state"] = "CLOSED"; save(f"issue-{args[2]}.json", i)
 elif cmd == ["pr", "create"]:
     save("pr.json", {"number": 7, "url": "https://github.com/o/r/pull/7", "headRefName": opt("--head"), "title": opt("--title"),
@@ -1554,6 +1558,24 @@ t_gh_hand_merge_closes_issue() {
   check "summary says by hand" "$(cat "$GH_LOG")" "Merged by a human."
 }
 
+t_gh_hand_merge_clears_paused_wait_label() {
+  new_gh_repo ghpausedmerge; gh_issue 1 One
+  gh_issue_set 1 'i["labels"].append({"name": "ui"})'
+  mkdir -p docs/agents
+  printf '| ready-for-human | `awaiting-human` |\n' > docs/agents/triage-labels.md
+  local id; id=$(gh_to_approve 1) || return 1
+  set_config max_cost_usd -1
+  J advance "$id" approve >/dev/null || return 1
+  check "paused for a human" "$(field "$id" "d['stage']")" "paused" &&
+  check "configured waiting label applied" "$(gh_labels_of 1)" "['awaiting-human', 'ui']" || return 1
+
+  gh_pr_set 'pr["state"] = "MERGED"'
+  J queue >/dev/null || return 1
+  check "merged" "$(field "$id" "d['stage']")" "merged" &&
+  check "issue closed" "$(python3 -c "import json; print(json.load(open('$GH/issue-1.json'))['state'])")" "CLOSED" &&
+  check "only the unrelated label remains" "$(gh_labels_of 1)" "['ui']"
+}
+
 t_gate_strips_coauthor_trailers() {
   new_repo trailers; ticket 01 One; commit_all
   local id; id=$(to_build 01 low none)
@@ -2295,6 +2317,21 @@ t_protected_intake_needs_human() {
   check "stage rejected" "$(field "$id" "d['stage']")" "rejected"
 }
 
+t_gh_protected_completion_comment_survives_label_refusal() {
+  new_gh_repo ghproteditfail; gh_issue 1 One
+  local id; id=$(J create 1) || return 1
+  protected_intake "$id" factory/checks.sh
+  J advance "$id" needs-human >/dev/null || return 1
+  : > "$GH_LOG"
+  touch "$GH/edit-fail"
+  local out rc=0; out=$(J reject "$id" 2>&1 <<< "Made by hand in abc123.") || rc=$?
+  check "reject reports failure" "[$rc]" "[1]" &&
+  check "label refusal reported" "$out" "HTTP 403: Resource not accessible by integration" &&
+  check "completion reason posted before the label edit" "$(cat "$GH_LOG")" \
+    $'issue comment 1 --body <!-- factory -->\n### Factory: closed, a human made this change\n\nBy @op while the job was needs-human.\n\nMade by hand in abc123.\nissue edit 1 --remove-label ready-for-agent,ready-for-human' &&
+  check "job still waits on a human" "$(field "$id" "d['stage']")" "needs-human"
+}
+
 t_protected_intake_feedback_goes_back_to_intake() {
   new_repo protintakefb; ticket 01 One; commit_all
   local id; id=$(J create f/01) || return 1
@@ -2820,6 +2857,198 @@ t_report_install_service() {
   check "unit" "$(cat "$u")" "ExecStart=$PWD/factory/bin/report --watch" &&
   check "restarts" "$(cat "$u")" "Restart=always" &&
   check "restart delay" "$(cat "$u")" "RestartSec=10"
+}
+
+# ---- Ticket effects: the tracker seam --------------------------------------
+
+jobpy() {  # jobpy <python>: run it with factory/bin/job loaded as `j` (its tracker as config.json picks it)
+  python3 -c 'import importlib.machinery as m, importlib.util as u
+l = m.SourceFileLoader("j", "factory/bin/job"); j = u.module_from_spec(u.spec_from_loader("j", l)); l.exec_module(j)
+'"$1"
+}
+
+no_gh() {  # no_gh <name>: a `gh` on PATH that logs to gh.log and fails, so a test sees any call
+  local dir="$TMP_ROOT/$1"
+  printf '#!/usr/bin/env bash\necho "$*" >> "$(dirname "$0")/gh.log"; exit 1\n' > "$dir/bin/gh"; chmod +x "$dir/bin/gh"
+  export PATH="$dir/bin:$PATH" GH_LOG="$dir/bin/gh.log"
+}
+
+# A lifecycle in memory: MemoryTickets replaces the tracker for the effects `advance` requests.
+MEM='j.TICKETS = j.MemoryTickets()
+def step(id, stage):
+    job = j.load(id)
+    try:
+        j.save(j.advance(job, stage)); print("moved", stage)
+    except j.Refused as e:
+        print("refused", e)
+def report():
+    print("effects", j.TICKETS.effects)
+    for k, t in j.TICKETS.tickets.items():
+        print("ticket", k, t["state"], t["status"], t.get("why"), "|", " | ".join(c.split(chr(10))[0] for c in t["comments"]))
+'
+
+t_lifecycle_ticket_effects_in_memory() {
+  new_repo memfx; no_gh memfx; ticket 01 One; commit_all
+  local id; id=$(to_build 01 low none); build_commit "$id" y.txt y; to_review "$id"; review "$id" 1 code PASS
+  J advance "$id" approve >/dev/null; printf 'ESCALATE\n\n## Summary\n- look\n\n## Why\nx\n' > "factory/jobs/$id/decision.md"
+  local before; before=$(cat .scratch/f/issues/01-t.md)
+  local out; out=$(jobpy "$MEM
+step('$id', 'needs-human')
+step('$id', 'merged')  # the branch isn't in master yet: the Progression check fails
+report()" 2>&1)
+  check "waits on a human" "$out" "moved needs-human" &&
+  check "an unmerged branch is refused" "$out" "refused master doesn't contain factory/$id" &&
+  check "no done effect before the merge" "$out" "effects [('comment', 'f/01'), ('wait', 'f/01', 'human')]" &&
+  check "the reason is commented" "$out" "ticket f/01 OPEN needs_human None | ### Factory: needs a human" || return 1
+  git merge -q --no-ff -m "merge $id" "factory/$id"  # the merge workflow merged it
+  out=$(jobpy "$MEM
+step('$id', 'merged')
+report()" 2>&1)
+  check "merged" "$out" "moved merged" &&
+  check "one done effect, from the wait" "$out" "effects [('done', 'f/01', 'human')]" &&
+  check "closed with the merge summary" "$out" "ticket f/01 CLOSED done 01: One (factory job $id) | ### Factory: merged" &&
+  check "the ticket file is the adapter's, untouched" "$(cat .scratch/f/issues/01-t.md)" "$before" &&
+  check "no gh" "[$(cat "$GH_LOG" 2>/dev/null)]" "[]"
+}
+
+t_gh_lifecycle_done_in_memory() {
+  new_gh_repo ghmemfx; gh_issue 1 One
+  local id; id=$(gh_to_approve 1) || return 1
+  : > "$GH_LOG"
+  local out; out=$(jobpy "$MEM
+step('$id', 'merged')" 2>&1)
+  check "an open PR fails the Progression check" "$out" "refused the PR isn't merged" || return 1
+  gh_pr_set 'pr["state"] = "MERGED"'  # merged by hand on GitHub
+  out=$(jobpy "$MEM
+step('$id', 'merged')
+report()" 2>&1)
+  check "the same done effect" "$out" "effects [('done', '1', None)]" &&
+  check "with the summary" "$out" "ticket 1 CLOSED done One (factory job $id) | ### Factory: merged" &&
+  check "PR state from gh, no ticket writes" "[$(grep -E '^issue (edit|close|comment)' "$GH_LOG")]" "[]" &&
+  check "the issue stays as the fake has it" "$(python3 -c "import json; print(json.load(open('$GH/issue-1.json'))['state'])")" "OPEN"
+}
+
+t_lifecycle_protected_by_hand_in_memory() {
+  new_repo memhand; no_gh memhand; ticket 01 One; commit_all
+  local id; id=$(J create f/01) || return 1
+  protected_intake "$id" factory/checks.sh
+  local out; out=$(jobpy "$MEM
+step('$id', 'needs-human')
+j.cmd_reject(j.load('$id'), 'Made by hand in abc123.')
+report()" 2>&1)
+  check "waits on a human" "$out" "moved needs-human" &&
+  check "done, not rejected" "$out" "effects [('comment', 'f/01'), ('wait', 'f/01', 'human'), ('done', 'f/01', 'human')]" &&
+  check "made by hand" "$out" "ticket f/01 CLOSED done 01: One (made by hand, factory job $id) | ### Factory: needs a human | ### Factory: closed, a human made this change" &&
+  check "no gh" "[$(cat "$GH_LOG" 2>/dev/null)]" "[]"
+}
+
+t_gh_ticket_effects() {
+  new_gh_repo ghfx; local n
+  for n in 1 2 3 4 5; do gh_issue $n "Issue $n"; gh_issue_set $n 'i["labels"].append({"name": "ui"})'; done
+  labels() { python3 -c "import json; i=json.load(open('$GH/issue-$1.json')); print(i['state'], sorted(l['name'] for l in i['labels']))"; }
+  local out; out=$(jobpy 'T = j.TICKETS; print(type(T).__name__)
+T.wait(1); T.comment(1, "### Factory: needs a human\n\nwhy")
+T.resume(1); T.wait(2, on="info")
+T.done(3, "### Factory: merged\n\nok", waited="human", why="x")
+T.done(3, "### Factory: merged\n\nagain")
+T.reject(4, "### Factory: rejected\n\nno", waited="human"); T.comment(5, "just a note")' 2>&1)
+  check "GitHub adapter" "$out" "GitHubTickets" &&
+  check "waiting, then back in the queue, ui kept" "$(labels 1)" "OPEN ['ready-for-agent', 'ui']" &&
+  check "waiting on a human: label swap" "$(cat "$GH_LOG")" "issue edit 1 --add-label ready-for-human --remove-label ready-for-agent" &&
+  check "factory comment format" "$(cat "$GH_LOG")" "issue comment 1 --body <!-- factory -->
+### Factory: needs a human" &&
+  check "waiting for info" "$(labels 2)" "OPEN ['needs-info', 'ui']" &&
+  check "done: queue and waiting labels off, closed" "$(labels 3)" "CLOSED ['ui']" &&
+  check "done removes both" "$(cat "$GH_LOG")" "issue edit 3 --remove-label ready-for-agent,ready-for-human" &&
+  check "an already-closed issue: one close" "$(grep -c '^issue close 3' "$GH_LOG")" "1" &&
+  check "rejected: wontfix, ui kept" "$(labels 4)" "OPEN ['ui', 'wontfix']" &&
+  check "rejection comment" "$(cat "$GH_LOG")" "issue comment 4 --body <!-- factory -->
+### Factory: rejected" &&
+  check "comment only: labels intact" "$(labels 5)" "OPEN ['ready-for-agent', 'ui']" &&
+  check "comment only: no edit" "[$(grep -c '^issue edit 5' "$GH_LOG")]" "[0]" || return 1
+  touch "$GH/close-fail"; gh_issue 6 Six
+  out=$(jobpy 'j.TICKETS.done(6, "### Factory: merged")' 2>&1)
+  check "a refused close warns" "$out" "couldn't close issue #6" &&
+  check "and the comment is still posted" "$(cat "$GH_LOG")" "issue comment 6"
+}
+
+t_local_ticket_effects() {
+  new_repo localfx; local n
+  for n in 01 02 03 04 05; do ticket $n "T$n" '**Labels:** factory, ui'; done; commit_all
+  local out; out=$(jobpy 'T = j.TICKETS; print(type(T).__name__)
+T.wait("f/01"); T.comment("f/01", "### Factory: needs a human\n\nwhy")
+T.wait("f/02", on="info")
+T.done("f/03", "### Factory: merged\n\nok", waited="human", why="T03 (factory job 003-t)")
+T.reject("f/04", "### Factory: rejected\n\nno", waited="human"); T.comment("f/05", "just a note")' 2>&1)
+  check "local adapter" "$out" "LocalTickets" &&
+  check "waiting on a human" "$(status_of 01)" "ready-for-human" &&
+  check "Labels kept" "$(cat .scratch/f/issues/01-t.md)" "**Labels:** factory, ui" &&
+  check "factory comment block" "$(cat .scratch/f/issues/01-t.md)" "## Comments
+
+<!-- factory -->
+### factory, " &&
+  check "comment closes" "$(cat .scratch/f/issues/01-t.md)" "why
+<!-- /factory -->" &&
+  check "waiting for info" "$(status_of 02)" "needs-info" &&
+  check "done" "$(status_of 03)" "done" &&
+  check "done comment" "$(cat .scratch/f/issues/03-t.md)" "### Factory: merged" &&
+  check "done commits the ticket" "$(git log -1 --format=%B -- .scratch/f/issues/03-t.md)" "chore(factory): close f/03
+
+T03 (factory job 003-t)" &&
+  check "rejected" "$(status_of 04)" "wontfix" &&
+  check "rejection comment" "$(cat .scratch/f/issues/04-t.md)" "### Factory: rejected" &&
+  check "comment only: Status intact" "$(status_of 05)" "ready-for-agent" &&
+  check "comment only: note" "$(cat .scratch/f/issues/05-t.md)" "just a note" &&
+  check "only done commits" "$(git status --short .scratch | sort | tr '\n' ' ')" " M .scratch/f/issues/01-t.md  M .scratch/f/issues/02-t.md  M .scratch/f/issues/04-t.md  M .scratch/f/issues/05-t.md" || return 1
+  set_config commit_tickets false; git commit -qam "the rest"
+  jobpy 'j.TICKETS.done("f/05", "### Factory: merged")' >/dev/null 2>&1
+  check "commit_tickets false: done, not committed" "$(status_of 05) $(git status --short .scratch)" "done  M .scratch/f/issues/05-t.md"
+}
+
+t_tracker_selection() {
+  new_repo tracksel; commit_all
+  local pick='print(j.TRACKER, type(j.TICKETS).__name__)'
+  check "explicit local" "$(jobpy "$pick")" "local LocalTickets" &&
+  check "a local ticket key" "$(jobpy 'print(j.issue_key(".scratch/f/issues/07-x.md"))')" "f/07" || return 1
+  set_config tracker '"github"'
+  check "explicit github" "$(jobpy "$pick")" "github GitHubTickets" &&
+  check "a GitHub issue number" "$(jobpy 'print(repr(j.issue_key("12")))')" "12" || return 1
+  mkdir -p docs/agents; echo "# Issue tracker: Local Markdown" > docs/agents/issue-tracker.md
+  check "explicit config beats the tracker doc" "$(jobpy "$pick")" "github GitHubTickets" || return 1
+  set_config tracker '"auto"'
+  check "the doc beats the origin" "$(git remote add origin https://github.com/o/r.git; jobpy "$pick")" "local LocalTickets" || return 1
+  echo "# Issue tracker: GitHub" > docs/agents/issue-tracker.md
+  check "doc says GitHub" "$(jobpy "$pick")" "github GitHubTickets" || return 1
+  rm docs/agents/issue-tracker.md
+  check "only a github origin" "$(jobpy "$pick")" "github GitHubTickets" || return 1
+  git remote set-url origin /elsewhere/r.git
+  check "a non-GitHub origin" "$(jobpy "$pick")" "local LocalTickets" || return 1
+  printf '| needs-triage | `triage` |\n| ready-for-human | `human` |\n' > docs/agents/triage-labels.md
+  check "triage-labels.md mapping" "$(jobpy 'print(j.LABELS["returned"], j.LABELS["needs_human"], j.TICKETS.labels["needs_human"])')" "triage human human"
+}
+
+t_gh_open_work() {
+  new_gh_repo ghopenwork; local n
+  for n in 1 2 3 4 5 6 7 8; do gh_issue $n "Issue $n" '**Branch:** feature/x'; done
+  gh_issue_set 2 'i["labels"] = [{"name": "needs-info"}]'
+  gh_issue_set 3 'i["labels"] = [{"name": "ready-for-human"}]'
+  gh_issue_set 4 'i["labels"] = [{"name": "needs-triage"}]'
+  gh_issue_set 5 'i["labels"] = [{"name": "ui"}]'  # none of the four
+  gh_issue_set 6 'i["state"] = "CLOSED"'
+  gh_issue_set 7 'i["body"] = "**Branch:** feature/y"'
+  gh_issue_set 8 'i["labels"] = [{"name": "wontfix"}]'
+  check "the four triage labels, this feature, open" "$(jobpy 'print(j.open_work_for("feature/x")[1])')" "['#1', '#2', '#3', '#4']"
+}
+
+t_local_open_work() {
+  new_repo localopenwork
+  ticket 01 One '**Branch:** feature/x'; ticket 02 Two '**Branch:** feature/x'; ticket 03 Three '**Branch:** feature/x'
+  ticket 04 Four '**Branch:** feature/y'; ticket 05 Five '**Branch:** feature/x'
+  sed -i 's/ready-for-agent/in-progress/' .scratch/f/issues/02-t.md  # outside the four statuses
+  sed -i 's/ready-for-agent/done/' .scratch/f/issues/03-t.md
+  sed -i 's/ready-for-agent/wontfix/' .scratch/f/issues/05-t.md
+  commit_all
+  check "every open ticket of the feature" "$(jobpy 'print(j.open_work_for("feature/x")[1])')" "['f/01 (ready-for-agent)', 'f/02 (in-progress)']"
 }
 
 # ---- runner ----------------------------------------------------------------

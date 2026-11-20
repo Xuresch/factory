@@ -393,13 +393,13 @@ def local_issue(key):
     }
 
 
-def commit_ticket(job, message):
+def commit_ticket(key, message):
     """Commit the ticket file in the main checkout, so status flips and the
     factory's comments don't pile up as uncommitted changes there. Only that
     one path is committed; nothing else the user has staged or changed."""
     if not CONFIG.get("commit_tickets", True):
         return
-    path = ticket_path(job["issue"])
+    path = ticket_path(key)
     rel = str(path.relative_to(REPO))
     if run(["git", "ls-files", "--error-unmatch", rel], check=False).returncode != 0:
         return  # an untracked .scratch/: the user doesn't keep tickets in git
@@ -503,25 +503,143 @@ def open_blockers(issue):
             if local_issue(f"{feature}/{nn}")["state"] == "OPEN"]
 
 
-def comment(kind, number, body):
-    if GITHUB:
-        gh(kind, "comment", str(number), "--body", f"{MARKER}\n{body}")
-    else:
-        append_comment(number, body)
+def pr_comment(number, body):
+    """A factory comment on a pull request: the merge workflow's, not a Ticket effect."""
+    gh("pr", "comment", str(number), "--body", f"{MARKER}\n{body}")
 
 
-def label(kind, number, add=None, remove=None):
-    """GitHub: add/remove labels. Local: a ticket has one Status, so `add` replaces it."""
-    if not GITHUB:
-        if add:
-            set_status(number, add)
-        return
-    args = [kind, "edit", str(number)]
-    if add:
-        args += ["--add-label", add]
-    if remove:
-        args += ["--remove-label", remove]
-    gh(*args)
+# ---- Ticket effects: what the factory writes on a ticket --------------------
+#
+# Job commands say what happened to a ticket, never how the tracker spells it:
+#
+#   TICKETS.wait(key, on)                   it waits on a human ("human") or for an answer ("info")
+#   TICKETS.resume(key, waited)             the wait is over: the ticket is back in the queue
+#   TICKETS.done(key, body, waited, why, protected_change=...)  completed, with its comment
+#   TICKETS.reject(key, body, waited, outcome)  turned away: `wontfix`, or `returned` to triage
+#   TICKETS.comment(key, body)              a factory comment; labels and Status stay as they are
+#
+# The adapter turns that into labels and `gh` calls on GitHub, or the Status
+# line, `## Comments` and ticket commit of a local ticket. MemoryTickets keeps
+# them in memory for lifecycle tests. Merging, PR state and branches are not
+# Ticket effects: the merge workflow (is_merged, cmd_merge) owns them.
+
+WAITS = {"human": "needs_human", "info": "needs_info"}  # what a ticket waits on → its LABELS role
+
+
+class GitHubTickets:
+    """Labels, comments and closing on a GitHub issue. Labels the factory
+    doesn't own stay; a comment starts with MARKER."""
+
+    def __init__(self, labels):
+        self.labels = labels
+
+    def _edit(self, key, add=None, remove=()):
+        remove = ",".join(x for x in remove if x)
+        if not (add or remove):
+            return
+        gh("issue", "edit", str(key), *(["--add-label", add] if add else []),
+           *(["--remove-label", remove] if remove else []))
+
+    def _waiting(self, waited):
+        return self.labels[WAITS[waited]] if waited else None
+
+    def comment(self, key, body):
+        gh("issue", "comment", str(key), "--body", f"{MARKER}\n{body}")
+
+    def wait(self, key, on="human"):
+        self._edit(key, add=self.labels[WAITS[on]], remove=[self.labels["queue"]])
+
+    def resume(self, key, waited="human"):
+        self._edit(key, add=self.labels["queue"], remove=[self._waiting(waited)])
+
+    def done(self, key, body, waited=None, why=None, *, protected_change=False):
+        if protected_change:
+            # Record the human's completion reason even if the label edit fails.
+            self.comment(key, body)
+        self._edit(key, remove=[self.labels["queue"], self._waiting(waited)])
+        if not protected_change:
+            self.comment(key, body)
+        self._close(key)  # merged is done, also when a human approved, merged or made it
+
+    def reject(self, key, body=None, waited=None, outcome="wontfix"):
+        if body:
+            self.comment(key, body)
+        self._edit(key, add=self.labels[outcome], remove=[self.labels["queue"], self._waiting(waited)])
+
+    def _close(self, key):
+        """Close the issue unless the merge already did (a PR into a non-default branch doesn't)."""
+        try:
+            if gh_json("issue", "view", str(key), "--json", "state")["state"] != "CLOSED":
+                gh("issue", "close", str(key), "--reason", "completed")
+        except Refused as e:
+            print(f"job: couldn't close issue #{key}: {e}", file=sys.stderr)
+
+
+class LocalTickets:
+    """The one Status line and the `## Comments` of a local Markdown ticket;
+    `Labels:` stay. Done commits the ticket file under commit_ticket's rules."""
+
+    def __init__(self, labels):
+        self.labels = labels
+
+    def comment(self, key, body):
+        append_comment(key, body)
+
+    def wait(self, key, on="human"):
+        set_status(key, self.labels[WAITS[on]])
+
+    def resume(self, key, waited="human"):
+        set_status(key, self.labels["queue"])
+
+    def done(self, key, body, waited=None, why=None, *, protected_change=False):
+        set_status(key, "done")
+        self.comment(key, body)
+        commit_ticket(key, f"chore(factory): close {key}" + (f"\n\n{why}" if why else ""))
+
+    def reject(self, key, body=None, waited=None, outcome="wontfix"):
+        if body:
+            self.comment(key, body)
+        set_status(key, self.labels[outcome])
+
+
+class MemoryTickets:
+    """Ticket effects kept in memory: lifecycle tests read `tickets` and
+    `effects` instead of a `gh` log or a ticket file."""
+
+    def __init__(self):
+        self.tickets = {}
+        self.effects = []
+
+    def ticket(self, key):
+        return self.tickets.setdefault(str(key), {"state": "OPEN", "status": "queue", "comments": []})
+
+    def comment(self, key, body):
+        self.ticket(key)["comments"].append(body)
+        self.effects.append(("comment", str(key)))
+
+    def wait(self, key, on="human"):
+        self.ticket(key)["status"] = WAITS[on]
+        self.effects.append(("wait", str(key), on))
+
+    def resume(self, key, waited="human"):
+        self.ticket(key)["status"] = "queue"
+        self.effects.append(("resume", str(key), waited))
+
+    def done(self, key, body, waited=None, why=None, *, protected_change=False):
+        t = self.ticket(key)
+        t["comments"].append(body)
+        t.update(state="CLOSED", status="done", why=why)
+        self.effects.append(("done", str(key), waited))
+
+    def reject(self, key, body=None, waited=None, outcome="wontfix"):
+        t = self.ticket(key)
+        if body:
+            t["comments"].append(body)
+        t["status"] = outcome
+        self.effects.append(("reject", str(key), outcome))
+
+
+TICKETS = (GitHubTickets if GITHUB else LocalTickets)(LABELS)
 
 
 # ---- Job files -------------------------------------------------------------
@@ -1991,33 +2109,19 @@ def advance(job, stage):
                 create_follow_ups(job)
             except Exception as e:
                 print(f"{job['id']}: couldn't file the follow-ups: {str(e).strip()[:200]}", file=sys.stderr)
-        body = merge_summary(job, rough)
-        if not GITHUB:
-            set_status(job["issue"], "done")
-            comment("issue", job["issue"], body)
-            commit_ticket(job, f"chore(factory): close {job['issue']}\n\n{job['title']} (factory job {job['id']})")
-        else:
-            waiting = {"needs-human": LABELS["needs_human"], "needs-info": LABELS["needs_info"]}.get(old)
-            label("issue", job["issue"], remove=",".join(x for x in (LABELS["queue"], waiting) if x))
-            comment("issue", job["issue"], body)
-            close_issue(job["issue"])  # merged is done, also when a human approved or merged it
+        waited = {"needs-human": "human", "paused": "human", "needs-info": "info"}.get(old)
+        TICKETS.done(job["issue"], merge_summary(job, rough), waited=waited,
+                     why=f"{job['title']} (factory job {job['id']})")
 
     elif stage == "rejected" and (old in WAITING | REJECTABLE or (old == "intake" and (d / "rejection.md").exists())):
         require((d / "rejection.md").exists(), "use `job reject` to reject a job")
         reason = (d / "rejection.md").read_text().split("\n", 1)[1].strip()
-        waiting = LABELS["needs_info"] if old == "needs-info" else LABELS["needs_human"]  # paused too
+        waited = "info" if old == "needs-info" else "human"  # paused too
         if job.get("protected_only") and old == "needs-human":  # a human made the change by hand
-            comment("issue", job["issue"], f"### Factory: closed, a human made this change\n\n{reason}")
-            if GITHUB:
-                label("issue", job["issue"], remove=f"{LABELS['queue']},{waiting}")
-                close_issue(job["issue"])
-            else:
-                set_status(job["issue"], "done")
-                commit_ticket(job, f"chore(factory): close {job['issue']}\n\n{job['title']} "
-                                   f"(made by hand, factory job {job['id']})")
+            TICKETS.done(job["issue"], f"### Factory: closed, a human made this change\n\n{reason}", waited=waited,
+                         why=f"{job['title']} (made by hand, factory job {job['id']})", protected_change=True)
         else:
-            comment("issue", job["issue"], f"### Factory: rejected\n\n{reason}")
-            label("issue", job["issue"], add=LABELS["wontfix"], remove=f"{LABELS['queue']},{waiting}")
+            TICKETS.reject(job["issue"], f"### Factory: rejected\n\n{reason}", waited=waited)
         if job["pr"] and GITHUB:
             gh("pr", "close", str(job["pr"]))
             run(["git", "push", "origin", "--delete", job["branch"]], check=False)
@@ -2050,7 +2154,7 @@ def advance(job, stage):
                 run(["git", "worktree", "add", "-b", job["branch"], job["worktree"], jref(job)])
                 job["fork_point"] = run(["git", "rev-parse", jref(job)]).stdout.strip()
                 setup_worktree(job["worktree"], job_dir(job["id"]) / "worktree-setup.log")
-        comment("issue", job["issue"], f"{title}\n\n{intake_body()}")
+        TICKETS.comment(job["issue"], f"{title}\n\n{intake_body()}")
         if stage != "spec":  # an accepted job files them when it merges: a human may still take them back in
             create_follow_ups(job)
         if stage == "spec" and spec_from_intake(job):
@@ -2061,9 +2165,9 @@ def advance(job, stage):
                 next_round(job)
                 stage = "build"
         if stage == "needs-info":
-            label("issue", job["issue"], add=LABELS["needs_info"], remove=LABELS["queue"])
+            TICKETS.wait(job["issue"], on="info")
         elif stage == "rejected":
-            label("issue", job["issue"], add=LABELS["returned"], remove=LABELS["queue"])
+            TICKETS.reject(job["issue"], outcome="returned")
 
     elif old == "needs-info":
         require_slot(job["id"])
@@ -2071,7 +2175,7 @@ def advance(job, stage):
         (d / "intake.md").rename(d / f"intake-{k}.md")
         job["intake"] = None
         write_issue_md(job)
-        label("issue", job["issue"], add=LABELS["queue"], remove=LABELS["needs_info"])
+        TICKETS.resume(job["issue"], waited="info")
 
     elif old == "spec" and stage == "needs-human":
         require((d / "spec.md").exists(), "spec.md doesn't exist")
@@ -2220,7 +2324,7 @@ def advance(job, stage):
                 and (d / "approval.md").stat().st_mtime > (d / "decision.md").stat().st_mtime,
                 "use `job approve` to merge an escalated job")
         job["approved"] = {"round": job["round"], "head": job.get("review_head"), "by": "human"}
-        label("issue", job["issue"], add=LABELS["queue"], remove=LABELS["needs_human"])
+        TICKETS.resume(job["issue"])
 
     elif old == "needs-human":
         feedback = sorted(d.glob("feedback-*.md"))
@@ -2232,7 +2336,7 @@ def advance(job, stage):
         job.pop("reviewed_at", None)  # and no round after it is merge-only
         job.pop("approved", None)
         next_round(job)
-        label("issue", job["issue"], add=LABELS["queue"], remove=LABELS["needs_human"])
+        TICKETS.resume(job["issue"])
 
     elif old == "merging" and stage == "build":
         require(job.get("merge_back"), "only `job merge` sends a job back from merging")
@@ -2251,10 +2355,10 @@ def advance(job, stage):
         if job["pr"]:
             if gh_json("pr", "view", str(job["pr"]), "--json", "isDraft")["isDraft"]:
                 gh("pr", "ready", str(job["pr"]))
-            comment("pr", job["pr"], body)
+            pr_comment(job["pr"], body)
         else:
-            comment("issue", job["issue"], body)
-        label("issue", job["issue"], add=LABELS["needs_human"], remove=LABELS["queue"])
+            TICKETS.comment(job["issue"], body)
+        TICKETS.wait(job["issue"])
 
     if stage in TERMINAL and Path(job["worktree"]).exists():
         remove_worktree(job["worktree"], teardown=job_dir(job["id"]) / "worktree-teardown.log")
@@ -2611,7 +2715,7 @@ def create_follow_ups(job):
         job.setdefault("follow_ups", []).append({"title": title, "issue": ref})
         created.append(f"{ref}: {title}")
     if created:
-        comment("issue", job["issue"], "### Factory: follow-ups filed\n\n"
+        TICKETS.comment(job["issue"], "### Factory: follow-ups filed\n\n"
                 + "\n".join(f"- {c}" for c in created)
                 + f"\n\nThey wait as `{LABELS['returned']}` for triage.")
     return created
@@ -2915,7 +3019,7 @@ def ask_human_early(job):
         return
     if any(a.get("after") == "spec" for a in job.get("accepted") or []):
         return
-    comment("issue", job["issue"],
+    TICKETS.comment(job["issue"],
             f"### Factory: questions for a human while {job['id']} builds\n\n"
             + "\n".join(f"{i}. {t}" for i, t in enumerate(items, 1))
             + "\n\nReply here, numbered like the list. The build goes on meanwhile; an item still open "
@@ -2950,32 +3054,32 @@ def pause(job, after, resume):
     job["paused"] = {"after": after, "resume": resume, "at": now()}
     if after == "budget":
         limit = job.get("cost_allowance", CONFIG["max_cost_usd"])
-        comment("issue", job["issue"],
+        TICKETS.comment(job["issue"],
                 f"### Factory: paused, over budget\n\nThis job has cost ${job['cost_usd']:.2f} "
                 f"(API-equivalent), over its ${limit:.2f} allowance (`max_cost_usd`). Resume to allow "
                 f"another ${CONFIG['max_cost_usd']:.2f}, give feedback to change course, or reject it.")
-        return label("issue", job["issue"], add=LABELS["needs_human"], remove=LABELS["queue"])
+        return TICKETS.wait(job["issue"])
     if after == "dependencies":
         deps = "\n".join(f"- {x}" for x in new_dependencies(job))
-        comment("issue", job["issue"],
+        TICKETS.comment(job["issue"],
                 f"### Factory: new dependencies need your OK\n\nThe spec adds:\n\n{deps}\n\nResume to "
                 f"approve them (the approver then won't ask again), edit `factory/jobs/{job['id']}/spec.md` "
                 f"to drop one, or send feedback.")
-        return label("issue", job["issue"], add=LABELS["needs_human"], remove=LABELS["queue"])
+        return TICKETS.wait(job["issue"])
     todo = needs_a_human(job) if after == "spec" else []
     if todo:
         items = "\n".join(f"- {x}" for x in todo)
-        comment("issue", job["issue"],
+        TICKETS.comment(job["issue"],
                 f"### Factory: paused after spec, needs you\n\nBefore this job is built, the spec "
                 f"needs from you:\n\n{items}\n\nDo them, then resume with the result of each, one line per item "
                 f"(it goes to accepted.md for the approver). Review `factory/jobs/{job['id']}/spec.md` "
                 f"too if you like; your edits are binding. Or send feedback, or reject the job.")
-        return label("issue", job["issue"], add=LABELS["needs_human"], remove=LABELS["queue"])
+        return TICKETS.wait(job["issue"])
     f = "intake.md" if after == "intake" else "spec.md"
-    comment("issue", job["issue"],
+    TICKETS.comment(job["issue"],
             f"### Factory: paused after {after}\n\nReview `factory/jobs/{job['id']}/{f}`. Edit it if you want "
             f"(your version is binding), then resume. Or send feedback to redo it, or reject the job.")
-    label("issue", job["issue"], add=LABELS["needs_human"], remove=LABELS["queue"])
+    TICKETS.wait(job["issue"])
 
 
 def append_binding_note(path):
@@ -3043,7 +3147,7 @@ def cmd_resume(job, note=""):
         print(f"{job['id']}: no result recorded for {len(todo)} Needs-a-human item(s) in spec.md; "
               "the approver escalates each one nobody answered", file=sys.stderr)
     sync(job)
-    label("issue", job["issue"], add=LABELS["queue"], remove=LABELS["needs_human"])
+    TICKETS.resume(job["issue"])
     job["stage"], job["ended"] = p["resume"], None
     job.pop("paused")
     if job["stage"] == "build":  # it may have waited for hours: build on the current base
@@ -3100,7 +3204,7 @@ def cmd_rewind(job, target, text):
         reopened = reopen_slices(job, f"feedback-{k}.md")
     job.pop("paused", None)
     job.pop("protected_only", None)
-    label("issue", job["issue"], add=LABELS["queue"], remove=LABELS["needs_human"])
+    TICKETS.resume(job["issue"])
     job["stage"], job["ended"] = target, None
     job.setdefault("history", []).append({"stage": target, "round": job["round"], "at": now(), "t": time.time()})
     save(job)
@@ -4043,15 +4147,6 @@ def merged_by_hand(job):
     return job.get("stage") not in {"merging"} and bool(job.get("pr"))
 
 
-def close_issue(number):
-    """Close a GitHub issue the merge didn't close (a PR into a non-default branch doesn't)."""
-    try:
-        if gh_json("issue", "view", str(number), "--json", "state")["state"] != "CLOSED":
-            gh("issue", "close", str(number), "--reason", "completed")
-    except Refused as e:
-        print(f"job: couldn't close issue #{number}: {e}", file=sys.stderr)
-
-
 def friction(job):
     """What made this job harder than one clean pass, or [] for a clean job."""
     d = job_dir(job["id"])
@@ -4394,7 +4489,7 @@ def cmd_main_ci(job):
     head = (f"### Factory: CI failed on {base} after the merge" if failed
             else f"### Factory: CI on {base} still running after the merge")
     try:
-        comment("issue", job["issue"], f"{head}\n\nPR #{job['pr']} merged as {sha[:7]}.\n\n"
+        TICKETS.comment(job["issue"], f"{head}\n\nPR #{job['pr']} merged as {sha[:7]}.\n\n"
                 + "\n".join(f"- {l}" if not l.startswith("- ") else l
                             for l in ci_summary(job, sha, ci).splitlines())
                 + f"\n\nThe job stays merged; fix it on {base}. Details: factory/jobs/{job['id']}/{rel}"
