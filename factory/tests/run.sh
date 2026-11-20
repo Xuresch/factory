@@ -204,6 +204,8 @@ elif cmd[0] == "api" and any(a.startswith("repos/{owner}/{repo}/") for a in args
     pages = [items[i:i + 2] for i in range(0, len(items), 2)] or [[]]
     print("".join(json.dumps(p) for p in (pages if "--paginate" in args else pages[:1])))
 elif cmd == ["issue", "edit"]:  # --add-label / --remove-label (comma-separated) change issue-<n>.json
+    if (d / "edit-fail").exists():
+        sys.exit("HTTP 403: Resource not accessible by integration")
     i = load(f"issue-{args[2]}.json")
     drop = (opt("--remove-label") or "").split(",") + (opt("--add-label") or "").split(",")
     i["labels"] = [l for l in i["labels"] if l["name"] not in drop]
@@ -1556,6 +1558,24 @@ t_gh_hand_merge_closes_issue() {
   check "summary says by hand" "$(cat "$GH_LOG")" "Merged by a human."
 }
 
+t_gh_hand_merge_clears_paused_wait_label() {
+  new_gh_repo ghpausedmerge; gh_issue 1 One
+  gh_issue_set 1 'i["labels"].append({"name": "ui"})'
+  mkdir -p docs/agents
+  printf '| ready-for-human | `awaiting-human` |\n' > docs/agents/triage-labels.md
+  local id; id=$(gh_to_approve 1) || return 1
+  set_config max_cost_usd -1
+  J advance "$id" approve >/dev/null || return 1
+  check "paused for a human" "$(field "$id" "d['stage']")" "paused" &&
+  check "configured waiting label applied" "$(gh_labels_of 1)" "['awaiting-human', 'ui']" || return 1
+
+  gh_pr_set 'pr["state"] = "MERGED"'
+  J queue >/dev/null || return 1
+  check "merged" "$(field "$id" "d['stage']")" "merged" &&
+  check "issue closed" "$(python3 -c "import json; print(json.load(open('$GH/issue-1.json'))['state'])")" "CLOSED" &&
+  check "only the unrelated label remains" "$(gh_labels_of 1)" "['ui']"
+}
+
 t_gate_strips_coauthor_trailers() {
   new_repo trailers; ticket 01 One; commit_all
   local id; id=$(to_build 01 low none)
@@ -2295,6 +2315,21 @@ t_protected_intake_needs_human() {
   check "closed as done" "$(status_of 01)" "done" &&
   check "not wontfix" "$(cat .scratch/f/issues/01-t.md)" "### Factory: closed, a human made this change" &&
   check "stage rejected" "$(field "$id" "d['stage']")" "rejected"
+}
+
+t_gh_protected_completion_comment_survives_label_refusal() {
+  new_gh_repo ghproteditfail; gh_issue 1 One
+  local id; id=$(J create 1) || return 1
+  protected_intake "$id" factory/checks.sh
+  J advance "$id" needs-human >/dev/null || return 1
+  : > "$GH_LOG"
+  touch "$GH/edit-fail"
+  local out rc=0; out=$(J reject "$id" 2>&1 <<< "Made by hand in abc123.") || rc=$?
+  check "reject reports failure" "[$rc]" "[1]" &&
+  check "label refusal reported" "$out" "HTTP 403: Resource not accessible by integration" &&
+  check "completion reason posted before the label edit" "$(cat "$GH_LOG")" \
+    $'issue comment 1 --body <!-- factory -->\n### Factory: closed, a human made this change\n\nBy @op while the job was needs-human.\n\nMade by hand in abc123.\nissue edit 1 --remove-label ready-for-agent,ready-for-human' &&
+  check "job still waits on a human" "$(field "$id" "d['stage']")" "needs-human"
 }
 
 t_protected_intake_feedback_goes_back_to_intake() {

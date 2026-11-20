@@ -514,7 +514,7 @@ def pr_comment(number, body):
 #
 #   TICKETS.wait(key, on)                   it waits on a human ("human") or for an answer ("info")
 #   TICKETS.resume(key, waited)             the wait is over: the ticket is back in the queue
-#   TICKETS.done(key, body, waited, why)    completed (merged, or made by hand), with its comment
+#   TICKETS.done(key, body, waited, why, protected_change=...)  completed, with its comment
 #   TICKETS.reject(key, body, waited, outcome)  turned away: `wontfix`, or `returned` to triage
 #   TICKETS.comment(key, body)              a factory comment; labels and Status stay as they are
 #
@@ -552,9 +552,13 @@ class GitHubTickets:
     def resume(self, key, waited="human"):
         self._edit(key, add=self.labels["queue"], remove=[self._waiting(waited)])
 
-    def done(self, key, body, waited=None, why=None):
+    def done(self, key, body, waited=None, why=None, *, protected_change=False):
+        if protected_change:
+            # Record the human's completion reason even if the label edit fails.
+            self.comment(key, body)
         self._edit(key, remove=[self.labels["queue"], self._waiting(waited)])
-        self.comment(key, body)
+        if not protected_change:
+            self.comment(key, body)
         self._close(key)  # merged is done, also when a human approved, merged or made it
 
     def reject(self, key, body=None, waited=None, outcome="wontfix"):
@@ -587,7 +591,7 @@ class LocalTickets:
     def resume(self, key, waited="human"):
         set_status(key, self.labels["queue"])
 
-    def done(self, key, body, waited=None, why=None):
+    def done(self, key, body, waited=None, why=None, *, protected_change=False):
         set_status(key, "done")
         self.comment(key, body)
         commit_ticket(key, f"chore(factory): close {key}" + (f"\n\n{why}" if why else ""))
@@ -621,7 +625,7 @@ class MemoryTickets:
         self.ticket(key)["status"] = "queue"
         self.effects.append(("resume", str(key), waited))
 
-    def done(self, key, body, waited=None, why=None):
+    def done(self, key, body, waited=None, why=None, *, protected_change=False):
         t = self.ticket(key)
         t["comments"].append(body)
         t.update(state="CLOSED", status="done", why=why)
@@ -2105,7 +2109,8 @@ def advance(job, stage):
                 create_follow_ups(job)
             except Exception as e:
                 print(f"{job['id']}: couldn't file the follow-ups: {str(e).strip()[:200]}", file=sys.stderr)
-        TICKETS.done(job["issue"], merge_summary(job, rough), waited={"needs-human": "human", "needs-info": "info"}.get(old),
+        waited = {"needs-human": "human", "paused": "human", "needs-info": "info"}.get(old)
+        TICKETS.done(job["issue"], merge_summary(job, rough), waited=waited,
                      why=f"{job['title']} (factory job {job['id']})")
 
     elif stage == "rejected" and (old in WAITING | REJECTABLE or (old == "intake" and (d / "rejection.md").exists())):
@@ -2114,7 +2119,7 @@ def advance(job, stage):
         waited = "info" if old == "needs-info" else "human"  # paused too
         if job.get("protected_only") and old == "needs-human":  # a human made the change by hand
             TICKETS.done(job["issue"], f"### Factory: closed, a human made this change\n\n{reason}", waited=waited,
-                         why=f"{job['title']} (made by hand, factory job {job['id']})")
+                         why=f"{job['title']} (made by hand, factory job {job['id']})", protected_change=True)
         else:
             TICKETS.reject(job["issue"], f"### Factory: rejected\n\n{reason}", waited=waited)
         if job["pr"] and GITHUB:
