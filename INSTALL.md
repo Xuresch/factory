@@ -182,7 +182,11 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
   carry over).
 - `ci_wait_minutes` (default 30) and `ci_start_grace_seconds` (default 180),
   GitHub only: `job merge` pushes the synced, gated branch and waits for the
-  PR's checks on that commit before `gh pr merge`. A failing GitHub Actions
+  PR's checks on that commit before `gh pr merge`. When the reviewed commit
+  had no check at approve (the PR's base runs no CI) and the branch changes
+  no workflow, it waits only a couple of polls instead of the grace. The
+  merge gate reuses the round gate's PASS when the commit and checks.sh are
+  the ones it passed and checks.sh doesn't read `FACTORY_GATE`. A failing GitHub Actions
   check is rerun once per commit (`gh run rerun --failed`), at approve and at
   merge; only a check that fails again counts, and one that passed on rerun
   is listed as `Passed on rerun` in `ci.md` and `merge-ci.md`. A failing check

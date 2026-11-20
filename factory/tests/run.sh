@@ -514,9 +514,15 @@ import sys; p = sys.argv[1]; s = open(p).read()
 open(p, "w").write(s.replace("## Follow-ups\nNone.", "## Follow-ups\n- Do the other half: it was too big."))
 EOF
   factory/bin/route "$id" >/dev/null; J advance "$id" spec >/dev/null
-  check "ticket created" "$(cat .scratch/f/issues/02-*.md)" "**Status:** needs-triage" &&
+  check "not filed while the job runs" "[$(ls .scratch/f/issues/02-*.md 2>/dev/null)]" "[]" || return 1
+  echo "# Spec" > "factory/jobs/$id/spec.md"; J advance "$id" build >/dev/null
+  build_commit "$id" y.txt y; to_review "$id"; review "$id" 1 code PASS
+  J advance "$id" approve >/dev/null; printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"
+  J merge "$id" >/dev/null
+  check "ticket created at merge" "$(cat .scratch/f/issues/02-*.md)" "**Status:** needs-triage" &&
   check "capitalised" "$(cat .scratch/f/issues/02-*.md)" "It was too big" &&
-  check "recorded" "$(field "$id" "d['follow_ups'][0]['issue']")" "f/02"
+  check "recorded" "$(field "$id" "d['follow_ups'][0]['issue']")" "f/02" &&
+  check "only once" "$(ls .scratch/f/issues/ | grep -c '^0[2-9]-')" "1"
 }
 
 t_hold_resume_rewind_route() {
@@ -2398,14 +2404,18 @@ t_factory_label_follow_ups() {
   new_repo factorylabelfollow; ticket 01 One '**Labels:** factory'
   set_config labels "$FACTORY_LABELS"; commit_all
   local id; id=$(J create f/01); intake "$id" low none; add_follow_up "$id"
-  factory/bin/route "$id" >/dev/null; J advance "$id" spec >/dev/null
+  factory/bin/route "$id" >/dev/null; J advance "$id" rejected >/dev/null 2>&1 ||
+    { sed -i 's/^DECISION: ACCEPT/DECISION: REJECT/' "factory/jobs/$id/intake.md"; J advance "$id" rejected >/dev/null; }
   local t; t=$(cat .scratch/f/issues/02-*.md)
   check "needs triage" "$t" "**Status:** needs-triage" &&
   check "handed to the factory" "$t" "**Labels:** factory" || return 1
   sed -i 's/needs-triage/ready-for-agent/' .scratch/f/issues/02-*.md
   check "triaged, it comes back to the factory" "$(J queue)" $'new\tf/02' || return 1
-  sed -i '/^\*\*Labels:\*\*/d' .scratch/f/issues/01-t.md  # a person takes f/01 back
-  check "a job whose label is gone stops" "$(J queue)" $'skip\tf/01\t'"$id"$'\tspec\tissue is closed or no longer labeled both ready-for-agent and factory'
+  ticket 03 Three '**Labels:** factory'; commit_all
+  local id3; id3=$(J create f/03); intake "$id3" low none
+  factory/bin/route "$id3" >/dev/null; J advance "$id3" spec >/dev/null
+  sed -i '/^\*\*Labels:\*\*/d' .scratch/f/issues/03-*.md  # a person takes f/03 back
+  check "a job whose label is gone stops" "$(J queue)" $'skip\tf/03\t'"$id3"$'\tspec\tissue is closed or no longer labeled both ready-for-agent and factory'
 }
 
 gh_labels_of() { python3 -c "import json; print(sorted(l['name'] for l in json.load(open('$GH/issue-$1.json'))['labels']))"; }
@@ -2425,8 +2435,7 @@ t_gh_factory_label() {
   check "listed while waiting" "$(J queue)" $'wait\t1\t'"$id"$'\tneeds-info' || return 1
   J advance "$id" intake >/dev/null; intake "$id" low none; add_follow_up "$id"
   factory/bin/route "$id" >/dev/null; J advance "$id" spec >/dev/null
-  check "follow-up filed with the factory label" "$(grep 'issue create' "$GH_LOG")" "--label needs-triage --label factory" &&
-  check "follow-up carries both" "$(gh_labels_of 3)" "['factory', 'needs-triage']" &&
+  check "no follow-up while the job runs" "[$(grep -c 'issue create' "$GH_LOG")]" "[0]" &&
   check "back in the queue" "$(gh_labels_of 1)" "['factory', 'ready-for-agent']" || return 1
   echo "# Spec" > "factory/jobs/$id/spec.md"; J advance "$id" build >/dev/null
   build_commit "$id" y.txt y
@@ -2435,7 +2444,69 @@ t_gh_factory_label() {
   to_review "$id"; review "$id" 1 code PASS; J advance "$id" approve >/dev/null
   printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"
   check "merged" "$(J merge "$id" 2>&1)" "merged PR #7" &&
+  check "follow-up filed with the factory label" "$(grep 'issue create' "$GH_LOG")" "--label needs-triage --label factory" &&
   check "the factory never edits its label" "[$(grep 'issue edit' "$GH_LOG" | grep -c 'factory')]" "[0]"
+}
+
+t_merge_gate_reuses_round_gate() {
+  new_repo mergereuse; ticket 01 One; ticket 02 Two; commit_all
+  local id; id=$(to_build 01 low none) || return 1
+  build_commit "$id" y.txt y; to_review "$id"; review "$id" 1 code PASS
+  J advance "$id" approve >/dev/null; printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"
+  J merge "$id" >/dev/null || return 1
+  check "same commit: round gate reused" "$(cat "factory/jobs/$id/round-1/merge-checks.md")" "Reused round 1's gate" &&
+  check "records the checks.sh it ran" "$(cat "factory/jobs/$id/round-1/checks.md")" "CHECKS_SH: " || return 1
+  local id2; id2=$(to_build 02 low none) || return 1
+  build_commit "$id2" z.txt z; to_review "$id2"; review "$id2" 1 code PASS
+  J advance "$id2" approve >/dev/null; printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id2/decision.md"
+  echo 'true' >> factory/checks.sh; commit_all "checks change"
+  J merge "$id2" >/dev/null || return 1
+  check "checks.sh changed: full run" "$(cat "factory/jobs/$id2/round-1/merge-checks.md")" "checks.sh passed in"
+}
+
+t_update_keeps_agent_entries() {
+  new_repo updateagent
+  python3 - <<'PY'
+import json; p = "factory/config.json"; c = json.load(open(p))
+c["routing"]["low"]["code"] = {"agent": "claude", "model": "haiku"}; json.dump(c, open(p, "w"), indent=2)
+PY
+  commit_all
+  factory/bin/update "$FACTORY_SRC/.." --force >/dev/null 2>&1
+  check "no template effort on the repo's model" "$(python3 -c "import json; print(json.load(open('factory/config.json'))['routing']['low']['code'])")" "{'agent': 'claude', 'model': 'haiku'}"
+}
+
+t_haiku_gets_no_effort() {
+  new_repo haikueffort; ticket 01 One; commit_all
+  local id; id=$(to_build 01 low none)
+  J route-set "$id" builder=claude/haiku:medium >/dev/null && J start "$id" builder >/dev/null || return 1
+  check "model reaches Orca" "$(tail -1 "$CALLS")" "--agent claude --model haiku" &&
+  check "no effort for Haiku" "[$(tail -1 "$CALLS" | grep -c -- '--effort')]" "[0]"
+}
+
+t_gh_needs_a_human_asked_early() {
+  new_gh_repo ghaskearly; gh_issue 1 One
+  local id; id=$(J create 1) || return 1
+  intake "$id" low none; factory/bin/route "$id" >/dev/null && J advance "$id" spec >/dev/null || return 1
+  printf '# feat: t\n\n## Needs a human\n- Is the flag on in production? hetzner values. Default: off; if on, nothing changes.\n' \
+    > "factory/jobs/$id/spec.md"
+  J advance "$id" build >/dev/null || return 1
+  check "posted when the build starts" "$(grep -A1 '^issue comment 1' "$GH_LOG" | tail -1)" "### Factory: questions for a human while $id builds" &&
+  check "with the item" "$(cat "$GH_LOG")" "1. Is the flag on in production?" &&
+  check "recorded" "$(field "$id" "d['human_asked']['items'][0]")" "Is the flag on" || return 1
+  local n; n=$(grep -c '^issue comment 1' "$GH_LOG")
+  printf 'STATUS: BLOCKED\n\n## Summary\n- x\n' > "factory/jobs/$id/build.md"
+  echo 'other' | J rewind "$id" build >/dev/null 2>&1
+  check "not posted twice" "$(grep -c '^issue comment 1' "$GH_LOG")" "$n"
+}
+
+t_gh_no_pr_ci_skips_grace() {
+  new_gh_repo ghnoprci; gh_issue 1 One; set_config ci_start_grace_seconds 30
+  local id; id=$(gh_to_merging 1) || return 1
+  check "no CI at approve recorded" "$(field "$id" "bool(d.get('no_pr_ci'))")" "True" || return 1
+  local t0=$SECONDS out; out=$(J merge "$id" 2>&1)
+  check "merged" "$out" "merged PR #7" &&
+  check "says why it didn't wait" "$(cat "factory/jobs/$id/round-1/merge-ci.md")" "No CI for this PR" &&
+  check "well under the 30 s grace" "[$(( SECONDS - t0 < 15 ))]" "[1]"
 }
 
 t_update_adds_nested_config_key() {

@@ -26,9 +26,16 @@ quick self-check inside the builder's turn, and the gate after it runs anyway.
 checks.log and checks.md have ANSI color codes removed. checks.md lists the
 lines that look like failures under `## Failures`, with the first one's
 context, above the log's tail.
+
+The merge gate reuses the round gate's PASS instead of running checks.sh again
+when nothing it would judge changed: the merge commit is the commit checks.md
+passed (the base sync brought nothing), checks.sh is byte for byte the one that
+ran, and checks.sh doesn't read FACTORY_GATE (a repo that runs less in a round
+always gets the full merge run).
 """
 
 import fcntl
+import hashlib
 import fnmatch
 import json
 import os
@@ -285,6 +292,22 @@ def waited_minutes(job):
     return int((datetime.now(timezone.utc) - at).total_seconds() // 60)
 
 
+def checks_hash():
+    """sha1 of checks.sh as it is now: checks.md records which script judged."""
+    return hashlib.sha1(CHECKS.read_bytes()).hexdigest()
+
+
+def reusable(checks_md, commit):
+    """True when the round's checks.md passed this very commit with this very checks.sh,
+    and checks.sh runs the same at merge as in a round (it never reads FACTORY_GATE)."""
+    if not checks_md.exists():
+        return False
+    head = dict(l.split(": ", 1) for l in checks_md.read_text().split("\n\n", 1)[0].splitlines() if ": " in l)
+    code = [l for l in CHECKS.read_text().splitlines() if not l.lstrip().startswith("#")]
+    return (head.get("GATE") == "PASS" and head.get("COMMIT") == commit
+            and head.get("CHECKS_SH") == checks_hash() and not any("FACTORY_GATE" in l for l in code))
+
+
 def gate(job_id, merge):
     job = json.loads((FACTORY / "jobs" / job_id / "job.json").read_text())
     worktree = job["worktree"]
@@ -302,6 +325,17 @@ def gate(job_id, merge):
     commit = git(worktree, "rev-parse", "HEAD").strip()
     protected = protected_changes(worktree, base_ref)
     commits = "" if merge else commit_format(job, worktree, base_ref)
+    if merge and reusable(round_dir / "checks.md", commit):
+        (round_dir / "merge-checks.md").write_text(
+            f"GATE: PASS\nCOMMIT: {commit}\n\n## Summary\n"
+            f"- Reused round {job['round']}'s gate (checks.md): the merge commit {commit[:7]} is the commit it "
+            "passed, the base sync brought nothing new, and checks.sh is unchanged and runs the same in a "
+            "round as at merge\n"
+            f"- Protected paths: {'changed: ' + ', '.join(protected) if protected else 'none changed'}\n\n"
+            "## Protected paths\n" + ("\n".join(f"- {p}" for p in protected) if protected else "None changed.") + "\n")
+        if not protected:
+            print(f"GATE: PASS ({job_id} round {job['round']}, reused checks.md: same commit {commit[:7]})")
+            sys.exit(0)
     waited = waited_minutes(job) if not merge else None
     queued, other = take_slot(job_id, "merge" if merge else "round")
     code, log, seconds = run_checks(worktree, base_ref, "merge" if merge else "round")
@@ -328,7 +362,7 @@ def gate(job_id, merge):
         summary.append(f"The gate ran {waited} min after the job entered `gate`: that time went to "
                        f"waiting for the orchestrator, not to checks.sh ({seconds}s)")
     (round_dir / f"{name}.md").write_text(
-        f"GATE: {verdict}\nCOMMIT: {commit}\n\n"
+        f"GATE: {verdict}\nCOMMIT: {commit}\nCHECKS_SH: {checks_hash()}\n\n"
         "## Summary\n" + "\n".join(f"- {s}" for s in summary) + "\n\n"
         "## Protected paths\n"
         + ("\n".join(f"- {p}" for p in protected) if protected else "None changed.") + "\n\n"

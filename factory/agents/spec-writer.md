@@ -85,8 +85,11 @@ everything intake left out.
 
 ## Needs a human
 None. Or one bullet per thing only a human can check or do before this ships,
-each with the exact command or place to look:
-`- <what>: <command or URL>; done when <result>`.
+each a question with the exact command or place to look, your default and
+what changes if the answer differs:
+`- <question>? <command or URL>. Default: <what you assume>; if not, <what changes>.`
+When it needs access the factory doesn't have (another repo, a cluster, a
+dashboard), say whose access: `(needs access to <where>)`.
 
 ## New dependencies
 None. Or one bullet per package, tool or service the change adds:
@@ -158,11 +161,24 @@ What this slice builds, in two or three lines.
   escalates (the ESCALATE list in `factory/agents/approver.md`: permissions
   or access rules, auth, sending email, a schema migration, deploy or CI
   config, production data, and the rest), and any design that changes state
-  from URL input alone, without a user click. The human decides those after
-  the spec instead of after the build. A
+  from URL input alone, without a user click, and every term under
+  intake.md `## New terms` (default: the existing word intake names). The
+  human decides those after the spec instead of after the build. A
   high-risk job pauses after the spec only when this section lists something,
   so don't pad it, and don't leave out a real one: it is the human's one look
   before the build.
+- The factory posts `## Needs a human` on the issue when the build starts, so
+  a human answers while the builder works. Write each item so it can be
+  answered in one line without opening the job folder, and build on the
+  default meanwhile.
+- Before you finish, check the requirements and the acceptance criteria
+  against each other: can every one be met at once? A criterion that a
+  search must find nothing (`git grep X` prints nothing) and a test that
+  asserts X can't both hold; say which files the search skips. When the
+  change is about who can see or do something, list every entry point of the
+  flow (a link, a button, a redirect) and the page it leads to, with the
+  viewer's role at each step, and check that no requirement refuses on the
+  next page what another requirement offers on this one.
 - Decide about new dependencies now, not in review: list every package,
   tool or service the change adds under `## New dependencies`. A listed
   dependency pauses the job for the human's OK before anything is built, so

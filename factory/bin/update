@@ -86,12 +86,15 @@ def merge_brief(mine, theirs):
 
 
 def merge_config(mine, theirs, path=""):
+    """Add the keys the template has and this repo's config.json doesn't. An agent
+    entry ({"agent", "model", "effort"}) the repo set is kept whole: the template's
+    effort belongs to the template's model, not to the one the repo chose."""
     added = []
     for key, value in theirs.items():
         if key not in mine:
             mine[key] = value
             added.append(path + key)
-        elif isinstance(value, dict) and isinstance(mine[key], dict):
+        elif isinstance(value, dict) and isinstance(mine[key], dict) and "agent" not in mine[key]:
             added += merge_config(mine[key], value, path + key + ".")
     return added
 

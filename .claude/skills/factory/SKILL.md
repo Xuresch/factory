@@ -414,7 +414,8 @@ finished:
   round-<N>/merge-back.md and base-sync.md, fix it, and update build.md.` Only
   with no round left does it go to `needs-human`, and CI still pending after
   `ci_wait_minutes` goes there too. No check within `ci_start_grace_seconds`
-  means the repo has no CI: it merges, with `CI: NONE` in `merge-ci.md`.
+  means the repo has no CI: it merges, with `CI: NONE` in `merge-ci.md`
+  (when there was no check at approve either, it doesn't wait the grace).
   After the merge `job merge` starts `job main-ci <id>` in the background
   (config.json `main_ci`): it watches the CI on the base branch at the merge
   commit and on a failure comments on the issue and notifies the user. Don't
@@ -427,7 +428,10 @@ intake or spec (the ticket asked for it, or its risk is in `hold.after_spec_risk
 or after a spec whose `## New dependencies` lists any (`paused after dependencies`).
 A job whose risk is in `hold.after_spec_risk` pauses after the spec only when
 its `## Needs a human` lists something (`hold.only_when_needed`, default on);
-tell the user those items, they are what the human has to do.
+tell the user those items, they are what the human has to do. Without a
+hold, the factory posts them on the issue when the build starts and
+notifies the user; a reply that only answers them needs no feedback (`job
+comments <id> --seen`), the approver reads it in issue.md.
 Stop working on it and tell the user which file to review. Resuming a
 dependencies pause approves them; the approver won't ask about them again. It resumes only
 through the user (see below).

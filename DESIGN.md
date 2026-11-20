@@ -296,7 +296,17 @@ A skipped check is listed, not failed: a skipped deploy is the thing to see.
 stage with its round and time to `history`; the dashboard's overview shows how
 long each stage took. When intake leaves work out, it lists it under
 `## Follow-ups`, and the factory files each one once as a `needs-triage`
-ticket (or GitHub issue), so nothing intake cut is lost.
+ticket (or GitHub issue), so nothing intake cut is lost. An accepted job
+files them when it merges, not at intake: until then they stand in the
+intake comment, and a human who wants one in this ticket after all says so
+before it becomes an issue (a rejected or protected job files them at once).
+
+**Questions for a human go out when the build starts.** When the spec lists
+`## Needs a human` items and no hold already put them to a human, the factory
+posts them on the issue (job.json `human_asked`) as the build begins, each a
+question with the spec's default. The builder works on that default; the
+replies land in issue.md before the approver runs, and an item still open
+then stops the job as before.
 
 **A human can steer any job.** A ticket line `**Factory:** hold after spec`
 (or `intake`), or a risk listed in `hold.after_spec_risk` (default `high`),
