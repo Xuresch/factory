@@ -19,7 +19,10 @@ pub type Row = Map<String, Value>;
 pub type Param = turso::Value;
 
 /// `(version, sql)`, in order.
-const MIGRATIONS: [(i64, &str); 1] = [(1, include_str!("../migrations/0001_schema.sql"))];
+const MIGRATIONS: [(i64, &str); 2] = [
+    (1, include_str!("../migrations/0001_schema.sql")),
+    (2, include_str!("../migrations/0002_cost_split.sql")),
+];
 
 /// `(sql, params)`: one statement of a batch.
 pub type Statement = (&'static str, Vec<Param>);

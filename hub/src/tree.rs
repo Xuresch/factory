@@ -344,12 +344,13 @@ impl Hub {
             )
             .await?
         {
+            // both agents, zeroes too: an empty split would read as a total-only job (all claude)
             let mut by_agent = Map::new();
             for agent in ["claude", "codex"] {
-                let usd = store::get_f64(&row, agent);
-                if usd != 0.0 {
-                    by_agent.insert(agent.to_owned(), crate::util::float(usd));
-                }
+                by_agent.insert(
+                    agent.to_owned(),
+                    crate::util::float(store::get_f64(&row, agent)),
+                );
             }
             projects
                 .entry(get_or_empty(&row, "repo").to_owned())
@@ -378,6 +379,14 @@ impl Hub {
                     ctype: TEXT,
                     body: b"dashboard.html not found\n".to_vec(),
                 },
+            });
+        }
+        if rest == "job-summary.js" {
+            // factory/job-summary.js, next to the dashboard it serves
+            let path = self.dashboard.with_file_name("job-summary.js");
+            return Ok(match tokio::fs::read(&path).await {
+                Ok(body) => Answer::ok("text/javascript; charset=utf-8", body),
+                Err(_) => Answer::not_found(),
             });
         }
         if rest == "hub" {

@@ -98,7 +98,7 @@ impl Hub {
                  j.intake_split, j.intake_rescoped, j.builder_agent, j.builder_model, \
                  j.builder_effort, j.paused_after, j.started, j.ended, j.last_activity, \
                  j.duration_s, j.wait_s, j.work_s, j.cost_usd, j.cost_claude, j.cost_codex, \
-                 j.cost_other, j.input_tokens, j.cached_tokens, j.output_tokens, j.findings, \
+                 j.cost_other, j.cost_split, j.input_tokens, j.cached_tokens, j.output_tokens, j.findings, \
                  j.findings_disputed, j.builder_changes, j.continues, j.human_approvals, \
                  j.review_problems, j.removed_at, r.slug AS repo, m.name AS machine, \
                  c.removed_at AS checkout_removed {JOB_FROM}{filter} ORDER BY j.last_activity DESC"
@@ -244,6 +244,7 @@ impl Hub {
             let o = job.as_object_mut().expect("object");
             o.extend(json!({"id":id,"key":val(r,"job_key"),"machine":val(r,"machine"),"repo":repo_name,"href":format!("/r/{}/dashboard.html#job={}",quote(repo_name),quote(&repo_id)),"issue":val(r,"issue_ref"),"spec_skipped":boolean(r,"spec_skipped"),"removed":!val(r,"removed_at").is_null() || !val(r,"checkout_removed").is_null(),
                 "cost_by_agent":{"claude":val(r,"cost_claude"),"codex":val(r,"cost_codex"),"other":val(r,"cost_other")},
+                "cost_split":store::get(r,"cost_split").and_then(|s| serde_json::from_str::<Value>(s).ok()).filter(Value::is_object).unwrap_or(Value::Null),
                 "tokens":{"input":val(r,"input_tokens"),"cached":val(r,"cached_tokens"),"output":val(r,"output_tokens")},
                 "cost_breakdown":child("job_costs").iter().map(|x| fields(x,&["role","role_base","agent","model","sessions","input_tokens","cached_tokens","output_tokens","cost_usd"])).collect::<Vec<_>>(),
                 "intake":{"decision":val(r,"intake_decision"),"risk":val(r,"intake_risk"),"size":val(r,"intake_size"),"split":boolean(r,"intake_split"),"rescoped":boolean(r,"intake_rescoped"),"surfaces":child("job_surfaces").iter().map(|x| val(x,"surface")).collect::<Vec<_>>()},
