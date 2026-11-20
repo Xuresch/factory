@@ -746,7 +746,7 @@ async function poll() {
   try {
     jobs = await loadJobs()
     await render()
-    if (openJobId) await refreshDrawer()
+    if (openJobId) await refreshDrawer(true)
     routeJob()
     lastOk = Date.now()
     status.className = 'status'
@@ -794,15 +794,30 @@ function tone(first) {
   return null
 }
 
-// One drawer refresh at a time decides what the drawer shows: a reply for an older refresh, or for
-// a job no longer open, is dropped.
-let drawerSeq = 0
-async function refreshDrawer() {
+// User actions can replace a pending refresh. Polling gives the current refresh time to finish.
+let drawerRequest = null
+async function refreshDrawer(fromPoll = false) {
   const id = openJobId
-  const seq = ++drawerSeq
-  const stale = () => seq !== drawerSeq || openJobId !== id
+  if (fromPoll && drawerRequest?.id === id) return
   const listed = jobs.find((j) => j.id === id)
   if (!listed) return
+
+  const request = { id }
+  drawerRequest = request
+  const stale = () => drawerRequest !== request || openJobId !== id
+  try {
+    await renderDrawer(listed, stale)
+  } catch (err) {
+    if (stale()) return
+    if (fromPoll) throw err
+    openText = undefined
+    $('d-doc').innerHTML = `<p class="note">${esc(err.message)}</p>`
+  } finally {
+    if (drawerRequest === request) drawerRequest = null
+  }
+}
+
+async function renderDrawer(listed, stale) {
   const detail = await jobSource().detail(listed)
   if (stale()) return
   const job = detail.job
@@ -1088,16 +1103,13 @@ async function openDrawer(id) {
   returnFocus = document.activeElement
   document.body.classList.add('open')
   $('overlay').querySelector('.close').focus({ preventScroll: true })
-  try {
-    await refreshDrawer()
-  } catch (err) {
-    $('d-doc').innerHTML = `<p class="note">${esc(err.message)}</p>`
-  }
+  await refreshDrawer()
 }
 
 function closeDrawer() {
   if (openJobId && location.hash.startsWith('#job=')) history.replaceState(null, '', '#board')
   openJobId = null
+  drawerRequest = null
   document.body.classList.remove('open')
   if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true })
   returnFocus = null

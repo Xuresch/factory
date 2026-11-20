@@ -5,8 +5,10 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
+const os = require('node:os')
 const path = require('node:path')
 const vm = require('node:vm')
+const { spawnSync } = require('node:child_process')
 
 const FACTORY = path.resolve(__dirname, '..')
 const J = require(path.join(FACTORY, 'job-summary.js'))
@@ -82,6 +84,36 @@ test('the rule: stored split, then priced rows, then a total-only job is claude'
   sameSplit(J.agentSplit({ total: 1.006, split: { claude: 1 } }), { claude: 1, codex: 0, other: 0.006 })
 })
 
+test('an unassigned half cent counts as Other', () => {
+  assert.equal(J.agentSplit({ total: 1.005, split: { claude: 1 } }).other, 0.005)
+  assert.equal(J.agentSplit({ total: 0.305, split: { claude: 0.1, codex: 0.2 } }).other, 0.005)
+  for (const [total, other] of [[1.004999, 0], [1.005, 0.005], [1.005001, 0.005001]]) {
+    sameSplit(J.agentSplit({ total, split: { claude: 1 } }), { claude: 1, codex: 0, other })
+    sameSplit(J.agentSplit({ total, rows: [{ agent: 'claude', cost_usd: 0.7 }, { agent: 'codex', cost_usd: 0.3 }] }),
+      { claude: 0.7, codex: 0.3, other })
+  }
+})
+
+const INSTALL = path.join(FACTORY, '..', 'INSTALL.md')
+const installDocs = fs.existsSync(INSTALL) ? fs.readFileSync(INSTALL, 'utf8') : ''
+test('the documented copy manifest installs a runnable job summary test', {
+  skip: !installDocs.includes('https://raw.githubusercontent.com/Xuresch/factory/main'),
+}, (t) => {
+  const paths = installDocs.match(/## 1\. Copy\n[\s\S]*?\n```\n([\s\S]*?)\n```/)[1].split('\n')
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'job-summary-install-'))
+  t.after(() => fs.rmSync(project, { recursive: true, force: true }))
+  for (const file of paths) {
+    const dest = path.join(project, file)
+    fs.mkdirSync(path.dirname(dest), { recursive: true })
+    fs.copyFileSync(path.join(FACTORY, '..', file), dest)
+  }
+  const env = { ...process.env }
+  delete env.NODE_TEST_CONTEXT
+  const result = spawnSync(process.execPath, ['--test', 'factory/tests/job_summary.test.js'],
+    { cwd: project, encoding: 'utf8', env })
+  assert.equal(result.status, 0, result.stdout + result.stderr)
+})
+
 // ---- static local serving -------------------------------------------------
 
 test('local: round Verdicts of a job in flight, pending and invalid kept', async () => {
@@ -144,6 +176,8 @@ test('hub: the detail operation fetches the job and reads its documents from the
 // Runs factory/dashboard.html's scripts in a vm. files: url -> body for its fetches ('hub' decides the mode).
 function dashboard(files) {
   const els = new Map()
+  const clickListeners = []
+  let pollTick
   const el = (id) => {
     if (!els.has(id)) {
       const attrs = {}
@@ -162,10 +196,10 @@ function dashboard(files) {
   }
   const document = { getElementById: el, activeElement: null, body: { classList: { add() {}, remove() {} } },
     documentElement: { classList: { add() {}, remove() {} }, clientWidth: 1200 }, head: { append() {} },
-    createElement: () => ({}), addEventListener() {}, querySelector: () => null }
+    createElement: () => ({}), addEventListener(type, listener) { if (type === 'click') clickListeners.push(listener) }, querySelector: () => null }
   const ctx = { document, fetch: fetchFake, location: { hash: '', search: '', pathname: '/dashboard.html', href: 'http://x/dashboard.html', port: '' },
     history: { replaceState() {}, state: null }, innerWidth: 1200, innerHeight: 800, addEventListener() {},
-    setInterval: () => 0, clearTimeout() {}, setTimeout: () => 0, console, URL, URLSearchParams, Date, Math, JSON, Promise }
+    setInterval: (callback) => { pollTick = callback; return 0 }, clearTimeout() {}, setTimeout: () => 0, console, URL, URLSearchParams, Date, Math, JSON, Promise }
   ctx.self = ctx
   ctx.window = ctx
   vm.createContext(ctx)
@@ -173,7 +207,10 @@ function dashboard(files) {
   vm.runInContext(fs.readFileSync(path.join(FACTORY, 'job-summary.js'), 'utf8'), ctx)
   const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).filter((s) => s.includes('POLL_MS'))
   vm.runInContext(scripts[0], ctx)
-  return { run: (code) => vm.runInContext(code, ctx), el, ctx }
+  const clickJob = (id) => Promise.all(clickListeners.map((listener) => listener({ target: {
+    closest: (selector) => selector === '[data-job]' ? { dataset: { job: id } } : null,
+  } })))
+  return { run: (code) => vm.runInContext(code, ctx), el, ctx, clickJob, tick: () => pollTick() }
 }
 
 const settle = () => new Promise((r) => setImmediate(r))
@@ -258,6 +295,53 @@ test('a job hash link opens that job among duplicate keys, a late detail cannot 
   for (let i = 0; i < 10; i++) await settle()
   assert.equal(d.run('openJobId'), b.id)
   assert.equal(d.el('d-title').textContent, 'on m2', 'the late reply for the other job is dropped')
+})
+
+test('hub drawer: a late detail error leaves the next job visible', async () => {
+  const [a, b] = FIXTURES.slice(0, 2).map((f) => f.doc)
+  let rejectDetail
+  const slow = new Promise((_, reject) => { rejectDetail = reject })
+  const files = modes([a, b]).hubRepo
+  files['/api/repos/o/r/jobs/' + a.id] = () => slow
+  files['/api/repos/o/r/jobs/' + b.id] = JSON.stringify({ ...hubJob(b), files: [] })
+  const d = await loaded(dashboard(files))
+
+  const openingA = d.clickJob(a.id)
+  await d.clickJob(b.id)
+  const shown = d.el('d-doc').innerHTML
+  assert.equal(d.el('d-title').textContent, b.title)
+  assert.ok(shown)
+
+  rejectDetail(new Error('job A detail failed'))
+  await openingA
+  assert.equal(d.el('d-doc').innerHTML, shown)
+})
+
+test('hub drawer: a poll tick lets the pending detail finish', async () => {
+  const doc = FIXTURES[0].doc
+  const files = modes([doc]).hubRepo
+  const detail = JSON.stringify({ ...hubJob(doc), files: [] })
+  let finishFirst, finishLater
+  const first = new Promise((resolve) => { finishFirst = resolve })
+  const later = new Promise((resolve) => { finishLater = resolve })
+  let requests = 0
+  files['/api/repos/o/r/jobs/' + doc.id] = () => ++requests === 1 ? first : later
+  const d = await loaded(dashboard(files))
+
+  const opening = d.clickJob(doc.id)
+  const poll = d.tick()
+  try {
+    await settle()
+    finishFirst(detail)
+    await opening
+    assert.equal(d.el('d-title').textContent, doc.title)
+    assert.equal(requests, 1)
+  } finally {
+    finishLater(detail)
+    await poll
+  }
+  await d.tick()
+  assert.equal(requests, 2, 'the next tick can refresh the drawer')
 })
 
 test('local drawer: a missing document keeps the unavailable state', async () => {
