@@ -51,8 +51,13 @@ def turn(model):
 
 
 def count(ts, inp, out=0, cached=0):
-    return {"timestamp": ts, "type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {
-        "input_tokens": inp, "cached_input_tokens": cached, "output_tokens": out, "total_tokens": inp + out}}}}
+    return token_count(ts, {"input_tokens": inp, "cached_input_tokens": cached,
+                            "output_tokens": out, "total_tokens": inp + out})
+
+
+def token_count(ts, total):
+    return {"timestamp": ts, "type": "event_msg",
+            "payload": {"type": "token_count", "info": {"total_token_usage": total}}}
 
 
 def task(text):
@@ -81,6 +86,31 @@ class Base(unittest.TestCase):
 
 
 class JobUsage(Base):
+    def test_empty_codex_count_keeps_cumulative_baseline(self):
+        counts = (count("2026-11-14T12:00:00Z", 1_000_000),
+                  token_count("2026-11-14T12:00:01Z", {}),
+                  count("2026-11-14T12:00:02Z", 1_000_000))
+        lines(self.sessions / "2026/11/14/rollout-job.jsonl",
+              meta("job"), task(BRIEF), turn("gpt-two"), *counts)
+        lines(self.sessions / "2026/11/14/rollout-outside.jsonl",
+              meta("outside"), turn("gpt-two"), *counts)
+
+        with self.subTest(rollup="job"):
+            totals, rows = su.job_usage(JOB, [], [self.sessions], PRICES)
+            self.assertEqual(totals["codex"], 2.0)
+            self.assertEqual(rows[("builder", "codex", "gpt-two")]["input_tokens"], 1_000_000)
+        with self.subTest(rollup="outside"):
+            outside = su.outside_usage([], [self.sessions], PRICES, su.cache_path())
+            self.assertEqual(outside["months"], {"2026-11": {"claude": 0.0, "codex": 2.0}})
+
+    def test_claude_usage_before_job_brief_does_not_count(self):
+        project = self.projects / "-r"
+        lines(project / "s1.jsonl", user("unrelated task"),
+              assistant("m1", input_tokens=1_000_000), user(BRIEF))
+        totals, rows = su.job_usage(JOB, [project], [], PRICES)
+        self.assertEqual(totals["claude"], 0.0)
+        self.assertEqual(rows, {})
+
     def test_codex_model_change_charges_each_increment_at_its_model(self):
         switching_rollout(self.sessions / "2026/11/14/rollout-c1.jsonl", BRIEF)
         # A shorter copy of the same session in another home adds nothing.
@@ -150,6 +180,24 @@ class OutsideUsage(Base):
 
     def scan(self, prices=PRICES):
         return su.outside_usage(su.claude_project_dirs(), su.codex_session_dirs(), prices, su.cache_path())
+
+    def test_undated_claude_copy_does_not_replace_dated_usage(self):
+        lines(self.projects / "-x/s1.jsonl", user("hi"),
+              assistant("same-id", input_tokens=1_000_000),
+              assistant("same-id", ts=None, input_tokens=1_000_000))
+        expected = {"2026-11": {"claude": 4.0, "codex": 0.0}}
+        self.assertEqual(self.scan()["months"], expected)
+        self.assertEqual(self.scan()["months"], expected)
+
+    def test_outside_usage_excludes_factory_brief_without_final_slash(self):
+        brief = "Job folder: /r/factory/jobs/001-a."
+        lines(self.projects / "-x/s1.jsonl", user(brief),
+              assistant("m1", input_tokens=1_000_000))
+        lines(self.sessions / "2026/11/14/rollout-job.jsonl",
+              meta("job"), task(brief), turn("gpt-two"), count("2026-11-14T12:00:00Z", 1_000_000))
+        summary = self.scan()
+        self.assertEqual(summary["months"], {})
+        self.assertEqual(summary["factory_sessions"], 2)
 
     def test_summary(self):
         self.fixture()

@@ -38,6 +38,8 @@ from pathlib import Path
 
 FACTORY = Path(__file__).resolve().parents[1]
 JOB_FOLDER = re.compile(r'Job folder: ([^\n]*?/factory/jobs/[^/\s"\\]+/)')
+# Older briefs can mark a factory session without naming a slash-terminated job folder.
+FACTORY_BRIEF = re.compile(r"Job folder: \S*/factory/jobs/")
 ROLE = re.compile(r"factory/agents/([\w-]+)\.md")
 CLAUDE_HEAD, CODEX_HEAD = 40, 60  # a brief is in a session's first lines
 CODEX_KEYS = ("input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "total_tokens")
@@ -150,6 +152,10 @@ def read_claude(path, only=None):
                     if only == "outside":
                         return {**out, "msgs": {}}
                     continue
+                if only == "outside" and FACTORY_BRIEF.search(text):
+                    return {**out, "factory": True, "msgs": {}}
+                if only == "factory":
+                    continue
             msg = entry.get("message")
             if entry.get("type") != "assistant" or not isinstance(msg, dict) or not isinstance(msg.get("usage"), dict):
                 continue
@@ -159,7 +165,10 @@ def read_claude(path, only=None):
                    (u.get("cache_creation_input_tokens", 0) or 0) - write_1h, write_1h,
                    u.get("cache_read_input_tokens", 0) or 0]
             if any(row):
-                out["msgs"][msg.get("id") or f"{path}:{i}"] = [month(entry.get("timestamp")), str(msg.get("model"))] + row
+                usage_month = month(entry.get("timestamp"))
+                if usage_month is None and only == "outside":
+                    continue
+                out["msgs"][msg.get("id") or f"{path}:{i}"] = [usage_month, str(msg.get("model"))] + row
     if only == "factory" and not out["factory"]:
         out["msgs"] = {}
     return out
@@ -178,6 +187,8 @@ def read_codex(path, only=None):
                     out.update(factory=True, job_folder=m.group(1), role=role_of(line))
                     if only == "outside":
                         return {**out, "usage": {}}
+                elif only == "outside" and FACTORY_BRIEF.search(line):
+                    return {**out, "factory": True, "usage": {}}
             elif only == "factory" and not out["factory"]:
                 return {**out, "usage": {}}
             if '"session_meta"' not in line[:80] and '"turn_context"' not in line[:80] and '"token_count"' not in line:
@@ -199,6 +210,8 @@ def read_codex(path, only=None):
             elif p.get("type") == "token_count" and isinstance(p.get("info"), dict) \
                     and isinstance(p["info"].get("total_token_usage"), dict):
                 total = p["info"]["total_token_usage"]
+                if not total:
+                    continue
                 grown = {k: (total.get(k, 0) or 0) - (last.get(k, 0) or 0) for k in CODEX_KEYS}
                 last = total
                 out["tokens"] = total.get("total_tokens", 0) or 0
