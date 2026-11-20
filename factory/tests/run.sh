@@ -1649,6 +1649,35 @@ EOF
   check "failure logged" "$(head -1 "factory/jobs/$id2/worktree-setup.log")" "exit 3"
 }
 
+t_worktree_teardown_runs() {
+  new_repo wtdown; ticket 01 One; commit_all
+  python3 - <<'EOF2'
+import json; p = "factory/config.json"; c = json.load(open(p))
+c["worktree_teardown"] = 'echo "$FACTORY_WORKTREE" > "$FACTORY_MAIN_CHECKOUT/torn.txt"; test -d .git || test -f .git'
+json.dump(c, open(p, "w"))
+EOF2
+  local id; id=$(to_build 01 low none); build_commit "$id" a.txt a
+  echo 'not needed' | J reject "$id" >/dev/null
+  check "teardown ran in the worktree before removal" "$(cat torn.txt)" ".worktrees/$id" &&
+  check "teardown logged" "$(head -1 "factory/jobs/$id/worktree-teardown.log")" "worktree_teardown exit 0" &&
+  check "worktree gone" "$(test -d ".worktrees/$id" && echo yes || echo no)" "no"
+}
+
+t_gate_keeps_output_order() {
+  new_repo gateorder; ticket 01 One; commit_all
+  local id; id=$(to_build 01 low none); build_commit "$id" y.txt y; ready "$id"; J advance "$id" gate >/dev/null
+  cat > factory/checks.sh <<'EOF2'
+#!/usr/bin/env bash
+echo "== step one"
+for i in $(seq 1 30); do echo "warning $i" >&2; done
+echo "== summary"
+echo "PASS 1s step one"
+EOF2
+  factory/bin/gate "$id" >/dev/null
+  check "summary is the tail" "$(grep -B1 '^```$' "factory/jobs/$id/round-1/checks.md" | tail -2 | head -1)" "PASS 1s step one" &&
+  check "stderr kept in order" "$(sed -n 2p "factory/jobs/$id/round-1/checks.log")" "warning 1"
+}
+
 t_dashboard_subscriptions() {
   new_repo dashsubs; commit_all
   local other="$TMP_ROOT/dashsubs/other"

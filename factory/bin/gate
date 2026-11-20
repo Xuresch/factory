@@ -179,8 +179,11 @@ def run_checks(worktree, base_ref=None, mode="full"):
     if base_ref:
         env["FACTORY_BASE_REF"] = base_ref
     start = time.monotonic()
-    res = subprocess.run(["bash", str(CHECKS)], cwd=worktree, capture_output=True, text=True, env=env)
-    return res.returncode, strip_ansi(res.stdout + res.stderr), int(time.monotonic() - start)
+    # stderr into stdout in the order written, so a summary checks.sh prints
+    # last is the log's tail even when tools warned on stderr before it
+    res = subprocess.run(["bash", str(CHECKS)], cwd=worktree, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         text=True, env=env)
+    return res.returncode, strip_ansi(res.stdout), int(time.monotonic() - start)
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")

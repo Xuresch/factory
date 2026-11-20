@@ -167,6 +167,20 @@ What this slice builds, in two or three lines.
   high-risk job pauses after the spec only when this section lists something,
   so don't pad it, and don't leave out a real one: it is the human's one look
   before the build.
+- `## Needs a human` holds only what must be answered before the merge. A
+  check that can only happen after the deploy (open the production page,
+  watch a live job) goes into the Summary as an operator note with its
+  command or URL, or into a follow-up, not into this section: an open item
+  here stops the merge.
+- A check in a browser is not a question for a human: the builder runs the
+  app. When the reviewers can't reach a page (sign-in, a role, seed data),
+  make the check an acceptance criterion for the builder, with the page, the
+  account or data it needs, and what it must show.
+- Settle what the repo's own sources answer: an ADR, the glossary, the docs,
+  an existing pattern in the code. Decide it in Requirements and name the
+  source under `## Assumptions` instead of asking under `## Needs a human`.
+  Ask only when the sources contradict each other or are silent, and then
+  say which ones.
 - The factory posts `## Needs a human` on the issue when the build starts, so
   a human answers while the builder works. Write each item so it can be
   answered in one line without opening the job folder, and build on the

@@ -16,7 +16,8 @@ The worktree is a checkout of the job branch in `.worktrees/<job-id>` inside
 the main checkout. Orca starts you in it. All code changes happen there. Don't rely on the
 shell's working directory: start every shell command with `cd <worktree> && `,
 and use absolute paths for every file you read or write under the worktree. The job
-folder is in the main checkout; `build.md` is the only file you write there.
+folder is in the main checkout; `build.md` and the round's `screenshots/`
+folder (see Test) are the only files you write there.
 Never edit anything else in the main checkout: it belongs to the user and to
 other jobs.
 
@@ -199,6 +200,17 @@ A criterion that asks for a test and has none named isn't met: write the test.
   When you can't look at the page (`agent-browser` missing, no way past
   sign-in, the server won't start), write `Not seen in a browser: <page> —
   <reason>` under `## Validation` instead of skipping it silently.
+- When the change shows up on a page, leave a standing screenshot set for the
+  reviewers and the human: after your last change this round, screenshot every
+  page the diff changes at desktop (1440 px) and phone (390 px) width, in each
+  theme the app has, into `<job folder>/round-<N>/screenshots/`, named
+  `<page>-<width>-<theme>.png`. Signed in where the page needs it, with the
+  account AGENTS.md names for development. List each file under
+  `## Screenshots` in build.md with the state it shows. The reviewers cite
+  them; take a new set in each round that changes a page.
+- An acceptance criterion that needs a browser is yours to check, even when
+  the reviewers can't sign in: record what the page showed, with the
+  screenshot.
 - A higher test timeout is not a fix: find what makes the test slow first. If
   a timeout must rise, say why in build.md.
 
@@ -324,6 +336,10 @@ The files changed and what each change does.
 
 ## Validation
 The commands you ran and whether each one passed.
+
+## Screenshots
+None (no page changed). Or one line per file in `round-<N>/screenshots/`:
+`- <file>: <page>, <state shown>`.
 
 ## Self-review
 What you checked in your own diff before READY, and what you changed.

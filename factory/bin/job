@@ -232,27 +232,41 @@ def setup_worktree(where, log):
     creates worktrees itself, so a setup hook in Orca never runs for them;
     ORCA_ROOT_PATH is set so an Orca setup script works unchanged. A failing
     setup doesn't stop the job: the log says what broke and the gate shows it."""
-    script = CONFIG.get("worktree_setup")
+    worktree_hook("worktree_setup", where, log)
+
+
+def worktree_hook(key, where, log):
+    """Run the config.json script `key` (worktree_setup, worktree_teardown) in
+    the worktree `where` and write its output to `log`. Best effort: a failure
+    is logged and printed, never raised."""
+    script = CONFIG.get(key)
     if not script:
         return
     env = dict(os.environ, ORCA_ROOT_PATH=str(REPO), FACTORY_MAIN_CHECKOUT=str(REPO), FACTORY_WORKTREE=str(where))
     start = time.monotonic()
     try:
         res = subprocess.run(["bash", "-c", script], cwd=where, env=env, capture_output=True, text=True,
-                             timeout=CONFIG.get("worktree_setup_timeout", 900))
+                             timeout=CONFIG.get(f"{key}_timeout", 900))
         code, out = res.returncode, res.stdout + res.stderr
     except subprocess.TimeoutExpired as e:
         code, out = "timeout", f"{e.stdout or ''}{e.stderr or ''}"
+    except OSError as e:
+        code, out = "error", str(e)
     log.parent.mkdir(parents=True, exist_ok=True)
-    log.write_text(f"worktree_setup exit {code} in {int(time.monotonic() - start)}s\n\n{out}")
+    log.write_text(f"{key} exit {code} in {int(time.monotonic() - start)}s\n\n{out}")
     if code != 0:
-        print(f"job: worktree_setup failed (exit {code}) in {where}; see {log}", file=sys.stderr)
+        print(f"job: {key} failed (exit {code}) in {where}; see {log}", file=sys.stderr)
 
 
-def remove_worktree(where, check=True):
+def remove_worktree(where, check=True, teardown=None):
     """Remove a job's or slice's worktree and the per-worktree build dirs
     env.sh gave it: config.json `worktree_cache_dirs`, paths in the main
-    checkout with {name} for the worktree's folder name."""
+    checkout with {name} for the worktree's folder name. With `teardown` (the
+    log path), config.json `worktree_teardown` runs in it first: what
+    `worktree_setup` started and the worktree's removal won't stop (dev
+    servers, containers, port forwards)."""
+    if teardown and Path(where).exists():
+        worktree_hook("worktree_teardown", where, teardown)
     run(["git", "worktree", "remove", "--force", str(where)], check=check)
     if Path(where).exists():  # the removal failed: the worktree may still build
         return
@@ -2243,12 +2257,13 @@ def advance(job, stage):
         label("issue", job["issue"], add=LABELS["needs_human"], remove=LABELS["queue"])
 
     if stage in TERMINAL and Path(job["worktree"]).exists():
-        remove_worktree(job["worktree"])
+        remove_worktree(job["worktree"], teardown=job_dir(job["id"]) / "worktree-teardown.log")
         run(["git", "branch", "-D", job["branch"]], check=False)
     if stage in TERMINAL:  # slices left behind by a blocked split
         for s in job.get("slices") or []:
             if Path(slice_worktree(job, s["n"])).exists():
-                remove_worktree(slice_worktree(job, s["n"]), check=False)
+                remove_worktree(slice_worktree(job, s["n"]), check=False,
+                                teardown=job_dir(job["id"]) / f"worktree-teardown-s{s['n']}.log")
             run(["git", "branch", "-D", slice_branch(job, s["n"])], check=False)
 
     after = hold_point(job, old, stage)
@@ -2535,7 +2550,7 @@ def cmd_slice_done(job, k):
             git(job, "merge", "--abort", check=False)
             raise Refused(f"slice {k} conflicts with {job['branch']}. In its worktree, run "
                           f"`git merge {job['branch']}`, resolve, commit, and report again.")
-        remove_worktree(where)
+        remove_worktree(where, teardown=job_dir(job["id"]) / f"worktree-teardown-s{k}.log")
         run(["git", "branch", "-D", slice_branch(job, k)], check=False)
         s["state"] = "done"
         job.setdefault("slice_merge_order", []).append(int(k))
