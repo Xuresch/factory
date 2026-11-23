@@ -19,6 +19,7 @@ import re
 import shutil
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -58,6 +59,7 @@ class HubCase(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         tmp = Path(self.tmp.name)
         (tmp / "dashboard.html").write_text("<title>dash</title>")
         (tmp / "job-summary.js").write_text("// summary")
@@ -65,6 +67,10 @@ class HubCase(unittest.TestCase):
         (tmp / "static").mkdir()
         (tmp / "static" / "index.html").write_text("<h1>overview</h1>")
         (tmp / "static" / "app.js").write_text("1")
+        self.start()
+
+    def start(self):
+        tmp = Path(self.tmp.name)
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
             self.port = s.getsockname()[1]
@@ -73,7 +79,7 @@ class HubCase(unittest.TestCase):
                "FACTORY_HUB_DASHBOARD": str(tmp / "dashboard.html"), "FACTORY_HUB_STATIC": str(tmp / "static")}
         self.proc = subprocess.Popen(HUB_CMD, shell=True, env=env, start_new_session=True,
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        self.addCleanup(self.stop)
+        self.addCleanup(self.stop, self.proc)
         deadline = time.time() + 15
         while True:
             try:
@@ -84,13 +90,15 @@ class HubCase(unittest.TestCase):
                     self.fail("hub did not start")
                 time.sleep(0.05)
 
-    def stop(self):
+    @staticmethod
+    def stop(proc):
+        if proc.poll() is not None:
+            return
         try:
-            os.killpg(self.proc.pid, signal.SIGKILL)
+            os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        self.proc.wait()
-        self.tmp.cleanup()
+        proc.wait()
 
     def request(self, method, path, body=None, headers=None):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
@@ -220,24 +228,24 @@ class TestIngest(HubCase):
         self.ok(push("m2", [], outside=outside({"claude": 7.0, "codex": 1.0}, {"claude": 1.0, "codex": 0.5})))
         ov = self.get_json("/api/overview")
         ra, rb = ov["repos"]
-        self.assertEqual(ra["cost_by_agent"], {"claude": 6.0, "codex": 1.0, "other": 1.0})
-        self.assertEqual(ra["cost_month_by_agent"], {"claude": 2.0, "codex": 1.0, "other": 1.0})
+        self.assertEqual(ra["cost_by_agent"], {"claude": 7.0, "codex": 1.0, "other": 0.0})
+        self.assertEqual(ra["cost_month_by_agent"], {"claude": 3.0, "codex": 1.0, "other": 0.0})
         self.assertEqual(rb["cost_by_agent"], {"claude": 0.2, "codex": 0.5, "other": 0.1})
         self.assertEqual(rb["cost_month_by_agent"], rb["cost_by_agent"])
         self.assertEqual(ra["cost_usd"], 8.0)
         self.assertEqual(ra["cost_month"], 4.0)
         day_a = ra["daily"][-1]
         self.assertEqual((day_a["day"], day_a["jobs"], day_a["cost_usd"]), (today, 2, 4.0))
-        self.assertEqual(day_a["by_agent"], {"claude": 2.0, "codex": 1.0, "other": 1.0})
+        self.assertEqual(day_a["by_agent"], {"claude": 3.0, "codex": 1.0, "other": 0.0})
         self.assertEqual(ra["daily"][0]["by_agent"], {"claude": 0.0, "codex": 0.0, "other": 0.0})
         self.assertEqual(len(ov["daily"]), 14)
         top = ov["daily"][-1]
         self.assertEqual((top["day"], top["jobs"], top["cost_usd"]), (today, 4, 4.8))
-        self.assertEqual(top["by_agent"], {"claude": 2.2, "codex": 1.5, "other": 1.1})
+        self.assertEqual(top["by_agent"], {"claude": 3.2, "codex": 1.5, "other": 0.1})
         m = ov["month"]
-        self.assertEqual(m["factory"], {"claude": 2.2, "codex": 1.5, "other": 1.1})
+        self.assertEqual(m["factory"], {"claude": 3.2, "codex": 1.5, "other": 0.1})
         self.assertEqual(m["outside"], {"claude": 12.0, "codex": 2.0})
-        self.assertEqual(m["by_agent"], {"claude": 14.2, "codex": 3.5})
+        self.assertEqual(m["by_agent"], {"claude": 15.2, "codex": 3.5})
         self.assertEqual(m["api_equivalent_usd"], 18.8)
         self.assertEqual(m["prev"], {"month": prev, "api_equivalent_usd": 8.0,
                                      "factory": {"claude": 4.0, "codex": 0.0, "other": 0.0},
@@ -435,9 +443,6 @@ class TestTree(HubCase):
         self.assertEqual(self.get("/all/jobs/r~m2~001/job.json")[0], 200)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 class TestReadApi(HubCase):
     def test_summaries_details_and_overview(self):
         e = entry("001", round=1, issue="12", round_limit=6,
@@ -578,20 +583,49 @@ class TestJobSummary(HubCase):
         detail = self.get_json("/api/repos/o/r/jobs/011-zero-split")
         self.assertEqual(detail["cost_split"], {"claude": 0, "codex": 0})
 
-    def test_repo_and_period_totals_unchanged(self):
-        # The derived columns, as before cost_split: claude and codex from the split (else the rows),
-        # other the rest of the total above half a cent.
+    def test_repo_totals_sum_projected_agent_splits(self):
         self.push_fixtures()
         jobs = {j["id"]: j["cost_by_agent"] for j in self.get_json("/api/repos/o/r/jobs")["jobs"]}
-        self.assertEqual(jobs["014-total-only"], {"claude": 0.0, "codex": 0.0, "other": 12.0})
-        self.assertEqual(jobs["012-empty-split"], {"claude": 0.0, "codex": 0.0, "other": 4.0})
-        self.assertEqual(jobs["013-missing-split"], {"claude": 0.0, "codex": 4.0, "other": 0.0})
+        for f in SUMMARY_FIXTURES:
+            for agent, want in f["expect"].items():
+                key = f["doc"]["id"]
+                self.assertAlmostEqual(jobs[key][agent], want, 9, f"{key} {agent}")
         ov = self.get_json("/api/overview")
-        self.assertEqual(ov["repos"][0]["cost_usd"], 41.004)
-        self.assertEqual(ov["repos"][0]["cost_by_agent"], {"claude": 7.0, "codex": 12.0, "other": 22.0})
+        self.assertAlmostEqual(ov["repos"][0]["cost_usd"], sum(f["doc"]["cost_usd"] for f in SUMMARY_FIXTURES))
+        for agent, got in ov["repos"][0]["cost_by_agent"].items():
+            self.assertAlmostEqual(got, sum(f["expect"][agent] for f in SUMMARY_FIXTURES))
+
+        # The subscription feed already reads the projected Claude and Codex amounts.
         subs = {j["id"]: j["cost_by_agent"] for j in self.get_json("/r/o/r/_subscriptions.json")["projects"][0]["jobs"]}
-        self.assertEqual(subs["014-total-only"], {"claude": 0.0, "codex": 0.0})
+        self.assertEqual(subs["014-total-only"], {"claude": 12.0, "codex": 0.0})
         self.assertEqual(subs["010-split-wins"], {"claude": 0.0, "codex": 5.0})
+
+    def test_startup_reprojects_a_version_3_total_only_job(self):
+        fixture = next(f for f in SUMMARY_FIXTURES if f["doc"]["id"] == "014-total-only")
+        today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+        doc = {**fixture["doc"], "started": f"{today}T00:00:00Z", "ended": f"{today}T00:01:00Z"}
+        key = doc["id"]
+        self.ok(push("m1", [repo("o/r", [{"id": key, "job": doc, "files": {"spec.md": "x"}}])]))
+
+        self.stop(self.proc)
+        # Recreate the v3 projection for this document without changing the stored document.
+        db = sqlite3.connect(Path(self.tmp.name) / "hub.db")
+        try:
+            with db:
+                db.execute("UPDATE jobs SET projection_version=3, cost_claude=0, cost_other=cost_usd WHERE job_key=?",
+                           (key,))
+        finally:
+            db.close()
+        self.start()
+
+        want = fixture["expect"]
+        self.assertEqual(self.get_json(f"/api/repos/o/r/jobs/{key}")["cost_by_agent"], want)
+        self.assertEqual(self.get_json("/api/repos/o/r/jobs")["jobs"][0]["cost_by_agent"], want)
+        ov = self.get_json("/api/overview")
+        ra = ov["repos"][0]
+        for split in [ra["cost_by_agent"], ra["cost_month_by_agent"], ra["daily"][-1]["by_agent"],
+                      ov["daily"][-1]["by_agent"], ov["month"]["factory"]]:
+            self.assertEqual(split, want)
 
     def test_duplicate_keys_and_job_links(self):
         self.push_fixtures(("m1", "m2"))
@@ -616,3 +650,7 @@ class TestJobSummary(HubCase):
             for s in splits:
                 for agent, want in f["expect"].items():
                     self.assertAlmostEqual(s[agent], want, 9, f"{key} {agent}")
+
+
+if __name__ == "__main__":
+    unittest.main()
