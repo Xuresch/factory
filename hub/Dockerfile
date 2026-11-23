@@ -18,7 +18,7 @@ RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin hub \
 WORKDIR /app
 COPY --from=build /factory-hub /app/factory-hub
 COPY hub/static hub/static
-COPY factory/dashboard.html factory/job-summary.js factory/
+COPY factory/dashboard.html factory/job-summary.js factory/cost-aggregation.js factory/
 ENV FACTORY_HUB_BIND=0.0.0.0 \
     FACTORY_HUB_PORT=8080 \
     FACTORY_HUB_DB=/data/hub.db \

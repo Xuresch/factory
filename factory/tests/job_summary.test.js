@@ -101,7 +101,7 @@ test('an unassigned half cent counts as Other', () => {
 
 const INSTALL = path.join(FACTORY, '..', 'INSTALL.md')
 const installDocs = fs.existsSync(INSTALL) ? fs.readFileSync(INSTALL, 'utf8') : ''
-test('the documented copy manifest installs a runnable job summary test', {
+test('the documented copy manifest installs runnable dashboard tests', {
   skip: !installDocs.includes('https://raw.githubusercontent.com/Xuresch/factory/main'),
 }, (t) => {
   const paths = installDocs.match(/## 1\. Copy\n[\s\S]*?\n```\n([\s\S]*?)\n```/)[1].split('\n')
@@ -114,7 +114,7 @@ test('the documented copy manifest installs a runnable job summary test', {
   }
   const env = { ...process.env }
   delete env.NODE_TEST_CONTEXT
-  const result = spawnSync(process.execPath, ['--test', 'factory/tests/job_summary.test.js'],
+  const result = spawnSync(process.execPath, ['--test', 'factory/tests/job_summary.test.js', 'factory/tests/cost-aggregation.test.js'],
     { cwd: project, encoding: 'utf8', env })
   assert.equal(result.status, 0, result.stdout + result.stderr)
 })
@@ -209,7 +209,9 @@ function dashboard(files) {
   ctx.window = ctx
   vm.createContext(ctx)
   const html = fs.readFileSync(path.join(FACTORY, 'dashboard.html'), 'utf8')
-  vm.runInContext(fs.readFileSync(path.join(FACTORY, 'job-summary.js'), 'utf8'), ctx)
+  for (const [, src] of html.matchAll(/<script src="([^"]+)"><\/script>/g)) {
+    vm.runInContext(fs.readFileSync(path.join(FACTORY, src), 'utf8'), ctx, { filename: src })
+  }
   const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).filter((s) => s.includes('POLL_MS'))
   vm.runInContext(scripts[0], ctx)
   const clickJob = (id) => Promise.all(clickListeners.map((listener) => listener({ target: {
@@ -251,10 +253,10 @@ test('header, board, Costs table and charts use the same Agent split in every mo
     assert.equal(order[0], '014-total-only', mode + ' the $12 total-only job sorts first by claude')
     // Charts: each job's bar has its split, the same under both shadings.
     for (const shade of [false, true]) {
-      const buckets = d.run('bucketList(jobs, "job", ' + shade + ')')
+      const buckets = d.run('costBuckets(jobs, "job", ' + shade + ')')
       for (const f of FIXTURES) {
         const b = buckets.find((x) => x.jobs[0].id.replace(/^r~/, '') === f.doc.id)
-        sameSplit(b.parts, f.expect, mode + ' chart ' + f.doc.id + (shade ? ' by role' : ''))
+        sameSplit(b.split, f.expect, mode + ' chart ' + f.doc.id + (shade ? ' by role' : ''))
       }
     }
     // Board rows and the drawer summary of the $12 job.
@@ -265,6 +267,54 @@ test('header, board, Costs table and charts use the same Agent split in every mo
     assert.equal(d.run('agentCost(' + JSON.stringify({ cost_usd: 12 }) + ', "claude")'), 12, mode + ' subscription')
     assert.ok(j.id)
   }
+})
+
+test('Costs renders the stored split by role and agrees with the drawer at the cutoff', async () => {
+  const docs = [FIXTURES[0].doc, {
+    id: '020-half-cent', title: 'Half cent', started: '2026-11-21T12:00:00Z', stage: 'merged',
+    cost_usd: 0.0135, cost_by_agent: { claude: 0.005, codex: 0.004, other: 0.0045 },
+  }]
+  for (const [mode, files] of Object.entries(modes(docs))) {
+    const d = await loaded(dashboard(files))
+    await d.run("location.hash = '#costs'; ui.range = 'all'; render()")
+    const costs = d.el('costsview').innerHTML
+    assert.match(costs, /Cost per job/, mode)
+    const builder = costs.match(/data-tip="builder · [^"]+"[\s\S]*?<span class="rv">/)[0]
+    assert.match(builder, /aria-label="builder: codex \$5\.00 \(100%\)"/, mode)
+    assert.match(builder, /background:var\(--codex\)/, mode)
+    assert.doesNotMatch(builder, /claude/, mode)
+    const drawer = d.run('costTable(jobs.find((job) => job.title === "Half cent"))')
+    const label = 'claude $0.01 (37%)'
+    assert.ok(drawer.includes('aria-label="' + label + '" data-tip="' + label + '"'), mode)
+    assert.match(drawer, /background:var\(--claude\)/, mode)
+    assert.match(drawer, /class="cost-leg"><span><i[^>]+><\/i>claude \$0\.01 · 37%<\/span><\/p>/, mode)
+    assert.doesNotMatch(drawer, /codex|other/, mode)
+  }
+})
+
+test('Costs draws and hit-tests a half-cent agent on the same bar as a $100 agent', async () => {
+  const doc = { id: '021-small-segment', title: 'Small segment', started: '2026-11-21T12:00:00Z',
+    stage: 'merged', cost_usd: 100.005, cost_by_agent: { claude: 100, codex: 0.005 } }
+  const d = await loaded(dashboard(modes([doc]).local))
+  await d.run("location.hash = '#costs'; ui.range = 'all'; render()")
+  const costs = d.el('costsview').innerHTML
+  assert.match(costs, /class="legend">[^\n]*>codex<\/span>/)
+  const chart = costs.match(/<svg class="ch"[^]*?<\/svg>/)[0]
+  const hit = chart.match(/<rect class="hit"[^>]*>/)[0]
+  assert.match(hit, /aria-label="[^"]*codex +\$0\.01/)
+  assert.match(hit, /data-tip="[^"]*\{codex\}.*\$0\.01/)
+  const ranges = hit.match(/data-segs="([^"]*)"/)[1]
+  const codex = ranges.split(';').map((range) => range.split(',')).find((range) => range[3] === 'codex')
+  assert.ok(codex, 'Codex has a hover target')
+  const [index, top, bottom] = codex
+  assert.ok(Number(bottom) - Number(top) >= 1, 'the target is at least one pixel high')
+  assert.ok(chart.includes(`style="fill:var(--codex)" data-si="${index}"`), 'Codex has a path')
+  d.ctx.DOMPoint = class {
+    constructor(x, y) { this.y = y }
+    matrixTransform() { return this }
+  }
+  d.ctx.segmentHit = { dataset: { segs: ranges }, ownerSVGElement: { getScreenCTM: () => ({ inverse() {} }) } }
+  assert.equal(d.run(`segAt(segmentHit, { clientY: ${(Number(top) + Number(bottom)) / 2} }).key`), 'codex')
 })
 
 test('renderers read summary fields, not the hub flag', async () => {
