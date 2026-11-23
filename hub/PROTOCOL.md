@@ -253,6 +253,7 @@ serves from `factory/`:
 |---|---|
 | `dashboard.html` | the hub's copy of `factory/dashboard.html` (`$FACTORY_HUB_DASHBOARD`, default `../factory/dashboard.html` next to `hub/`, in the image `/app/factory/dashboard.html`) |
 | `job-summary.js` | `factory/job-summary.js`, read next to the dashboard file (in the image `/app/factory/job-summary.js`); the overview loads it from `/all/job-summary.js` |
+| `cost-aggregation.js` | `factory/cost-aggregation.js`, read next to the dashboard file. The overview loads it from `/all/cost-aggregation.js`. |
 | `config.json` | the repo's last reported config (404 if none) |
 | `jobs/` | an HTML directory listing in `python -m http.server` format: `<a href="<id>/"><id>/</a>` per job |
 | `jobs/<id>/` | listing of that job's files and subdirectories (`round-1/`), plus `job.json` |

@@ -589,7 +589,10 @@
 <div id="tip"></div>
 
 <script src="job-summary.js"></script>
+<script src="cost-aggregation.js"></script>
 <script>
+const { AGENTS: SPLIT_AGENTS, agentKey, percent: pct, splitTotal, splitDisplay, jobTotals, shortModel, modelKey,
+  jobCosts, tableCosts, roleCosts, costBuckets } = CostAggregation
 const POLL_MS = 2000
 const LIVE = new Set(['intake', 'spec', 'build', 'gate', 'review', 'approve', 'merging'])
 const STAGES = new Set([...LIVE, 'needs-info', 'needs-human', 'paused', 'merged', 'rejected'])
@@ -733,10 +736,9 @@ async function render() {
     }
   }
   const running = jobs.filter((j) => LIVE.has(j.stage)).length
-  const cost = jobs.reduce((sum, j) => sum + Number(j.cost_usd), 0)
-  const part = (a) => jobs.reduce((sum, j) => sum + j.split[a], 0)
-  $('totals').textContent = `${running} running · ${money(cost)} API-equivalent`
-    + ` (claude ${money(part('claude'))} · codex ${money(part('codex'))})`
+  const { total, split } = jobTotals(jobs)
+  $('totals').textContent = `${running} running · ${money(total)} API-equivalent`
+    + ` (claude ${money(split.claude)} · codex ${money(split.codex)})`
 }
 
 let lastOk = Date.now()
@@ -951,19 +953,16 @@ function timelineTable(job) {
 
 // One row per role, agent and model, from job.cost_breakdown (factory/bin/job sync).
 function costTable(job) {
-  const rows = job.cost_breakdown || []
-  const total = rows.reduce((sum, r) => sum + Number(r.cost_usd), 0)
-  const parts = job.split
-  const share = (c) => (total ? Math.round((100 * c) / total) : 0)
+  const { rows, total } = jobCosts(job)
+  const display = splitDisplay(job.split)
   const body = rows.map((r) => `<tr>
       <td>${esc(r.role)}</td><td class="mdl" title="${esc(`${r.agent} · ${r.model || '?'}`)}">${sw(agentKey(r.agent))}${esc(shortModel(r.model))}</td>
       <td class="n">${r.sessions}</td><td class="n">${tokens(r.input_tokens)}</td>
       <td class="n">${tokens(r.cached_tokens)}</td><td class="n">${tokens(r.output_tokens)}</td>
       <td class="n">${money(r.cost_usd)}</td>
-      <td class="n">${bar(share(r.cost_usd), agentKey(r.agent))}</td>
+      <td class="n">${bar(pct(r.cost_usd, total), r.agent)}</td>
     </tr>`).join('')
   const followUps = (job.follow_ups || []).map((f) => `<li>${esc(f.issue)}: ${esc(f.title)}</li>`).join('')
-  const pt = partsTotal(parts)
   const findings = (job.findings || []).map((f) => `<li>R${esc(f.round)} · ${esc(f.lens)} · ${esc(f.finding)} · ${esc(f.status)}${f.answer ? ` · ${esc(f.answer)}` : ''}</li>`).join('')
   const approvals = (job.approvals || []).map((a) => `<li>${esc(a.kind)}${a.by ? ` · ${esc(a.by)}` : ''}${a.round != null ? ` · R${esc(a.round)}` : ''}${a.note ? ` · ${esc(a.note)}` : ''}</li>`).join('')
   const changes = (job.builder_changes || []).map((c) => `<li>R${esc(c.round)} · ${esc(c.agent || '')}${c.model ? ` · ${esc(c.model)}` : ''}${c.reason ? ` · ${esc(c.reason)}` : ''}</li>`).join('')
@@ -974,8 +973,8 @@ function costTable(job) {
     ${followUps ? `<h2>Follow-ups filed</h2><ul>${followUps}</ul>` : ''}
     <h2>Costs</h2>
     <div class="cost-head"><b>${money(job.cost_usd)}</b><span>API-equivalent</span></div>
-    ${splitBar(parts, 'big')}
-    <p class="cost-leg">${AGENT_KEYS.filter((k) => parts[k] > 0.004).map((k) => `<span>${sw(k)}${k} ${money(parts[k])} · ${pct(parts[k], pt)}%</span>`).join('')}</p>
+    ${renderSplit(display, 'big')}
+    ${splitLegend(display)}
     ${rows.length ? `<table class="costs">
       <thead><tr><th>role</th><th>model</th><th class="n">sessions</th><th class="n">input</th>
         <th class="n">cached</th><th class="n">output</th><th class="n">cost</th><th class="n">share</th></tr></thead>
@@ -991,25 +990,9 @@ const WAIT = new Set(['needs-human', 'paused', 'needs-info'])
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`
 // $12.34 below $100, $1,349 above: cents stop mattering.
 const money = (n) => { n = Number(n || 0); return n >= 100 ? `$${Math.round(n).toLocaleString('en-US')}` : `$${n.toFixed(2)}` }
-const pct = (part, whole) => (whole ? Math.round((100 * part) / whole) : 0)
-const agentKey = (a) => (a === 'claude' || a === 'codex' ? a : 'other')
 const bar = (share, agent) => `<span class="bar" style="--w:${share}%${agent ? `;--c:var(--${agentKey(agent)})` : ''}"></span>${share}%`
-const shortModel = (m) => String(m || '?').replace(/^claude-/, '').replace(/-\d+(-\d+)*$/, '')
 
 const TERMINAL_STAGES = new Set(['merged', 'rejected'])
-
-function group(rows, keyOf) {
-  const out = new Map()
-  for (const r of rows) {
-    const k = keyOf(r)
-    const g = out.get(k) || { key: k, sessions: 0, input: 0, cached: 0, output: 0, cost: 0, jobs: new Set() }
-    g.sessions += Number(r.sessions || 0); g.input += Number(r.input_tokens || 0)
-    g.cached += Number(r.cached_tokens || 0); g.output += Number(r.output_tokens || 0)
-    g.cost += Number(r.cost_usd || 0); g.jobs.add(r.job)
-    out.set(k, g)
-  }
-  return [...out.values()].sort((a, b) => b.cost - a.cost)
-}
 
 function tokenTable(title, groups, total, label) {
   const body = groups.map((g) => `<tr><td>${esc(g.key)}</td><td class="n">${g.jobs.size}</td>
@@ -1022,9 +1005,8 @@ function tokenTable(title, groups, total, label) {
 
 function costsTables() {
   if (!jobs.length) return '<p class="note">No jobs yet.</p>'
-  const rows = jobs.flatMap((j) => (j.cost_breakdown || []).map((r) => ({ ...r, job: j.id })))
-  const total = jobs.reduce((s, j) => s + Number(j.cost_usd || 0), 0)
-  const agent = (a) => jobs.reduce((s, j) => s + j.split[a], 0)
+  const { byModel, byRole } = tableCosts(jobs)
+  const { total, split } = jobTotals(jobs)
   const merged = jobs.filter((j) => j.stage === 'merged')
   const t = new Map(jobs.map((j) => [j.id, j.times]))
   const avg = (list, f) => (list.length ? list.reduce((s, j) => s + f(j), 0) / list.length : 0)
@@ -1032,7 +1014,7 @@ function costsTables() {
   counts.open = jobs.length - counts.merged - counts.rejected
   const tile = (v, k, sub = '') => `<div class="tile"><div class="v">${v}</div><div class="k">${k}</div>${sub ? `<div class="s">${sub}</div>` : ''}</div>`
   const tiles = `<div class="tiles">
-    ${tile(money(total), 'total', `claude ${money(agent('claude'))} · codex ${money(agent('codex'))}`)}
+    ${tile(money(total), 'total', `claude ${money(split.claude)} · codex ${money(split.codex)}`)}
     ${tile(jobs.length, 'jobs', `${counts.merged} merged · ${counts.open} open · ${counts.rejected} rejected`)}
     ${tile(money(avg(merged, (j) => Number(j.cost_usd || 0))), 'per merged job', merged.length ? `max ${money(Math.max(...merged.map((j) => Number(j.cost_usd || 0))))}` : '')}
     ${tile(avg(merged, (j) => j.round).toFixed(1), 'rounds per merged job', `${merged.filter((j) => j.round > 1).length} needed more than one`)}
@@ -1040,8 +1022,6 @@ function costsTables() {
     ${tile(jobs.filter((j) => j.spec_skipped).length, 'specs skipped', 'small, low-risk jobs')}
   </div>`
 
-  const byModel = group(rows, (r) => `${r.agent} · ${shortModel(r.model)}`)
-  const byRole = group(rows, (r) => String(r.role).replace(/-s\d+$/, ' (slices)'))
   const riskRows = new Map()
   for (const j of jobs) {
     const k = `${(j.intake || {}).risk || '?'} · ${(j.intake || {}).size || '?'}`
@@ -1095,7 +1075,7 @@ function costsTables() {
   return `${tiles}
     <h2>Jobs</h2>
     <table class="costs"><thead><tr>${head}<th>models</th></tr></thead><tbody>${jobBody}</tbody>
-      <tfoot><tr><td colspan="6">total</td><td class="n">${money(agent('claude'))}</td><td class="n">${money(agent('codex'))}</td>
+      <tfoot><tr><td colspan="6">total</td><td class="n">${money(split.claude)}</td><td class="n">${money(split.codex)}</td>
       <td class="n">${money(total)}</td><td colspan="2"></td></tr></tfoot></table>
     <div class="grid2">
       ${tokenTable('By model', byModel, total, 'agent · model')}
@@ -1419,25 +1399,26 @@ async function boardPage() {
 // Colour means who ran it: --claude and --codex (--other for anything else), nowhere else.
 // Role is lightness inside the agent hue. Status colours never colour a series.
 
-const AGENT_KEYS = ['claude', 'codex', 'other']
 const sw = (k, extra = '') => `<i class="sw ${k} ${extra}"></i>`
 
-// A job's money by agent is its summary's Agent split (job.split, factory/job-summary.js).
-const addParts = (list) => list.reduce((a, p) => ({ claude: a.claude + p.claude, codex: a.codex + p.codex, other: a.other + p.other }), { claude: 0, codex: 0, other: 0 })
-const partsTotal = (p) => p.claude + p.codex + p.other
-const splitText = (p) => AGENT_KEYS.filter((k) => p[k] > 0.004).map((k) => `${k} ${money(p[k])} (${pct(p[k], partsTotal(p))}%)`).join(' · ')
+const splitLabel = (display) => display.agents
+  .map(({ agent, amount, percent }) => `${agent} ${money(amount)} (${percent}%)`).join(' · ')
+const splitSegments = (display) => display.segments
+  .map(({ agent, amount }) => `<i style="flex:${amount} 1 0;background:var(--${agent})"></i>`).join('')
 
 // claude | codex | other as proportional segments with a 1px gap; the text is the aria-label and the tooltip.
-function splitBar(p, cls = '') {
-  if (partsTotal(p) <= 0.004) return ''
-  const text = splitText(p)
-  return `<span class="split ${cls}" role="img" aria-label="${esc(text)}" data-tip="${esc(text)}">${AGENT_KEYS.filter((k) => p[k] > 0.004)
-    .map((k) => `<i style="flex:${p[k]} 1 0;background:var(--${k})"></i>`).join('')}</span>`
+function renderSplit(display, cls = '') {
+  if (!display.agents.length) return ''
+  const text = esc(splitLabel(display))
+  return `<span class="split ${cls}" role="img" aria-label="${text}" data-tip="${text}">${splitSegments(display)}</span>`
 }
+const splitBar = (split, cls) => renderSplit(splitDisplay(split), cls)
+const splitLegend = (display) => `<p class="cost-leg">${display.agents
+  .map(({ agent, amount, percent }) => `<span>${sw(agent)}${agent} ${money(amount)} · ${percent}%</span>`).join('')}</p>`
 
 // Tooltip rows: swatch, agent, amount, share.
-const tipAgents = (p) => AGENT_KEYS.filter((k) => p[k] > 0.004)
-  .map((k) => `{${k}} ${k.padEnd(7)}${money(p[k]).padStart(9)} ${String(pct(p[k], partsTotal(p))).padStart(3)}%`).join('\n')
+const tipAgents = (display) => display.agents
+  .map(({ agent, amount, percent }) => `{${agent}} ${agent.padEnd(7)}${money(amount).padStart(9)} ${String(percent).padStart(3)}%`).join('\n')
 
 // Delta against a previous period: direction as an arrow, amber only past +50%.
 const deltaHtml = (p) => (p === null || p === undefined || Number.isNaN(p) ? ''
@@ -1579,13 +1560,6 @@ function rangeControl(count, extra = '') {
 let PRICES = null
 fetchText('config.json').then((t) => { PRICES = JSON.parse(t).prices_usd_per_mtok || null; lastCosts = ''; render() }).catch(() => {})
 
-// Eight roles folded to six; each takes a lightness step inside its agent's hue (darkest first).
-const ROLE_GROUPS = [['builder', 'builder'], ['spec-writer', 'spec'], ['intake', 'intake'], ['reviewer-code', 'code review'], ['approver', 'approver'], ['other', 'ux · ui · security']]
-const ROLE_STEP = { builder: 0, 'spec-writer': 1, 'reviewer-code': 2, other: 2, intake: 3, approver: 3 }
-function roleGroup(role) {
-  const r = String(role).replace(/-s\d+$/, '')
-  return ROLE_GROUPS.some(([k]) => k === r) ? r : 'other'
-}
 function priceOf(model) {
   if (!PRICES || !model) return null
   return PRICES[model] || PRICES[Object.keys(PRICES).find((k) => k.includes(model) || model.includes(k))] || null
@@ -1624,78 +1598,39 @@ function costsPage() {
     <details class="old" ${ui.old ? 'open' : ''} data-old><summary>All tables (every job)</summary>${costsTables()}</details></div>`
 }
 
-// Buckets of jobs (one per job, day or week), each with its stacked segments, bottom-up:
-// claude, codex, other; with "by role" each agent splits into role shades, darkest first.
-function bucketList(js, per, byRole, from, to) {
-  const startOf = (iso) => {
-    const d = new Date(iso); d.setHours(0, 0, 0, 0)
-    if (per === 'week') d.setDate(d.getDate() - ((d.getDay() + 6) % 7))
-    return d
-  }
-  const ordered = [...js].sort((a, b) => String(a.started).localeCompare(String(b.started)))
-  const buckets = new Map()
-  if (per === 'job') {
-    for (const j of ordered) buckets.set(j.id, { jobs: [j], label: `#${numOf(j)}` })
-  } else if (ordered.length || from) {
-    const first = from ? startOf(from) : startOf(ordered[0].started)
-    const last = to ? startOf(to) : startOf(ordered[ordered.length - 1].started)
-    const stepD = per === 'week' ? 7 : 1
-    for (let d = new Date(first); d <= last; d.setDate(d.getDate() + stepD)) {
-      buckets.set(d.getTime(), { start: d.getTime(), jobs: [], label: d.toLocaleDateString([], { month: 'short', day: 'numeric' }) })
-    }
-    for (const j of ordered) buckets.get(startOf(j.started).getTime())?.jobs.push(j)
-  }
-  return [...buckets.values()].map((b) => {
-    const acc = { claude: [0, 0, 0, 0], codex: [0, 0, 0, 0], other: [0, 0, 0, 0] }
-    // Each agent's part of the Agent split, shaded by the roles of its priced rows (none: the second shade),
-    // so both shadings add up to the same agent totals.
-    for (const j of b.jobs) {
-      const roles = { claude: [0, 0, 0, 0], codex: [0, 0, 0, 0], other: [0, 0, 0, 0] }
-      for (const r of j.cost_breakdown || []) roles[agentKey(r.agent)][ROLE_STEP[roleGroup(r.role)]] += Number(r.cost_usd || 0)
-      for (const k of AGENT_KEYS) {
-        const priced = roles[k].reduce((a, c) => a + c, 0)
-        if (priced > 0) roles[k].forEach((v, s) => { acc[k][s] += (j.split[k] * v) / priced })
-        else acc[k][1] += j.split[k]
-      }
-    }
-    const segs = []
-    for (const k of AGENT_KEYS) {
-      if (!byRole || k === 'other') { const v = acc[k].reduce((a, c) => a + c, 0); if (v > 0) segs.push({ v, key: k, fill: `var(--${k})` }) }
-      else acc[k].forEach((v, s) => { if (v > 0) segs.push({ v, key: k, role: s, fill: `var(--${k}-r${s + 1})` }) })
-    }
-    const parts = Object.fromEntries(AGENT_KEYS.map((k) => [k, acc[k].reduce((a, c) => a + c, 0)]))
-    const steps = [0, 1, 2, 3].map((s) => AGENT_KEYS.reduce((a, k) => a + acc[k][s], 0))
-    return { ...b, segs, parts, steps, total: partsTotal(parts) }
-  })
-}
-
 const ROLE_STEP_NAMES = ['builder', 'spec', 'review', 'intake · approver']
 function barItems(list, per, byRole) {
   return list.map((b, i) => {
     const j = b.jobs[0]
+    const label = per === 'job' ? `#${numOf(j)}` : new Date(b.start).toLocaleDateString([], { month: 'short', day: 'numeric' })
     // The newest day or week is still filling up: say so, and draw it lighter.
     const sofar = b.start !== undefined && i === list.length - 1 && Date.now() - b.start < (per === 'week' ? 7 : 1) * 864e5
-    const roles = byRole ? `\n${b.steps.map((v, s) => (v > 0.004 ? `  ${ROLE_STEP_NAMES[s].padEnd(18)}${money(v)}` : '')).filter(Boolean).join('\n')}` : ''
+    const roles = byRole ? b.steps.flatMap((v, s) => v > 0 ? [`  ${ROLE_STEP_NAMES[s].padEnd(18)}${money(v)}`] : []) : []
     const head = per === 'job'
       ? `${numOf(j)} · ${j.title}\n${money(b.total)} · ${j.round} round${j.round > 1 ? 's' : ''} · ${j.stage}`
-      : `${per === 'week' ? 'week of ' : ''}${b.label}${sofar ? ' (so far)' : ''} · ${b.jobs.length} job${b.jobs.length === 1 ? '' : 's'}\n${money(b.total)}`
-    return { label: b.label, id: per === 'job' ? `#${numOf(j)}` : b.label, segs: b.segs, total: b.total, dim: sofar,
-      job: per === 'job' ? j.id : b.jobs.length === 1 ? b.jobs[0].id : '', tip: `${head}\n${tipAgents(b.parts)}${roles}` }
+      : `${per === 'week' ? 'week of ' : ''}${label}${sofar ? ' (so far)' : ''} · ${b.jobs.length} job${b.jobs.length === 1 ? '' : 's'}\n${money(b.total)}`
+    const segs = b.segments.map(({ agent, amount, shade }) => ({
+      v: amount, key: agent, role: shade,
+      fill: shade === undefined ? `var(--${agent})` : `var(--${agent}-r${shade + 1})`,
+    }))
+    return { label, id: label, segs, total: b.total, dim: sofar,
+      job: b.jobs.length === 1 ? j.id : '', tip: [head, tipAgents(b), ...roles].filter(Boolean).join('\n') }
   })
 }
 
-function agentLegend(byRole, hasOther) {
-  if (!byRole) return `<div class="legend"><span>${sw('claude')}claude</span><span>${sw('codex')}codex</span>${hasOther ? `<span>${sw('other')}other</span>` : ''}</div>`
+function agentLegend(byRole, buckets) {
+  const visible = new Set(buckets.flatMap((bucket) => bucket.agents.map(({ agent }) => agent)))
   const ramp = (k) => `<span class="ramp">${[1, 2, 3, 4].map((i) => `<i class="sw" style="background:var(--${k}-r${i})"></i>`).join('')}</span>`
-  return `<div class="legend"><span>${sw('claude')}claude${ramp('claude')}</span><span>${sw('codex')}codex${ramp('codex')}</span>
-    <span>shade, darkest first: ${ROLE_STEP_NAMES.join(' · ')}</span></div>`
+  const labels = SPLIT_AGENTS.filter((agent) => visible.has(agent)).map((agent) =>
+    `<span>${sw(agent)}${agent}${byRole && agent !== 'other' ? ramp(agent) : ''}</span>`)
+  if (byRole && (visible.has('claude') || visible.has('codex'))) labels.push(`<span>shade, darkest first: ${ROLE_STEP_NAMES.join(' · ')}</span>`)
+  return `<div class="legend">${labels.join('')}</div>`
 }
 
 // Same as the page above, for the jobs in the chosen range (the parameter shadows the global; allJobs is every job).
 function costsFor(jobs, allJobs) {
-  const rows = jobs.flatMap((j) => (j.cost_breakdown || []).map((r) => ({ ...r, job: j.id })))
-  const total = jobs.reduce((s, j) => s + Number(j.cost_usd || 0), 0)
-  const parts = addParts(jobs.map((j) => j.split))
+  const { rows, byModel } = tableCosts(jobs)
+  const { total, split } = jobTotals(jobs)
   const merged = jobs.filter((j) => j.stage === 'merged').sort((a, b) => String(a.ended).localeCompare(String(b.ended)))
   const mc = merged.map((j) => Number(j.cost_usd || 0))
   const rework = jobs.filter((j) => j.round > 1)
@@ -1721,7 +1656,7 @@ function costsFor(jobs, allJobs) {
   const tile = (v, k, sub = '', extra = '', after = '') => `<div class="tile ${extra}"><div class="v">${v}</div><div class="k">${k}</div>${sub ? `<div class="s">${sub}</div>` : ''}${after}</div>`
   const tiles = `<div class="tiles">
     ${tile(money(median(mc)), 'per merged job (median)', delta === null ? `${plural(merged.length, 'merged job')}` : `${deltaHtml(delta)} ${vs}`)}
-    ${tile(money(total), 'total', `claude ${money(parts.claude)} · codex ${money(parts.codex)}`, '', splitBar(parts, 'full'))}
+    ${tile(money(total), 'total', `claude ${money(split.claude)} · codex ${money(split.codex)}`, '', splitBar(split, 'full'))}
     ${tile(`${pct(rework.length, jobs.length)}%`, 'jobs with rework', `${pct(reworkCost, total)}% of the spend · ${rework.length} of ${jobs.length} needed >1 round`)}
     ${tile(mins(wait), 'waited on you', `across ${jobs.filter((j) => t.get(j.id).wait).length} jobs`)}
     <div class="tile click" data-job="${esc(top.id)}" tabindex="0" role="button"><div class="v">${money(top.cost_usd)}</div><div class="k">most expensive job</div><div class="k2">${esc(numOf(top))} · ${esc(top.title)}</div></div>
@@ -1734,15 +1669,14 @@ function costsFor(jobs, allJobs) {
   const spanDays = ordered.length ? (Date.parse(ordered[ordered.length - 1].started) - Date.parse(ordered[0].started)) / 864e5 : 0
   const per = ui.per !== 'auto' ? ui.per : ordered.length <= 60 ? 'job' : spanDays <= 90 ? 'day' : 'week'
   const unit = { job: 'job', day: 'day', week: 'week' }[per]
-  const list = bucketList(jobs, per, byRole)
+  const list = costBuckets(jobs, per, byRole)
   const med = median(list.filter((b) => b.jobs.length).map((b) => b.total))
   const W = plotWidth(), H = W < 640 ? 210 : 250
-  const hasOther = parts.other > 0.004
   const chart1 = `<h2>Cost per ${unit}${per === 'job' ? ', oldest left' : ''}</h2><p class="sub">${per === 'job'
       ? 'Each bar is one job, split by agent. Hover or focus for the breakdown, click to open the job.'
       : `Each bar is one ${unit}, summed over the jobs started in it, split by agent. Over 60 jobs the chart groups by ${unit} on its own; the buttons above override it.`}
       ${money(total)} in all.</p>
-    ${agentLegend(byRole, hasOther)}${barChart({ W, H, items: barItems(list, per, byRole), title: `Cost per ${unit}`, desc: `${list.length} bars, ${money(total)} in total, median ${money(med)} per ${unit}.`,
+    ${agentLegend(byRole, list)}${barChart({ W, H, items: barItems(list, per, byRole), title: `Cost per ${unit}`, desc: `${list.length} bars, ${money(total)} in total, median ${money(med)} per ${unit}.`,
       line: { v: med, label: ['median', `${money(med)}/${unit}`] } })}`
 
   // Chart 1b: the daily trend, always per day over the chosen range (skipped when chart 1 already is per day).
@@ -1750,7 +1684,7 @@ function costsFor(jobs, allJobs) {
   if (per !== 'day' && jobs.length) {
     const days = span || Math.min(90, Math.max(14, Math.ceil(spanDays) + 1))
     const to = new Date(), from = new Date(to.getTime() - (days - 1) * 864e5)
-    const dl = bucketList(jobs, 'day', byRole, from.toISOString(), to.toISOString())
+    const dl = costBuckets(jobs, 'day', byRole, from.toISOString(), to.toISOString())
     daily = `<h2>Cost per day</h2><p class="sub">The last ${days} days by day started, split by agent; the newest day is still filling up.</p>
       ${barChart({ W, H: 190, items: barItems(dl, 'day', byRole), title: 'Cost per day', desc: `${dl.length} days, ${money(dl.reduce((s, b) => s + b.total, 0))} in total.`, maxBar: 28 })}`
   }
@@ -1767,7 +1701,7 @@ function costsFor(jobs, allJobs) {
   const path = roll.map((v, i) => `${i ? 'L' : 'M'}${xs(i).toFixed(1)},${F2.y(v).toFixed(1)}`).join('')
   const dots = merged.map((j, i) => `<circle class="pt" cx="${xs(i)}" cy="${F2.y(mc[i])}" r="${rad}" stroke-width="1.5"/>`).join('')
   const hits = merged.map((j, i) => `<circle class="hit" cx="${xs(i)}" cy="${F2.y(mc[i])}" r="${Math.max(rad + 5, 9)}" data-job="${esc(j.id)}" role="button" aria-label="${esc(`${numOf(j)}: ${money(mc[i])}`)}"
-      data-tip="${esc(`${numOf(j)} · ${j.title}\n${money(mc[i])} · rolling mean ${money(roll[i])}\n${tipAgents(j.split)}`)}"${mc.length <= 40 ? ' tabindex="0"' : ''}/>`).join('')
+      data-tip="${esc(`${numOf(j)} · ${j.title}\n${money(mc[i])} · rolling mean ${money(roll[i])}\n${tipAgents(splitDisplay(j.split))}`)}"${mc.length <= 40 ? ' tabindex="0"' : ''}/>`).join('')
   const last = mc.length - 1
   const chart2 = !mc.length ? '<div class="trend"><h2>Is it getting cheaper?</h2><p class="sub">No merged jobs in this range yet.</p></div>' : `<div class="trend"><h2>Is it getting cheaper?</h2><p class="sub">Dots are merged jobs in the order they finished; the line is the mean of the last ${win}.</p>
     ${F2.open}${F2.grid}${dots}<path d="${path}" fill="none" stroke="var(--text)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
@@ -1786,32 +1720,25 @@ function costsFor(jobs, allJobs) {
     }).join('')}</tr>`).join('')}</table></div>`
 
   // Cost per role: one bar each on a common scale, claude then codex; the models are in the tooltip.
-  const byRoleMap = new Map()
-  for (const r of rows) {
-    const g = roleGroup(r.role)
-    const e = byRoleMap.get(g) || { p: { claude: 0, codex: 0, other: 0 }, models: new Map() }
-    e.p[agentKey(r.agent)] += Number(r.cost_usd || 0)
-    const mk = `${r.agent} · ${shortModel(r.model)}`
-    e.models.set(mk, (e.models.get(mk) || 0) + Number(r.cost_usd || 0))
-    byRoleMap.set(g, e)
-  }
-  const roleList = ROLE_GROUPS.map(([k, l]) => ({ l, e: byRoleMap.get(k) })).filter((x) => x.e).sort((a, b) => partsTotal(b.e.p) - partsTotal(a.e.p))
-  const rowTotal = roleList.reduce((s, x) => s + partsTotal(x.e.p), 0)
-  const maxRole = Math.max(...roleList.map((x) => partsTotal(x.e.p)), 0.01)
-  const roleBars = `<div><h2>Cost per role</h2><p class="sub">Where the money goes, summed over the jobs above; one scale, claude then codex.</p>
-    <div class="rbars">${roleList.map(({ l, e }) => {
-      const v = partsTotal(e.p)
-      const tipText = `${l} · ${money(v)}\n${tipAgents(e.p)}\n${[...e.models].map(([m, c]) => `  ${m} ${money(c)}`).join('\n')}`
-      return `<div class="rb" data-tip="${esc(tipText)}"><span class="rl">${esc(l)}</span>
-        <span class="rt"><span class="split wide" style="width:${Math.max(2, (100 * v) / maxRole)}%" role="img" aria-label="${esc(`${l}: ${splitText(e.p)}`)}">${AGENT_KEYS.filter((k) => e.p[k] > 0.004).map((k) => `<i style="flex:${e.p[k]} 1 0;background:var(--${k})"></i>`).join('')}</span></span>
+  const roleList = roleCosts(jobs)
+  const rowTotal = roleList.reduce((sum, role) => sum + splitTotal(role.split), 0)
+  const maxRole = Math.max(...roleList.map((role) => splitTotal(role.split)), 0.01)
+  const roleBars = `<div><h2>Cost per role</h2><p class="sub">Where the money goes, summed over the jobs above; one scale for every role.</p>
+    <div class="rbars">${roleList.map(({ label, split, models }) => {
+      const display = splitDisplay(split)
+      const v = display.total
+      const visible = new Set(display.agents.map(({ agent }) => agent))
+      const modelLines = [...models].flatMap(([model, { agent, cost }]) => visible.has(agent) ? [`  ${model} ${money(cost)}`] : [])
+      const tipText = [`${label} · ${money(v)}`, tipAgents(display), ...modelLines].filter(Boolean).join('\n')
+      return `<div class="rb" data-tip="${esc(tipText)}"><span class="rl">${esc(label)}</span>
+        <span class="rt"><span class="split wide" style="width:${Math.max(2, (100 * v) / maxRole)}%" role="img" aria-label="${esc(`${label}: ${splitLabel(display) || money(v)}`)}">${splitSegments(display)}</span></span>
         <span class="rv">${money(v)} · ${pct(v, rowTotal)}%</span></div>`
     }).join('')}</div></div>`
 
   // Cache per model; what it saved sits in this section's header.
   const swKey = (key) => sw(agentKey(String(key).split(' · ')[0]))
-  const cm = group(rows, (r) => `${r.agent} · ${shortModel(r.model)}`)
-  const cacheBody = cm.map((g) => {
-    const s = rows.filter((r) => `${r.agent} · ${shortModel(r.model)}` === g.key).reduce((a, r) => a + cacheSaving(r), 0)
+  const cacheBody = byModel.map((g) => {
+    const s = rows.filter((r) => modelKey(r) === g.key).reduce((a, r) => a + cacheSaving(r), 0)
     return `<tr><td>${swKey(g.key)}${esc(g.key)}</td><td class="n">${tokens(g.input)}</td><td class="n">${tokens(g.cached)}</td><td class="n">${tokens(g.output)}</td>
       <td class="n">${pct(g.cached, g.cached + g.input)}%</td><td class="n">${money(g.cost)}</td><td class="n">${PRICES ? `~${money(s)}` : '–'}</td></tr>`
   }).join('')

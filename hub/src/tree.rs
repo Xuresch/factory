@@ -381,9 +381,8 @@ impl Hub {
                 },
             });
         }
-        if rest == "job-summary.js" {
-            // factory/job-summary.js, next to the dashboard it serves
-            let path = self.dashboard.with_file_name("job-summary.js");
+        if matches!(rest, "job-summary.js" | "cost-aggregation.js") {
+            let path = self.dashboard.with_file_name(rest);
             return Ok(match tokio::fs::read(&path).await {
                 Ok(body) => Answer::ok("text/javascript; charset=utf-8", body),
                 Err(_) => Answer::not_found(),

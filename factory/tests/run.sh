@@ -1730,6 +1730,8 @@ t_job_summary() {  # factory/job-summary.js and the dashboard's use of it, under
   if ! command -v node >/dev/null; then echo "    FAIL: needs node"; return 1; fi
   local out; out=$(node --test "$FACTORY_SRC/tests/job_summary.test.js" 2>&1)
   check "node --test factory/tests/job_summary.test.js" "$out" "ℹ fail 0"
+  out=$(node --test "$FACTORY_SRC/tests/cost-aggregation.test.js" 2>&1)
+  check "node --test factory/tests/cost-aggregation.test.js" "$out" "ℹ fail 0"
 }
 
 t_dashboard_outside() {
