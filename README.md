@@ -136,6 +136,9 @@ repo, or `update <git-url-or-path>[@ref]`) and keeps what's yours: the
 `factory/tests/run.sh` tests the factory's scripts in throwaway repos with a
 fake Orca; run it after an update.
 
+To run this repository's CI checks locally, use `factory/tests/check.sh` with
+Bash, Git, Python 3, Node.js 24, and GNU Coreutils (`timeout`).
+
 ## Dashboard
 
 ```bash

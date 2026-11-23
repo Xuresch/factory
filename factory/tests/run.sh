@@ -2275,7 +2275,12 @@ t_gh_main_ci_background() {
   check "pid recorded" "$(field "$id" "type(d['main_ci_wait']['pid']).__name__")" "int" || return 1
   for _ in $(seq 50); do grep -q 'waiting for CI on master' "factory/jobs/$id/main-ci.log" 2>/dev/null && break; sleep 0.1; done
   check "a second watcher refuses" "$(J main-ci "$id" 2>&1)" "has watched CI on master since" || return 1
-  for _ in $(seq 100); do [[ "$(field "$id" "d['main_ci']['verdict']")" == PENDING ]] || break; sleep 0.1; done
+  # The watcher saves the verdict before it logs the outcome and posts the comment.
+  for _ in $(seq 100); do
+    grep -q 'CI on master at f00df00: TIMEOUT' "factory/jobs/$id/main-ci.log" &&
+      grep -q '### Factory: CI on master still running after the merge' "$GH_LOG" && break
+    sleep 0.1
+  done
   check "times out" "$(field "$id" "d['main_ci']['verdict']")" "TIMEOUT" &&
   check "recorded as pending" "$(head -1 "factory/jobs/$id/round-1/main-ci.md")" "CI: PENDING" &&
   check "logged" "$(cat "factory/jobs/$id/main-ci.log")" "CI on master at f00df00: TIMEOUT" &&
