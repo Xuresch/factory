@@ -1,6 +1,6 @@
 # 09: Run the factory's own tests in CI and checks.sh
 
-**Status:** needs-triage
+**Status:** ready-for-agent
 
 **Category:** enhancement
 
@@ -12,9 +12,9 @@
 - [ ] The hub workflow's path filters still cover every factory file the hub image packages.
 - [ ] Running the checks for this repo passes on main.
 
-## Open question
+## Decisions
 
-`factory/checks.sh` in this repo is also the template the installer copies into target repos, where INSTALL.md replaces its placeholder line. Decide before building: fill this repo's checks into a separate script (for example `checks.local.sh` or a CI-only script) and keep the template as is, or split template and repo copy.
+- **2026-11-23** `factory/checks.sh` stays the installer's template, unchanged. This repo's own checks live in a separate script that CI runs and a human can run locally; the factory does not run on this repo, so no gate needs it.
 
 ## Comments
 
