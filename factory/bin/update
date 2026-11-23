@@ -150,19 +150,20 @@ def main(argv):
             die(f"{source} doesn't look like the factory template (no factory/bin/job)")
         changes, notes = [], []
 
-        def put(dst, text):
-            old = dst.read_text() if dst.exists() else None
-            if old != text:
+        def put(dst, data):
+            data = data.encode() if isinstance(data, str) else data  # test fixtures may not be UTF-8
+            old = dst.read_bytes() if dst.exists() else None
+            if old != data:
                 changes.append(f"{'updated' if old is not None else 'added'} {dst.relative_to(REPO)}")
                 if not dry:
                     dst.parent.mkdir(parents=True, exist_ok=True)
-                    dst.write_text(text)
+                    dst.write_bytes(data)
 
         for rel in ["bin", "tests"]:
             for f in sorted((tf / rel).rglob("*")):
                 if f.is_file() and "__pycache__" not in f.parts:
                     dst = FACTORY / f.relative_to(tf)
-                    put(dst, f.read_text())
+                    put(dst, f.read_bytes())
                     if not dry and f.stat().st_mode & 0o111:
                         dst.chmod(dst.stat().st_mode | 0o755)
         for name in ["dashboard.html", "job-summary.js"]:

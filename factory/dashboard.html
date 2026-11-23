@@ -602,10 +602,14 @@ let openJobId = null
 let openPath = null
 let openText = null
 
-async function fetchText(url) {
+// ---- Text fetch ----
+
+const artifactDecoder = new TextDecoder('utf-8', { ignoreBOM: true })
+
+async function fetchText(url, artifactKind) {
   const res = await fetch(url, { cache: 'no-store' })
-  if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`)
-  return res.text()
+  if (!res.ok) throw Object.assign(new Error(`${url}: HTTP ${res.status}`), { status: res.status })
+  return artifactKind ? artifactDecoder.decode(await res.arrayBuffer()) : res.text()
 }
 
 // ---- Board ---------------------------------------------------------------
@@ -794,6 +798,10 @@ function tone(first) {
   return null
 }
 
+function verdictTone(verdict) {
+  return { PASS: 'good', CHANGES: 'warn', FAIL: 'stop' }[verdict] || null
+}
+
 // User actions can replace a pending refresh. Polling gives the current refresh time to finish.
 let drawerRequest = null
 async function refreshDrawer(fromPoll = false) {
@@ -857,7 +865,10 @@ async function renderDrawer(listed, stale) {
       : f === TICKET ? `ticket · ${esc(job.issue)}` : round
       ? `<span class="rn">R${round[1]} </span>${esc(f.split('/')[1].replace(/^review-|\.md$/g, ''))}`
       : esc(f.replace(/\.md$/, ''))
-    const t = f === COSTS || f === TICKET ? null : tone(detail.firstLine(f))
+    const kind = JobSummary.roundArtifactKind(f)
+    const first = detail.firstLine(f)
+    const t = f === COSTS || f === TICKET ? null
+      : kind ? verdictTone(JobSummary.verdictOf(kind, first)) : tone(first?.trim())
     return `${head}<button class="file ${f === openPath ? 'on' : ''}" data-file="${esc(f)}">
       <span class="v ${t || ''}"></span>${name}</button>`
   }).join('') || '<div class="empty">No files yet.</div>'
@@ -865,7 +876,7 @@ async function renderDrawer(listed, stale) {
   if (text !== openText) {
     openText = text
     $('d-doc').innerHTML = text === null ? '<p class="note">Intake hasn’t written anything yet.</p>'
-      : openPath === COSTS ? text : markdown(text)
+      : openPath === COSTS ? text : markdown(text, JobSummary.roundArtifactKind(openPath))
   }
 }
 
@@ -1173,13 +1184,13 @@ function splitSummary(lines) {
   }
 }
 
-function markdown(src) {
+function markdown(src, artifactKind) {
   const split = splitSummary(src.replace(/\r/g, '').split('\n'))
   const lines = split.lines
   let i = 0
   let html = ''
   const first = (lines[0] || '').trim()
-  const t = tone(first)
+  const t = artifactKind ? verdictTone(JobSummary.verdictOf(artifactKind, src.split('\n', 1)[0])) : tone(first)
   if (t) {
     html += `<div class="verdict ${t}">${esc(first)}</div>`
     i = 1

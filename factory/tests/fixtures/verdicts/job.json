@@ -1,0 +1,30 @@
+{
+  "id": "900-verdicts",
+  "title": "fix: verdict fixtures",
+  "stage": "gate",
+  "round": 16,
+  "round_limit": 20,
+  "agents": {
+    "builder": {
+      "agent": "claude",
+      "model": "opus"
+    },
+    "reviewers": {
+      "code": {
+        "agent": "claude",
+        "model": "opus"
+      },
+      "ui": {
+        "agent": "claude",
+        "model": "sonnet"
+      }
+    }
+  },
+  "review_log": {
+    "1": {
+      "code": "codex/gpt-6.1-terra:high",
+      "ui": "claude/sonnet"
+    }
+  },
+  "reviews": {}
+}

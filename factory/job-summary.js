@@ -58,10 +58,22 @@
     return { total, wait, work: Math.max(0, total - wait) }
   }
 
-  function verdictOf(line) {
+  // Verdicts must match the artifact kind and come from the first line.
+  const DECLARATIONS = {
+    review: /^VERDICT:\p{White_Space}*(PASS|CHANGES)$/u,
+    checks: /^GATE:\p{White_Space}*(PASS|FAIL)$/u,
+  }
+
+  function verdictOf(kind, line) {
     if (line === null || line === undefined) return 'pending'
-    const m = String(line).match(/^(?:VERDICT|GATE):\s*(PASS|CHANGES|FAIL)$/)
+    const m = line.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, '').match(DECLARATIONS[kind])
     return m ? m[1] : 'invalid'
+  }
+
+  function roundArtifactKind(path) {
+    if (/^round-\d+\/(merge-)?checks\.md$/.test(path)) return 'checks'
+    if (/^round-\d+\/review-[^/]+\.md$/.test(path)) return 'review'
+    return null
   }
 
   // A raw job.json, as factory/bin/job writes it. rounds: what the adapter read from the round files.
@@ -100,16 +112,17 @@
   // The first line a round file of the job declares, as its Verdict says, for a file not read yet.
   function verdictLine(job, path) {
     const m = path.match(/^round-(\d+)\/(checks|review-(.+))\.md$/)
-    if (!m) return ''
+    if (!m) return null
     const r = (job.rounds || []).find((x) => x.round === Number(m[1]))
     const v = m[2] === 'checks' ? r && r.gate : r && r.reviews && r.reviews[m[3]]
-    return v && v !== 'pending' ? `${m[2] === 'checks' ? 'GATE' : 'VERDICT'}: ${v}` : ''
+    return v && v !== 'pending' ? `${m[2] === 'checks' ? 'GATE' : 'VERDICT'}: ${v}` : null
   }
 
   function documents(fetchText, firstLines) {
     return async (job, path) => {
-      const text = await fetchText(`jobs/${job.id}/${path}`)
-      firstLines.set(`${job.id}/${path}`, text.split('\n')[0].trim())
+      const kind = roundArtifactKind(path)
+      const text = await fetchText(`jobs/${job.id}/${path}`, kind)
+      firstLines.set(`${job.id}/${path}`, text.split('\n', 1)[0])
       return text
     }
   }
@@ -119,15 +132,18 @@
     const roundCache = new Map() // "<job>/<n>" -> verdicts of a settled earlier round
     const firstLines = new Map()
     const read = documents(fetchText, firstLines)
-    const first = async (url) => { try { return (await fetchText(url)).split('\n')[0].trim() } catch { return null } }
+    const first = async (url, kind) => {
+      try { return (await fetchText(url, kind)).split('\n', 1)[0] }
+      catch (err) { return err.status && err.status !== 404 ? '' : null }
+    }
     async function readRound(doc, n) {
       const key = `${doc.id}/${n}`
       if (roundCache.has(key)) return roundCache.get(key)
       const dir = `jobs/${doc.id}/round-${n}/`
-      const v = { round: n, gate: verdictOf(await first(dir + 'checks.md')), reviews: {} }
+      const v = { round: n, gate: verdictOf('checks', await first(dir + 'checks.md', 'checks')), reviews: {} }
       if (v.gate === 'PASS') {
         await Promise.all(Object.keys((doc.agents && doc.agents.reviewers) || {}).map(async (r) => {
-          v.reviews[r] = verdictOf(await first(`${dir}review-${r}.md`))
+          v.reviews[r] = verdictOf('review', await first(`${dir}review-${r}.md`, 'review'))
         }))
       }
       const settled = v.gate === 'FAIL' || (v.gate === 'PASS' && Object.values(v.reviews).every((x) => FINISHED_ROUND.has(x)))
@@ -158,9 +174,9 @@
       async detail(job) {
         const files = await listFiles(`jobs/${job.id}/`)
         await Promise.all(files.filter((f) => !firstLines.has(`${job.id}/${f}`)).map(async (f) => {
-          firstLines.set(`${job.id}/${f}`, (await first(`jobs/${job.id}/${f}`)) || '')
+          firstLines.set(`${job.id}/${f}`, await first(`jobs/${job.id}/${f}`, roundArtifactKind(f)))
         }))
-        return { job, files, firstLine: (f) => firstLines.get(`${job.id}/${f}`) || verdictLine(job, f) }
+        return { job, files, firstLine: (f) => firstLines.get(`${job.id}/${f}`) }
       },
       read,
     }
@@ -177,13 +193,13 @@
       async detail(job) {
         const fresh = fromHub(JSON.parse(await fetchText(`${api}/${encodeURIComponent(job.id)}`)), { repo })
         const files = (fresh.files || []).filter((f) => String(f).endsWith('.md'))
-        return { job: fresh, files, firstLine: (f) => firstLines.get(`${fresh.id}/${f}`) || verdictLine(fresh, f) }
+        return { job: fresh, files, firstLine: (f) => verdictLine(fresh, f) ?? firstLines.get(`${fresh.id}/${f}`) }
       },
       read: documents(fetchText, firstLines),
     }
   }
 
-  const api = { agentSplit, timesOf, verdictOf, roundOf, fromLocal, fromHub, localAdapter, hubAdapter, links }
+  const api = { agentSplit, timesOf, verdictOf, roundArtifactKind, roundOf, fromLocal, fromHub, localAdapter, hubAdapter, links }
   if (typeof module === 'object' && module.exports) module.exports = api
   else root.JobSummary = api
 })(typeof self !== 'undefined' ? self : this)

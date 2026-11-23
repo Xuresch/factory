@@ -1,0 +1,46 @@
+{
+  "_": "What each artifact of this job folder declares (pending: no file). Python (factory/tests/run.sh t_verdict_fixtures), the hub (hub/src/project.rs) and dashboard.html (factory/tests/dashboard-verdicts.mjs) read the same files and must agree.",
+  "verdicts": {
+    "round-1/checks.md": "PASS",
+    "round-1/review-code.md": "CHANGES",
+    "round-1/review-ui.md": "pending",
+    "round-2/checks.md": "PASS",
+    "round-2/review-code.md": "PASS",
+    "round-2/review-ui.md": "CHANGES",
+    "round-2/review-ux.md": "PASS",
+    "round-3/checks.md": "PASS",
+    "round-3/review-code.md": "invalid",
+    "round-3/review-ui.md": "invalid",
+    "round-4/checks.md": "PASS",
+    "round-4/review-code.md": "invalid",
+    "round-4/review-ui.md": "invalid",
+    "round-5/checks.md": "PASS",
+    "round-5/review-code.md": "invalid",
+    "round-5/review-ui.md": "invalid",
+    "round-6/checks.md": "FAIL",
+    "round-7/checks.md": "FAIL",
+    "round-8/checks.md": "invalid",
+    "round-9/checks.md": "invalid",
+    "round-10/checks.md": "invalid",
+    "round-11/checks.md": "invalid",
+    "round-12/checks.md": "invalid",
+    "round-13/checks.md": "invalid",
+    "round-14/checks.md": "PASS",
+    "round-15/checks.md": "invalid",
+    "round-16/checks.md": "pending"
+  },
+  "reviewers": {
+    "1": {
+      "code": {
+        "agent": "codex",
+        "model": "gpt-6.1-terra",
+        "effort": "high"
+      },
+      "ui": {
+        "agent": "claude",
+        "model": "sonnet",
+        "effort": null
+      }
+    }
+  }
+}
