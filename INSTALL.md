@@ -63,6 +63,9 @@ factory/config.json
 factory/checks.sh
 factory/env.sh
 factory/bin/job
+factory/bin/jobfiles.py
+factory/bin/lifecycle.py
+factory/bin/session_usage.py
 factory/bin/gate
 factory/bin/route
 factory/bin/dashboard
@@ -71,6 +74,7 @@ factory/bin/update
 factory/agents/reviewer-feature.md
 factory/agents/retro.md
 factory/tests/run.sh
+factory/tests/test_lifecycle.py
 factory/tests/job_summary.test.js
 factory/tests/job_summary_fixtures.json
 factory/tests/cost-aggregation.test.js

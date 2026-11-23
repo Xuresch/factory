@@ -3370,6 +3370,221 @@ t_local_open_work() {
   check "every open ticket of the feature" "$(jobpy 'print(j.open_work_for("feature/x")[1])')" "['f/01 (ready-for-agent)', 'f/02 (in-progress)']"
 }
 
+# ---- Lifecycle ------------------------------------------------------------
+
+t_lifecycle_decisions() {
+  python3 -B -m unittest "$FACTORY_SRC/tests/test_lifecycle.py"
+}
+
+t_lifecycle_gate_rejects_invalid_verdicts() {
+  new_repo lifecycle-gate; ticket 01 One; commit_all
+  local id head checks out
+  id=$(to_build 01 low none); build_commit "$id" y.txt y; ready "$id"
+  J advance "$id" gate >/dev/null || return 1
+  head=$(git -C ".worktrees/$id" rev-parse HEAD)
+  checks="factory/jobs/$id/round-1/checks.md"
+  for out in missing stale unknown later unreadable; do
+    case "$out" in
+      missing) rm -f "$checks" ;;
+      stale) printf 'GATE: PASS\nCOMMIT: old\n' > "$checks" ;;
+      unknown) printf 'GATE: UNKNOWN\nCOMMIT: %s\n' "$head" > "$checks" ;;
+      later) printf 'Checks\nCOMMIT: %s\nGATE: PASS\n' "$head" > "$checks" ;;
+      unreadable) printf '\377\nCOMMIT: %s\n' "$head" > "$checks" ;;
+    esac
+    check "$out: advice" "$(J next "$id")" "run: factory/bin/gate $id" || return 1
+    if J advance "$id" build > refused 2>&1; then return 1; fi
+    check "$out: refusal" "$(cat refused)" "gate" &&
+    check "$out: round and stage stay put" "$(field "$id" "d['stage'], d['round']")" "('gate', 1)" || return 1
+  done
+  printf 'GATE: PASS\nCOMMIT: %s\n' "$head" > "$checks"
+  check "valid first-line verdict" "$(J next "$id")" "advance: factory/bin/job advance $id review" &&
+  J advance "$id" review >/dev/null &&
+  check "advised stage persisted" "$(field "$id" "d['stage'], d['round']")" "('review', 1)"
+}
+
+t_lifecycle_rechecks_worktree_and_head() {
+  new_repo lifecycle-worktree; ticket 01 One; commit_all
+  local id; id=$(to_build 01 low none); build_commit "$id" y.txt y
+  printf 'STATUS: READY\n' > "factory/jobs/$id/build.md"
+  check "incomplete build is refused" "$(J advance "$id" gate 2>&1)" 'has no `## Self-review` section' &&
+  check "build advice sees the same problem" "$(J next "$id")" 'has no `## Self-review` section' || return 1
+  ready "$id"
+  echo dirty >> ".worktrees/$id/y.txt"
+  check "build refuses a dirty worktree" "$(J advance "$id" gate 2>&1)" "uncommitted changes" || return 1
+  git -C ".worktrees/$id" restore y.txt
+  to_review "$id" || return 1
+  review "$id" 1 code PASS
+  check "review recommends approval" "$(J next "$id")" "advance: factory/bin/job advance $id approve" || return 1
+  echo dirty >> ".worktrees/$id/y.txt"
+  check "review refuses a dirty worktree" "$(J advance "$id" approve 2>&1)" "worktree changed during review" &&
+  check "review advice sees the same problem" "$(J next "$id")" "worktree changed during review" || return 1
+  build_commit "$id" y.txt changed
+  check "review refuses a new HEAD" "$(J advance "$id" approve 2>&1)" "HEAD moved during review" &&
+  check "review did not advance" "$(field "$id" "d['stage'], d['round']")" "('review', 1)"
+}
+
+t_lifecycle_merge_failure_with_no_round_left() {
+  new_repo lifecycle-merge; ticket 01 One; set_config max_rounds 1; commit_all
+  local id; id=$(to_build 01 low none); build_commit "$id" x.txt job; to_review "$id"
+  review "$id" 1 code PASS; J advance "$id" approve >/dev/null || return 1
+  printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"
+  echo master > x.txt && git commit -qam "master edit"
+  check "merge escalates" "$(J merge "$id")" "needs-human: The branch conflicts with master" &&
+  check "no extra round" "$(field "$id" "d['stage'], d['round']")" "('needs-human', 1)" &&
+  [[ ! -d "factory/jobs/$id/round-2" ]]
+}
+
+t_lifecycle_sets_up_worktree_before_ticket_comment() {
+  new_repo lifecycle-effects; ticket 01 One; commit_all
+  set_config worktree_setup '"if grep -q \"Factory intake: ACCEPT\" \"$ORCA_ROOT_PATH/.scratch/f/issues/01-t.md\"; then exit 7; fi; echo setup ran"'
+  local id; id=$(J create f/01) || return 1
+  intake "$id" medium none; factory/bin/route "$id" >/dev/null || return 1
+  git branch "factory/$id"
+  if J advance "$id" spec > refused 2>&1; then return 1; fi
+  check "worktree creation failed" "$(cat refused)" "already exists" &&
+  check "stage stayed at intake" "$(field "$id" "d['stage']")" "intake" &&
+  ! grep -q 'Factory intake: ACCEPT' .scratch/f/issues/01-t.md || return 1
+  git branch -D "factory/$id" >/dev/null
+  J advance "$id" spec >/dev/null || return 1
+  check "setup ran before acceptance" "$(cat "factory/jobs/$id/worktree-setup.log")" "worktree_setup exit 0" &&
+  check "acceptance was posted" "$(cat .scratch/f/issues/01-t.md)" "Factory intake: ACCEPT" &&
+  check "stage persisted" "$(field "$id" "d['stage']")" "spec"
+}
+
+t_lifecycle_operator_escalates_from_merging() {
+  new_repo manualescalation; ticket 01 One; commit_all
+  local id; id=$(to_build 01 low none); build_commit "$id" y.txt y; to_review "$id"
+  review "$id" 1 code PASS; J advance "$id" approve >/dev/null || return 1
+  printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"
+  J advance "$id" merging >/dev/null || return 1
+  printf 'ESCALATE\n\n## Why\nWait for the operator.\n' > "factory/jobs/$id/decision.md"
+  check "escalation is available from merging" "$(J advance "$id" needs-human)" "needs-human (round 1)" &&
+  check "keeps the operator's reason" "$(cat .scratch/f/issues/01-t.md)" "Wait for the operator." &&
+  check "ticket waits for a human" "$(status_of 01)" "ready-for-human" &&
+  check "job accepts feedback" "$(echo 'Try again.' | J feedback "$id")" "round 2" &&
+  check "feedback reopened build" "$(field "$id" "d['stage']")" "build"
+}
+
+t_lifecycle_advice_checks_pushed_head_and_pr() {
+  new_gh_repo nextpushed; gh_issue 1 One
+  local id; id=$(J create 1) || return 1
+  intake "$id" low none; factory/bin/route "$id" >/dev/null && J advance "$id" spec >/dev/null || return 1
+  echo '# Spec' > "factory/jobs/$id/spec.md"; J advance "$id" build >/dev/null || return 1
+  build_commit "$id" y.txt y; ready "$id"
+  check "explicit advance refuses an unpushed branch" "$(J advance "$id" gate 2>&1)" "isn't pushed" &&
+  check "advice sees the unpushed branch" "$(J next "$id")" "isn't pushed" || return 1
+  git -C ".worktrees/$id" push -q origin "factory/$id" || return 1
+  check "advice also requires the PR" "$(J next "$id")" "expected one open PR" || return 1
+  gh pr create --draft --base master --head "factory/$id" --title "feat: t" --body b >/dev/null
+  check "advice allows gate after push and PR" "$(J next "$id")" "advance: factory/bin/job advance $id gate" &&
+  J advance "$id" gate >/dev/null &&
+  check "the advised move records the PR" "$(field "$id" "d['stage'], d['pr']")" "('gate', 7)"
+}
+
+t_lifecycle_advice_checks_intake_slot() {
+  new_repo nextintake; ticket 01 One; ticket 02 Two; set_config concurrency 1; commit_all
+  local id other; id=$(J create f/01) || return 1
+  needs_info "$id"; echo 'The start page.' | J reply f/01 >/dev/null || return 1
+  other=$(J create f/02) || return 1
+  check "explicit advance refuses with no slot" "$(J advance "$id" intake 2>&1)" "concurrency 1 reached; running: $other" &&
+  check "advice sees the same job holding the slot" "$(J next "$id")" "concurrency 1 reached; running: $other" &&
+  check "refusal kept needs-info" "$(status_of 01)" "needs-info" || return 1
+  echo 'Cancel this.' | J reject "$other" >/dev/null || return 1
+  check "intake is advised once a slot opens" "$(J next "$id")" "advance: factory/bin/job advance $id intake" &&
+  J advance "$id" intake >/dev/null &&
+  check "stage persisted" "$(field "$id" "d['stage']")" "intake"
+}
+
+t_lifecycle_advises_the_inline_spec_destination() {
+  new_repo nextskipspec; ticket 01 One; ticket 02 Two; commit_all
+  local n id file stage round
+  for n in 01 02; do
+    id=$(J create "f/$n") || return 1
+    if [[ "$n" == 01 ]]; then file=x.txt; stage=build; round=1
+    else file=factory/checks.sh; stage=needs-human; round=0; fi
+    intake "$id" low none
+    sed -i "/^## Scope/{n;s|.*|Change \`$file\`.|;}" "factory/jobs/$id/intake.md"
+    printf '\n## Acceptance criteria\n1. It works.\n' >> "factory/jobs/$id/intake.md"
+    factory/bin/route "$id" >/dev/null || return 1
+    check "inline spec advice" "$(J next "$id")" "advance: factory/bin/job advance $id $stage" &&
+    [[ ! -e "factory/jobs/$id/spec.md" && ! -e ".worktrees/$id" ]] &&
+    J advance "$id" "$stage" >/dev/null &&
+    check "inline spec was written on application" "$(cat "factory/jobs/$id/spec.md")" "Change \`$file\`." &&
+    check "advised stage and round persisted" "$(field "$id" "d['stage'], d['round']")" "('$stage', $round)" || return 1
+  done
+}
+
+t_lifecycle_inline_spec_uses_current_remote_base() {
+  new_gh_repo inlinebase; gh_issue 1 One
+  local id base advice; id=$(J create 1) || return 1
+  intake "$id" low none
+  sed -i '/^## Scope/{n;s|.*|Change `factory/bin/guard`.|;}' "factory/jobs/$id/intake.md"
+  printf '\n## Acceptance criteria\n1. It works.\n' >> "factory/jobs/$id/intake.md"
+  factory/bin/route "$id" >/dev/null || return 1
+  base=$("$GH/land" factory/bin/guard new) || return 1
+  [[ "$(git rev-parse origin/master)" != "$base" ]] || return 1
+  advice=$(J next "$id")
+  J advance "$id" spec >/dev/null || return 1
+  check "advanced from the same base used for the decision" "$(field "$id" "d['fork_point']")" "$base" &&
+  check "the new protected path prevents a build round" "$(field "$id" "d['stage'], d['round']")" "('needs-human', 0)" &&
+  check "advice recognizes the new protected path" "$advice" "advance: factory/bin/job advance $id needs-human"
+}
+
+t_lifecycle_gate_prepares_merge_lease_for_external_push() {
+  new_gh_repo externalpush; gh_issue 1 One
+  local id branch clone; id=$(J create 1) || return 1
+  branch="factory/$id"; clone="$GH/../builder"
+  intake "$id" low none; factory/bin/route "$id" >/dev/null && J advance "$id" spec >/dev/null || return 1
+  echo '# Spec' > "factory/jobs/$id/spec.md"; J advance "$id" build >/dev/null || return 1
+  build_commit "$id" y.txt y || return 1
+  git clone -q . "$clone" &&
+  git -C "$clone" push -q "$GH/../origin.git" "refs/remotes/origin/$branch:refs/heads/$branch" || return 1
+  ! git show-ref --verify --quiet "refs/remotes/origin/$branch" || return 1
+  gh pr create --draft --base master --head "$branch" --title "feat: t" --body b >/dev/null || return 1
+  to_review "$id" || return 1
+  review "$id" 1 code PASS; J advance "$id" approve >/dev/null || return 1
+  printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"
+  "$GH/land" other.txt other >/dev/null || return 1
+  check "the merge can push the synced head" "$(J merge "$id" 2>&1)" "merged PR #7" &&
+  check "merge persisted" "$(field "$id" "d['stage']")" "merged"
+}
+
+t_lifecycle_resumes_human_approved_merge() {
+  new_gh_repo resumeapproved; gh_issue 1 One
+  local id base out; id=$(gh_to_approve 1) || return 1
+  J advance "$id" approve >/dev/null || return 1
+  printf 'ESCALATE\n\n## Why\nPlease check.\n' > "factory/jobs/$id/decision.md"
+  J advance "$id" needs-human >/dev/null || return 1
+  base=$(git rev-parse origin/master)
+  git -C "$GH/../origin.git" update-ref -d refs/heads/master || return 1
+  out=$(J approve "$id" 2>&1)
+  check "merge interrupted by failed base fetch" "$out" "origin/master doesn't exist" &&
+  check "human approval and merging persisted" "$(field "$id" "d['stage'], d['approved']['by']")" "('merging', 'human')" || return 1
+  git -C "$GH/../origin.git" update-ref refs/heads/master "$base" || return 1
+  check "resume the approved merge" "$(J next "$id")" "run: factory/bin/job merge $id" || return 1
+  if J advance "$id" needs-human >/dev/null 2>&1; then
+    echo "    FAIL: the old escalation could be reapplied"
+    return 1
+  fi
+  check "merge completes" "$(J merge "$id")" "merged PR #7"
+}
+
+t_lifecycle_advice_validates_slices() {
+  new_repo sliceadvice; ticket 01 One; commit_all
+  local id; id=$(J create f/01) || return 1
+  intake "$id" low none
+  sed -i 's/SPLIT: no/SPLIT: yes/' "factory/jobs/$id/intake.md"
+  factory/bin/route "$id" >/dev/null && J advance "$id" spec >/dev/null || return 1
+  echo '# Spec' > "factory/jobs/$id/spec.md"
+  check "advance rejects a split without slices" "$(J advance "$id" build 2>&1)" 'has no `## Slices` section' &&
+  check "advice sees the same missing section" "$(J next "$id")" 'has no `## Slices` section' &&
+  check "no build round opened" "$(field "$id" "d['stage'], d['round']")" "('spec', 0)" || return 1
+  printf '\n## Slices\n### Slice 1: A\n**Owns:** a/\n**Needs:** none\n\n### Slice 2: B\n**Owns:** b/\n**Needs:** 1\n' >> "factory/jobs/$id/spec.md"
+  check "advice allows a valid split" "$(J next "$id")" "advance: factory/bin/job advance $id build" &&
+  J advance "$id" build >/dev/null &&
+  check "the validated slices are saved" "$(J slices "$id")" "slice 2 pending: B"
+}
+
 # ---- runner ----------------------------------------------------------------
 
 all_tests=$(declare -F | awk '{print $3}' | grep '^t_')

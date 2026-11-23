@@ -41,8 +41,11 @@ approver (opus)    → APPROVE: sync origin/main, gate, gh pr merge
 ```
 
 `stage` in `job.json` is one of `intake`, `needs-info`, `spec`, `build`,
-`gate`, `review`, `approve`, `merging`, `needs-human`, `merged`, `rejected`.
-The legal moves are in `TRANSITIONS` at the top of `factory/bin/job`.
+`gate`, `review`, `approve`, `merging`, `needs-human`, `paused`, `merged`, `rejected`.
+`factory/bin/lifecycle.py` decides the next move from job state, parsed reports,
+and observed worktree or ticket facts. `job next` renders that decision.
+`job advance` reads the facts again, checks its requested target, and applies
+the ordered effects.
 
 ## Decisions
 
