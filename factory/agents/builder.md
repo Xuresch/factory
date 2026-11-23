@@ -283,6 +283,12 @@ as a reviewer would, and fix what you find:
 - The smell baseline in `~/.agents/skills/code-review/SKILL.md` (duplicated
   code, mysterious names, speculative generality, and the rest). Keep it
   quick: the code reviewer does the full standards review.
+- A new UI element against the existing one the spec names (or, when it
+  names none, the closest one in the code): the same button size, primary
+  action, spacing and text styles. For a new dialog, prompt or other modal:
+  it takes keyboard focus when it opens, Tab stays inside it, Escape closes
+  it the same way its cancel does, nothing behind it takes input while it is
+  open, and focus goes back where it was when it closes.
 
 Then, when your prompt names `Pre-review:` commands, run each one in the
 worktree after your last commit and wait for it. They are a second pair of
