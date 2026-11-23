@@ -287,6 +287,31 @@ test('Costs renders the stored split by role and agrees with the drawer at the c
   }
 })
 
+test('Costs draws and hit-tests a half-cent agent on the same bar as a $100 agent', async () => {
+  const doc = { id: '021-small-segment', title: 'Small segment', started: '2026-11-21T12:00:00Z',
+    stage: 'merged', cost_usd: 100.005, cost_by_agent: { claude: 100, codex: 0.005 } }
+  const d = await loaded(dashboard(modes([doc]).local))
+  await d.run("location.hash = '#costs'; ui.range = 'all'; render()")
+  const costs = d.el('costsview').innerHTML
+  assert.match(costs, /class="legend">[^\n]*>codex<\/span>/)
+  const chart = costs.match(/<svg class="ch"[^]*?<\/svg>/)[0]
+  const hit = chart.match(/<rect class="hit"[^>]*>/)[0]
+  assert.match(hit, /aria-label="[^"]*codex +\$0\.01/)
+  assert.match(hit, /data-tip="[^"]*\{codex\}.*\$0\.01/)
+  const ranges = hit.match(/data-segs="([^"]*)"/)[1]
+  const codex = ranges.split(';').map((range) => range.split(',')).find((range) => range[3] === 'codex')
+  assert.ok(codex, 'Codex has a hover target')
+  const [index, top, bottom] = codex
+  assert.ok(Number(bottom) - Number(top) >= 1, 'the target is at least one pixel high')
+  assert.ok(chart.includes(`style="fill:var(--codex)" data-si="${index}"`), 'Codex has a path')
+  d.ctx.DOMPoint = class {
+    constructor(x, y) { this.y = y }
+    matrixTransform() { return this }
+  }
+  d.ctx.segmentHit = { dataset: { segs: ranges }, ownerSVGElement: { getScreenCTM: () => ({ inverse() {} }) } }
+  assert.equal(d.run(`segAt(segmentHit, { clientY: ${(Number(top) + Number(bottom)) / 2} }).key`), 'codex')
+})
+
 test('renderers read summary fields, not the hub flag', async () => {
   const docs = FIXTURES.map((f) => f.doc)
   const d = await loaded(dashboard(modes(docs).hubAll))

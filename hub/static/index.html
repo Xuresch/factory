@@ -386,7 +386,7 @@
 <script src="/all/job-summary.js"></script>
 <script src="/all/cost-aggregation.js"></script>
 <script>
-const { AGENTS, splitDisplay, sourceSplitDisplay } = CostAggregation
+const { AGENTS, displayAmount, splitDisplay, sourceSplitDisplay } = CostAggregation
 const LIVE = new Set(['intake', 'spec', 'build', 'gate', 'review', 'approve', 'merging'])
 const ATTN = new Set(['needs-human', 'paused', 'needs-info'])
 const TRACK = [['intake', 'intake'], ['spec', 'spec'], ['build', 'build'], ['gate', 'gate'], ['review', 'review'], ['approve', 'approve'], ['merging', 'merge']]
@@ -493,7 +493,7 @@ const byOf = (by, total) => (by && Object.keys(by).length ? by : { other: Number
 const jobSplit = (j) => JobSummary.fromHub(j).split
 function splitText(display, shares) {
   return display.agents.map(({ agent, amount, percent }) =>
-    `${agent} ${money(amount)}${shares ? ` (${percent}%)` : ''}`).join(' · ') || 'no visible agent costs'
+    `${agent} ${money(displayAmount(amount))}${shares ? ` (${percent}%)` : ''}`).join(' · ') || 'no visible agent costs'
 }
 function renderSplit(display, size = '') {
   const body = display.segments.map(({ agent, amount, source }) =>
@@ -502,7 +502,7 @@ function renderSplit(display, size = '') {
 }
 const split = (by, size) => renderSplit(splitDisplay(by), size)
 const legend = (display) => `<span class="lg">${display.agents.map(({ agent, amount }) =>
-  `<span>${sw(agent)}${agent} ${money(amount)}</span>`).join('')}</span>`
+  `<span>${sw(agent)}${agent} ${money(displayAmount(amount))}</span>`).join('')}</span>`
 function monthlySplit(month, total) {
   return month.factory || month.outside
     ? sourceSplitDisplay(month.factory, month.outside)
@@ -993,7 +993,7 @@ function showTip(g, x, y) {
   const tot = Number(d.cost_usd) || 0
   tip.innerHTML = `<div class="th"><span>${esc(dayName(d.day))}</span><span>${money(tot)}</span></div>`
     + daySplit(d).agents.map(({ agent, amount, percent }) =>
-      `<div class="tr">${sw(agent)}${agent}<b>${money(amount)} · ${percent}%</b></div>`).join('')
+      `<div class="tr">${sw(agent)}${agent}<b>${money(displayAmount(amount))} · ${percent}%</b></div>`).join('')
     + `<div class="tr">${plural(Number(d.jobs) || 0, 'job')}</div>`
   tip.hidden = false
   const r = tip.getBoundingClientRect()

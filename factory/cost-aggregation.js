@@ -2,6 +2,9 @@
 // resolved summary split supplies agent totals. Priced rows supply role and model detail.
 ;(function (root) {
   const AGENTS = Object.freeze(['claude', 'codex', 'other'])
+  const HALF_CENT = 0.005
+  // Remove arithmetic noise at the display boundary. Aggregates and shares keep the raw amounts.
+  const displayAmount = (usd) => Math.round(usd * 1e9) / 1e9
   const emptySplit = () => ({ claude: 0, codex: 0, other: 0 })
   const amount = (v) => Number.isFinite(Number(v)) ? Number(v) : 0
   const agentKey = (a) => a === 'claude' || a === 'codex' ? a : 'other'
@@ -14,7 +17,7 @@
       for (const agent of AGENTS) split[agent] += amount(values?.[agent])
     }
     const total = splitTotal(split)
-    const agents = AGENTS.filter((agent) => split[agent] >= 0.005)
+    const agents = AGENTS.filter((agent) => displayAmount(split[agent]) >= HALF_CENT)
       .map((agent) => ({ agent, amount: split[agent], percent: percent(split[agent], total) }))
     const segments = agents.flatMap(({ agent }) => sources
       .map(([source, values]) => ({ agent, amount: amount(values?.[agent]), source }))
@@ -83,15 +86,15 @@
     return Object.hasOwn(ROLES, key) ? key : 'other'
   }
 
-  function roleAmounts(job) {
+  function roleAmounts(job, { useJobRoleMix = false } = {}) {
     const rows = pricedRows(job).filter((row) => amount(row.cost_usd) > 0)
     return AGENTS.flatMap((agent) => {
       const cost = amount(job.split?.[agent])
       if (!cost) return []
       const own = rows.filter((row) => agentKey(row.agent) === agent)
-      // Stored splits and residuals can leave an agent without priced rows. Use
-      // the job's role mix in that case, without assigning it another agent's model.
-      const weights = own.length ? own : rows
+      // Cost per role uses the job's role mix for an agent without priced rows.
+      // Time buckets keep the default shade for that agent.
+      const weights = !own.length && useJobRoleMix ? rows : own
       if (!weights.length) return [{ agent, key: null, shade: 1, cost }]
       const total = weights.reduce((sum, row) => sum + amount(row.cost_usd), 0)
       return weights.map((row) => {
@@ -105,7 +108,7 @@
   function roleCosts(jobs) {
     const groups = new Map()
     for (const job of jobs) {
-      for (const { agent, key, model, cost } of roleAmounts(job)) {
+      for (const { agent, key, model, cost } of roleAmounts(job, { useJobRoleMix: true })) {
         if (key === null) continue // The job has an Agent split but no priced role.
         const group = groups.get(key) || { key, label: ROLES[key].label, split: emptySplit(), models: new Map() }
         group.split[agent] += cost
@@ -161,7 +164,7 @@
     return { ...bucket, split, agents, total, segments: shaded, steps }
   }
 
-  const api = { AGENTS, agentKey, percent, splitTotal, splitDisplay, sourceSplitDisplay, jobTotals, shortModel,
+  const api = { AGENTS, agentKey, percent, splitTotal, displayAmount, splitDisplay, sourceSplitDisplay, jobTotals, shortModel,
     modelKey, jobCosts, tableCosts, roleCosts, costBuckets }
   if (typeof module === 'object' && module.exports) module.exports = api
   else root.CostAggregation = api

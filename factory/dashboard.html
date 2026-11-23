@@ -591,7 +591,7 @@
 <script src="job-summary.js"></script>
 <script src="cost-aggregation.js"></script>
 <script>
-const { AGENTS: SPLIT_AGENTS, agentKey, percent: pct, splitTotal, splitDisplay, jobTotals, shortModel, modelKey,
+const { AGENTS: SPLIT_AGENTS, agentKey, percent: pct, splitTotal, displayAmount, splitDisplay, jobTotals, shortModel, modelKey,
   jobCosts, tableCosts, roleCosts, costBuckets } = CostAggregation
 const POLL_MS = 2000
 const LIVE = new Set(['intake', 'spec', 'build', 'gate', 'review', 'approve', 'merging'])
@@ -1402,7 +1402,7 @@ async function boardPage() {
 const sw = (k, extra = '') => `<i class="sw ${k} ${extra}"></i>`
 
 const splitLabel = (display) => display.agents
-  .map(({ agent, amount, percent }) => `${agent} ${money(amount)} (${percent}%)`).join(' · ')
+  .map(({ agent, amount, percent }) => `${agent} ${money(displayAmount(amount))} (${percent}%)`).join(' · ')
 const splitSegments = (display) => display.segments
   .map(({ agent, amount }) => `<i style="flex:${amount} 1 0;background:var(--${agent})"></i>`).join('')
 
@@ -1414,11 +1414,11 @@ function renderSplit(display, cls = '') {
 }
 const splitBar = (split, cls) => renderSplit(splitDisplay(split), cls)
 const splitLegend = (display) => `<p class="cost-leg">${display.agents
-  .map(({ agent, amount, percent }) => `<span>${sw(agent)}${agent} ${money(amount)} · ${percent}%</span>`).join('')}</p>`
+  .map(({ agent, amount, percent }) => `<span>${sw(agent)}${agent} ${money(displayAmount(amount))} · ${percent}%</span>`).join('')}</p>`
 
 // Tooltip rows: swatch, agent, amount, share.
 const tipAgents = (display) => display.agents
-  .map(({ agent, amount, percent }) => `{${agent}} ${agent.padEnd(7)}${money(amount).padStart(9)} ${String(percent).padStart(3)}%`).join('\n')
+  .map(({ agent, amount, percent }) => `{${agent}} ${agent.padEnd(7)}${money(displayAmount(amount)).padStart(9)} ${String(percent).padStart(3)}%`).join('\n')
 
 // Delta against a previous period: direction as an arrow, amber only past +50%.
 const deltaHtml = (p) => (p === null || p === undefined || Number.isNaN(p) ? ''
@@ -1473,7 +1473,7 @@ function chartFrame({ W, H, max, step, title, desc, left, right = 12, top = 16, 
 
 // Stacked columns on one frame. item: {label, segs:[{v, fill, stroke}], total, tip, job, dim, ghost, note, mark}.
 // Outliers are clipped at the axis with a break marker and their value; the biggest bar is labelled with its id.
-function barChart({ W, H, items, title, desc, maxBar = 64, line, labelAll = false, right = 12, noteCls = '' }) {
+function barChart({ W, H, items, title, desc, maxBar = 64, line, labelAll = false, right = 12, noteCls = '', minSegmentHeight = 0 }) {
   const tops = items.map((i) => Math.max(i.total, i.ghost || 0))
   const nz = tops.filter((v) => v > 0).sort((a, b) => a - b)
   const biggest = nz[nz.length - 1] || 0.01
@@ -1490,15 +1490,21 @@ function barChart({ W, H, items, title, desc, maxBar = 64, line, labelAll = fals
     const cx = F.x0 + band * (i + 0.5), x = cx - bw / 2
     let cum = 0
     const drawn = it.segs.filter((s) => s.v > 0)
+    let previousTop = F.y(0)
     let svg = ''
     const ranges = [] // where each segment sits, so the tooltip can name the one under the cursor
     drawn.forEach((s, k) => {
-      const yTop = F.y(cum + s.v)
-      let yBot = F.y(cum)
+      let yBot = minSegmentHeight ? previousTop : F.y(cum)
       cum += s.v
+      // Reserve one segment's minimum height for each remaining segment, even at the axis cap.
+      const roomForRest = F.y0 + minSegmentHeight * (drawn.length - k - 1)
+      const yTop = minSegmentHeight
+        ? Math.min(yBot - minSegmentHeight, Math.max(F.y(cum), roomForRest))
+        : F.y(cum)
+      previousTop = yTop
       if (yBot - yTop <= 0.4) return
-      ranges.push([k, yTop.toFixed(1), yBot.toFixed(1), s.key || '', s.role ?? '', s.v.toFixed(4), s.part || ''].join(','))
       if (k > 0 && yBot - yTop > 4) yBot -= gap // 2px of surface between fills
+      ranges.push([k, yTop.toFixed(1), yBot.toFixed(1), s.key || '', s.role ?? '', s.v.toFixed(4), s.part || ''].join(','))
       const h = yBot - yTop
       const last = k === drawn.length - 1 || F.y(cum) <= F.y0 + 0.5
       const r = last ? Math.min(4, bw / 2) : 0
@@ -1676,7 +1682,7 @@ function costsFor(jobs, allJobs) {
       ? 'Each bar is one job, split by agent. Hover or focus for the breakdown, click to open the job.'
       : `Each bar is one ${unit}, summed over the jobs started in it, split by agent. Over 60 jobs the chart groups by ${unit} on its own; the buttons above override it.`}
       ${money(total)} in all.</p>
-    ${agentLegend(byRole, list)}${barChart({ W, H, items: barItems(list, per, byRole), title: `Cost per ${unit}`, desc: `${list.length} bars, ${money(total)} in total, median ${money(med)} per ${unit}.`,
+    ${agentLegend(byRole, list)}${barChart({ W, H, items: barItems(list, per, byRole), title: `Cost per ${unit}`, desc: `${list.length} bars, ${money(total)} in total, median ${money(med)} per ${unit}.`, minSegmentHeight: 1,
       line: { v: med, label: ['median', `${money(med)}/${unit}`] } })}`
 
   // Chart 1b: the daily trend, always per day over the chosen range (skipped when chart 1 already is per day).
@@ -1686,7 +1692,7 @@ function costsFor(jobs, allJobs) {
     const to = new Date(), from = new Date(to.getTime() - (days - 1) * 864e5)
     const dl = costBuckets(jobs, 'day', byRole, from.toISOString(), to.toISOString())
     daily = `<h2>Cost per day</h2><p class="sub">The last ${days} days by day started, split by agent; the newest day is still filling up.</p>
-      ${barChart({ W, H: 190, items: barItems(dl, 'day', byRole), title: 'Cost per day', desc: `${dl.length} days, ${money(dl.reduce((s, b) => s + b.total, 0))} in total.`, maxBar: 28 })}`
+      ${barChart({ W, H: 190, items: barItems(dl, 'day', byRole), title: 'Cost per day', desc: `${dl.length} days, ${money(dl.reduce((s, b) => s + b.total, 0))} in total.`, maxBar: 28, minSegmentHeight: 1 })}`
   }
 
   // Chart 2: merged jobs in order, with a rolling mean whose window grows with the count.
@@ -1727,12 +1733,13 @@ function costsFor(jobs, allJobs) {
     <div class="rbars">${roleList.map(({ label, split, models }) => {
       const display = splitDisplay(split)
       const v = display.total
+      const formatted = money(displayAmount(v))
       const visible = new Set(display.agents.map(({ agent }) => agent))
-      const modelLines = [...models].flatMap(([model, { agent, cost }]) => visible.has(agent) ? [`  ${model} ${money(cost)}`] : [])
-      const tipText = [`${label} · ${money(v)}`, tipAgents(display), ...modelLines].filter(Boolean).join('\n')
+      const modelLines = [...models].flatMap(([model, { agent, cost }]) => visible.has(agent) ? [`  ${model} ${money(displayAmount(cost))}`] : [])
+      const tipText = [`${label} · ${formatted}`, tipAgents(display), ...modelLines].filter(Boolean).join('\n')
       return `<div class="rb" data-tip="${esc(tipText)}"><span class="rl">${esc(label)}</span>
-        <span class="rt"><span class="split wide" style="width:${Math.max(2, (100 * v) / maxRole)}%" role="img" aria-label="${esc(`${label}: ${splitLabel(display) || money(v)}`)}">${splitSegments(display)}</span></span>
-        <span class="rv">${money(v)} · ${pct(v, rowTotal)}%</span></div>`
+        <span class="rt"><span class="split wide" style="width:${Math.max(2, (100 * v) / maxRole)}%" role="img" aria-label="${esc(`${label}: ${splitLabel(display) || formatted}`)}">${splitSegments(display)}</span></span>
+        <span class="rv">${formatted} · ${pct(v, rowTotal)}%</span></div>`
     }).join('')}</div></div>`
 
   // Cache per model; what it saved sits in this section's header.
@@ -1799,11 +1806,17 @@ function segAt(el, e) {
   const m = el.dataset.segs && el.ownerSVGElement?.getScreenCTM()
   if (!m) return null
   const y = new DOMPoint(e.clientX, e.clientY).matrixTransform(m.inverse()).y
+  let closest = null
+  let distance = 1
   for (const r of el.dataset.segs.split(';')) {
     const [si, top, bot, key, role, v, part] = r.split(',')
-    if (y >= +top - 1 && y <= +bot + 1) return { si, key, role, v: +v, part }
+    const gap = Math.max(Number(top) - y, y - Number(bot), 0)
+    if (gap > distance) continue
+    closest = { si, key, role, v: +v, part }
+    if (gap === 0) break
+    distance = gap
   }
-  return null
+  return closest
 }
 let hlBar = null
 function highlight(el, seg) {

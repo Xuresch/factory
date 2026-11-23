@@ -45,6 +45,21 @@ test('source segments use the combined agent total and keep every positive sourc
 })
 
 const row = (role, agent, model, cost_usd) => ({ role, agent, model, cost_usd, sessions: 1, input_tokens: 100 })
+test('half-cent source and role amounts stay visible after floating-point arithmetic', () => {
+  const month = sourceSplitDisplay({ claude: 0.0005 }, { claude: 0.0045 })
+  assert.ok(Math.abs(month.total - 0.005) < 1e-12)
+  assert.deepEqual(agents(month), ['claude'])
+  assert.deepEqual(month.segments.map(({ amount }) => amount), [0.0005, 0.0045])
+
+  const job = JobSummary.fromLocal({ id: 'half-cent', cost_usd: 0.019, cost_breakdown: [
+    row('builder', 'claude', 'sonnet', 0.005),
+    row('approver', 'claude', 'sonnet', 0.014),
+  ] })
+  const builder = roleCosts([job]).find(({ key }) => key === 'builder')
+  assert.deepEqual(agents(splitDisplay(builder.split)), ['claude'])
+  assert.deepEqual(agents(splitDisplay({ claude: 0.004999 })), [])
+})
+
 const jobs = [
   JobSummary.fromLocal({ id: '001', started: '2026-11-02T12:00:00', cost_usd: 10, cost_breakdown: [
     row('builder-s1', 'claude', 'claude-opus-4', 2),
@@ -98,7 +113,12 @@ test('roles and buckets use the summary split when priced rows name another agen
   const job = JobSummary.fromLocal(doc)
   const roles = roleCosts([job])
   assert.deepEqual(roles.map(({ split }) => split), [{ claude: 0, codex: 5, other: 0 }])
-  assert.deepEqual(costBuckets([job], 'job', true)[0].split, { claude: 0, codex: 5, other: 0 })
+  for (const unit of ['job', 'day', 'week']) {
+    const [bucket] = costBuckets([job], unit, true)
+    assert.deepEqual(bucket.split, { claude: 0, codex: 5, other: 0 })
+    assert.deepEqual(bucket.segments, [{ agent: 'codex', amount: 5, shade: 1 }])
+    assert.deepEqual(bucket.steps, [0, 5, 0, 0])
+  }
   assert.equal(jobCosts(job).rows[0].agent, 'claude')
 })
 
@@ -143,11 +163,11 @@ test('hub overview renders both monthly sources and uses the job summary on fini
   listeners.get('data')({
     machines: [{ machine: 'm1' }], repos: [], needs_you: [], live: [], events: [],
     recent: docs.map(({ doc }) => ({ repo: 'o/r', job: { ...doc, cost_split: doc.cost_by_agent } })),
-    month: { api_equivalent_usd: 0.0105, factory: { claude: 0.003, codex: 0.0045 }, outside: { claude: 0.003 } },
+    month: { api_equivalent_usd: 0.0095, factory: { claude: 0.0005, codex: 0.0045 }, outside: { claude: 0.0045 } },
   })
   const monthly = main.innerHTML.match(/<div class="tile spend">[\s\S]*?<div class="pace">/)[0]
-  assert.match(monthly, /aria-label="claude \$0\.01" title="claude \$0\.01 \(57%\)"/)
-  assert.match(monthly, /class="c" style="flex:0\.003 1 0"><\/i><i class="c out" style="flex:0\.003 1 0"/)
+  assert.match(monthly, /aria-label="claude \$0\.01" title="claude \$0\.01 \(53%\)"/)
+  assert.match(monthly, /class="c" style="flex:0\.0005 1 0"><\/i><i class="c out" style="flex:0\.0045 1 0"/)
   assert.match(monthly, /class="lg"><span><span class="sw c" aria-hidden="true"><\/span>claude \$0\.01<\/span><\/span>/)
   assert.doesNotMatch(monthly, /codex|class="x"/)
   assert.match(main.innerHTML, /title="split wins"[\s\S]*?aria-label="codex \$5\.00"/)
