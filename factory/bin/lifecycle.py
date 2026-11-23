@@ -174,7 +174,8 @@ def _progression(job, facts, target, max_rounds):
         if facts.protected:
             return _transition("needs-human", f'every path spec.md names is protected ({", ".join(facts.protected)})',
                                Effect("stop_protected", (facts.protected, None)))
-        return _transition("build", "spec is ready to build", Effect("set_slices"), Effect("next_round"))
+        return _transition("build", "spec.md names paths outside protected_paths (or none)",
+                           Effect("set_slices"), Effect("next_round"))
     if stage == "build":
         if report == "STATUS: READY":
             if facts.dirty:
@@ -240,6 +241,8 @@ def decide(job, facts=None, *, target=None, intent="advance", max_rounds=0):
     if target is None or decision.stage == target:
         return decision
     reason = decision.reason
-    if decision.stage:
+    if old == "spec" and decision.stage == "build":
+        reason += ", so advance it to build"
+    elif decision.stage:
         reason += f": go to {decision.stage}"
     return Decision("refuse", reason)
