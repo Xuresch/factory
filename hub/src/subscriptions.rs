@@ -4,9 +4,10 @@ use std::collections::{BTreeMap, HashSet};
 
 use serde_json::{json, Value};
 
-use crate::store::{get, get_f64, get_int, get_or_empty, int, Error, Store};
+use crate::store::{get, get_f64, get_or_empty, Error, Store};
 use crate::util::{
-    civil_from_days, date_from_days, days_from_civil, iso_from_epoch, round4, SECONDS_PER_DAY,
+    civil_from_days, date_from_days, days_from_civil, iso_from_epoch, parse_iso, round4,
+    SECONDS_PER_DAY,
 };
 
 const WEEK: i64 = 7 * SECONDS_PER_DAY;
@@ -39,6 +40,11 @@ fn month_key(epoch: i64) -> String {
     date_from_days(epoch.div_euclid(SECONDS_PER_DAY))[..7].to_owned()
 }
 
+fn utc_month_start(epoch: i64) -> i64 {
+    let (year, month, _) = civil_from_days(epoch.div_euclid(SECONDS_PER_DAY));
+    days_from_civil(year, month, 1) * SECONDS_PER_DAY
+}
+
 fn next_month(start: i64) -> i64 {
     let (year, month, _) = civil_from_days(start.div_euclid(SECONDS_PER_DAY));
     let (year, month) = if month == 12 {
@@ -61,6 +67,7 @@ pub struct Comparison {
     pub plans: Vec<Value>,
     pub outside_months: BTreeMap<String, Value>,
     months: BTreeMap<String, Value>,
+    history_start: Option<String>,
     now: i64,
     current: i64,
 }
@@ -77,7 +84,12 @@ impl Comparison {
     }
 
     pub fn plans_comparison(&self) -> Value {
-        json!({"now": iso_from_epoch(self.now), "current_month": month_key(self.current), "months": self.months})
+        let months: BTreeMap<_, _> = self
+            .history_start
+            .iter()
+            .flat_map(|first| self.months.range(first.clone()..))
+            .collect();
+        json!({"now": iso_from_epoch(self.now), "current_month": month_key(self.current), "months": months})
     }
 }
 
@@ -109,27 +121,39 @@ async fn plans(store: &Store) -> Result<Vec<Value>, Error> {
 /// Read the projected job costs and ready Outside usage from one ingest snapshot.
 /// The caller holds the ingest lock while reading the comparison and its related data.
 pub async fn read(store: &Store, now: i64) -> Result<Comparison, Error> {
-    let current = month_start(&month_key(now)).expect("UTC month");
-    let previous = month_start(&month_key(current - SECONDS_PER_DAY)).expect("UTC month");
+    let current = utc_month_start(now);
+    let previous = utc_month_start(current - SECONDS_PER_DAY);
     let recent = (now - WEEK).max(current);
-    let mut factory = BTreeMap::new();
+    let mut factory = BTreeMap::<i64, FactoryMonth>::new();
     for row in store
         .query(
-            "SELECT strftime('%Y-%m', started) AS month, COUNT(*) AS jobs, SUM(cost_usd) AS usd, \
-             SUM(cost_claude) AS claude, SUM(cost_codex) AS codex, SUM(cost_other) AS other, \
-             SUM(CASE WHEN unixepoch(started) BETWEEN ? AND ? THEN cost_usd ELSE 0 END) AS recent_usd \
-             FROM jobs WHERE started IS NOT NULL GROUP BY 1",
-            vec![int(recent), int(now)],
+            "SELECT started, cost_usd, cost_claude, cost_codex, cost_other \
+             FROM jobs WHERE started IS NOT NULL",
+            vec![],
         )
         .await?
     {
-        if let Some(start) = get(&row, "month").and_then(month_start).filter(|&start| start <= current) {
-            factory.insert(start, FactoryMonth {
-                usd: get_f64(&row, "usd"),
-                split: [get_f64(&row, "claude"), get_f64(&row, "codex"), get_f64(&row, "other")],
-                jobs: get_int(&row, "jobs").unwrap_or(0),
-                recent_usd: get_f64(&row, "recent_usd"),
-            });
+        // Use the ingest parser so the month and pace window accept the same timestamps.
+        let Some(started) = get(&row, "started")
+            .and_then(parse_iso)
+            .filter(|&started| started <= now)
+        else {
+            continue;
+        };
+        let month = factory.entry(utc_month_start(started)).or_default();
+        let usd = get_f64(&row, "cost_usd");
+        month.usd += usd;
+        month.jobs += 1;
+        for (total, column) in
+            month
+                .split
+                .iter_mut()
+                .zip(["cost_claude", "cost_codex", "cost_other"])
+        {
+            *total += get_f64(&row, column);
+        }
+        if started >= recent {
+            month.recent_usd += usd;
         }
     }
     let mut outside = BTreeMap::<i64, Split>::new();
@@ -152,13 +176,20 @@ pub async fn read(store: &Store, now: i64) -> Result<Comparison, Error> {
     }
 
     let plans = plans(store).await?;
-    let first = factory
+    let history_start = factory
         .keys()
         .chain(outside.keys())
         .copied()
-        .fold(previous, i64::min);
+        .chain(
+            plans
+                .iter()
+                .filter_map(|plan| plan["since"].as_str().and_then(month_start)),
+        )
+        .filter(|&start| start <= current)
+        .min();
     let mut months = BTreeMap::new();
-    let mut start = first;
+    // The overview needs the previous row even if Plans has no history that far back.
+    let mut start = history_start.unwrap_or(previous).min(previous);
     while start <= current {
         let end = next_month(start);
         let elapsed = now.min(end) - start;
@@ -201,6 +232,7 @@ pub async fn read(store: &Store, now: i64) -> Result<Comparison, Error> {
         plans,
         outside_months,
         months,
+        history_start: history_start.map(month_key),
         now,
         current,
     })

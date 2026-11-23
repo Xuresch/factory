@@ -409,7 +409,7 @@ const opened = new Set()    // collapsed sync lines the user expanded
 let firstLoad = true
 let filter = new URLSearchParams(location.search).get('repo') || ''
 // Currency: cents below $100, whole dollars from there ($1.45, $213, $1,349).
-const money = (n) => { n = Number(n || 0); return n >= 99.5 ? `$${Math.round(n).toLocaleString('en-US')}` : `$${n.toFixed(2)}` }
+const money = CostAggregation.formatMoney
 const t = (iso) => Date.parse(iso)
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`
 const inF = (repo) => !filter || repo === filter

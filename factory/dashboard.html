@@ -988,8 +988,7 @@ function costTable(job) {
 
 const WAIT = new Set(['needs-human', 'paused', 'needs-info'])
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`
-// $12.34 below $100, $1,349 above: cents stop mattering.
-const money = (n) => { n = Number(n || 0); return n >= 100 ? `$${Math.round(n).toLocaleString('en-US')}` : `$${n.toFixed(2)}` }
+const money = CostAggregation.formatMoney
 const bar = (share, agent) => `<span class="bar" style="--w:${share}%${agent ? `;--c:var(--${agentKey(agent)})` : ''}"></span>${share}%`
 
 const TERMINAL_STAGES = new Set(['merged', 'rejected'])
@@ -1953,7 +1952,7 @@ function hubPlanMonths({ now, current_month: currentMonth, months }) {
       feeT: row.plan_fee_elapsed_usd, fullFee: row.plan_fee_full_usd,
     }
   })
-  const pace = months[currentMonth].monthly_pace_usd
+  const pace = months[currentMonth]?.monthly_pace_usd
   return { now: new Date(now), allMonths, pace: pace == null ? null : { T: pace } }
 }
 
@@ -2065,7 +2064,7 @@ function planPage() {
   const chart = `<h2>Per month</h2><p class="sub">API-equivalent per month against the subscription fee that month.</p>${legend}
     <div class="chart-row"><div>${chartSvg}</div>${avail - W >= 260 ? aside : ''}</div>`
 
-  const monthRows = months.toReversed().map((m) => `<tr><td>${esc(m.label)}${m.share < 1 ? ' <span class="note">so far</span>' : ''}</td>
+  const monthRows = months.slice().reverse().map((m) => `<tr><td>${esc(m.label)}${m.share < 1 ? ' <span class="note">so far</span>' : ''}</td>
     <td class="n">${m.jobs}</td><td class="n">${money(m.facT)}</td><td class="n">${money(m.outT)}</td>
     ${agents.map((a) => `<td class="n">${money(m.api[a])}</td><td class="n">${money(m.fee[a])}</td>`).join('')}
     <td class="n">${saved(m.apiT, m.feeT)}</td><td class="n">${times(m.apiT, m.feeT)}</td></tr>`).join('')

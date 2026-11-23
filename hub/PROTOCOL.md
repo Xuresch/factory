@@ -228,8 +228,8 @@ All JSON, `Cache-Control: no-store`.
   `href` of a job: `/r/<owner>/<name>/dashboard.html#job=<served id>`.
   `month` contains the current UTC month's comparison row. `month.prev` is the
   previous UTC month's row. The API-equivalent adds all factory jobs started
-  in the month, including retained jobs, and Outside usage from ready scans
-  using the reported month keys.
+  by the comparison clock in the month, including retained jobs, and Outside
+  usage from ready scans using the reported month keys.
   Totals sum the projected `{claude, codex, other}` Agent split per job.
   A non-empty stored split wins, including explicit zeroes. Otherwise the hub
   uses priced rows, or attributes a total-only job entirely to `claude`.
@@ -269,7 +269,7 @@ serves from `factory/`:
 | `jobs/<id>/job.json` | the stored job.json (id rewritten when prefixed) |
 | `jobs/<id>/<path>` | the stored file, `text/markdown; charset=utf-8` |
 | `.scratch/<path>` | the stored ticket |
-| `_subscriptions.json` | Over **every** repo and machine. The hub adds `comparison: {now, current_month, months}` to the standalone document shape. `months` is keyed by UTC month and holds the same comparison rows used by `/api/overview`. `projects[].jobs[].cost_by_agent` includes the projected `claude`, `codex`, and `other` split. `outside` combines ready scans: `months` summed by month and agent, `by_cwd` concatenated with `cwd` prefixed `<machine>:`, `unpriced` summed, `factory_sessions` summed, `status` "ready" when at least one scan is ready or `{"status": "scanning"}` otherwise. |
+| `_subscriptions.json` | Over **every** repo and machine. The hub adds `comparison: {now, current_month, months}` to the standalone document shape. `months` holds the same UTC rows as `/api/overview`, starting with the first month of recorded usage or the earliest explicit plan `since`, whichever is earlier. `projects[].jobs[].cost_by_agent` includes the projected `claude`, `codex`, and `other` split. `outside` combines ready scans: `months` summed by month and agent, `by_cwd` concatenated with `cwd` prefixed `<machine>:`, `unpriced` summed, `factory_sessions` summed, `status` "ready" when at least one scan is ready or `{"status": "scanning"}` otherwise. |
 | `hub` | (JSON) `{"repo": "...", "overview": "/"}` so the page knows it is under a hub |
 
 `/all/` is the same tree over every repo at once: job ids `<name>~<id>` (or

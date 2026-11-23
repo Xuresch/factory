@@ -9,6 +9,10 @@
     const rounding = 4 * Number.EPSILON * Math.max(Math.abs(usd), HALF_CENT)
     return usd > 0 && usd < HALF_CENT && usd >= HALF_CENT - rounding ? HALF_CENT : usd
   }
+  function formatMoney(value) {
+    const usd = Number(value || 0)
+    return usd >= 100 ? `$${Math.round(usd).toLocaleString('en-US')}` : `$${usd.toFixed(2)}`
+  }
   const emptySplit = () => ({ claude: 0, codex: 0, other: 0 })
   const amount = (v) => Number.isFinite(Number(v)) ? Number(v) : 0
   const agentKey = (a) => a === 'claude' || a === 'codex' ? a : 'other'
@@ -168,7 +172,7 @@
     return { ...bucket, split, agents, total, segments: shaded, steps }
   }
 
-  const api = { AGENTS, agentKey, percent, splitTotal, displayAmount, splitDisplay, sourceSplitDisplay, jobTotals, shortModel,
+  const api = { AGENTS, agentKey, percent, splitTotal, displayAmount, formatMoney, splitDisplay, sourceSplitDisplay, jobTotals, shortModel,
     modelKey, jobCosts, tableCosts, roleCosts, costBuckets }
   if (typeof module === 'object' && module.exports) module.exports = api
   else root.CostAggregation = api

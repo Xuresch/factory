@@ -216,7 +216,7 @@ class TestIngest(HubCase):
                 data["cost_by_agent"] = by
             return {"id": jid, "job": data, "files": {"spec.md": "x"}}
 
-        t = f"{today}T00:30:00Z"
+        t = min(now, now.replace(hour=0, minute=30, second=0, microsecond=0)).isoformat()
         a = [j("001", 3.0, {"claude": 2.0, "codex": 1.0}, t), j("002", 1.0, None, t),
              j("003", 4.0, {"claude": 4.0}, f"{prev}-15T10:00:00Z")]
         b = [j("001", 0.6, {"claude": 0.1, "codex": 0.5}, t), j("002", 0.2, {"claude": 0.1}, t)]
@@ -335,7 +335,8 @@ class TestSubscriptionComparison(HubCase):
         previous = (now.replace(day=1) - datetime.timedelta(days=1)).strftime("%Y-%m")
         future = (now.replace(day=28) + datetime.timedelta(days=4)).strftime("%Y-%m")
         plan = {"name": "Claude Max", "agent": "claude", "usd_per_month": 120}
-        partial = entry("050", started=f"{month}-01T00:30:00Z", cost=50)
+        first_start = now.replace(day=1, hour=0, minute=30, second=0, microsecond=0)
+        partial = entry("050", started=min(now, first_start).isoformat(), cost=50)
         partial["job"]["cost_by_agent"] = {"claude": 20}
         legacy = entry("007", started=f"{previous}-15T12:00:00Z", cost=7)
         del legacy["job"]["cost_by_agent"]
@@ -346,7 +347,8 @@ class TestSubscriptionComparison(HubCase):
         }], outside={"status": "ready", "months": {month: {"claude": 10}, previous: {"codex": 3}}}))
         self.ok(push("m1", [repo("o/comp", [])]))
         plans = self.get_json("/r/o/comp/_subscriptions.json")
-        overview = self.get_json("/api/overview")["month"]
+        overview_document = self.get_json("/api/overview")
+        overview = overview_document["month"]
         self.assertEqual(overview["api_equivalent_usd"], 60)
         self.assertEqual(overview["prev"]["api_equivalent_usd"], 10)
         comparisons = plans["comparison"]["months"]
@@ -367,8 +369,7 @@ class TestSubscriptionComparison(HubCase):
         if shutil.which("node"):
             script = Path(__file__).resolve().parent.parent / "factory/tests/subscription-views.mjs"
             result = subprocess.run(["node", str(script), "--hub"], text=True, capture_output=True,
-                                    input=json.dumps({"overview": {**self.get_json("/api/overview"), "month": overview},
-                                                      "plans": plans}),
+                                    input=json.dumps({"overview": overview_document, "plans": plans}),
                                     env={**os.environ, "TZ": "America/Los_Angeles"})
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 

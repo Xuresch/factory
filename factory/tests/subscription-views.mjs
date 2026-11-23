@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { test } from 'node:test'
+import { compileFunction, createContext, runInContext } from 'node:vm'
 import JobSummary from '../job-summary.js'
 import CostAggregation from '../cost-aggregation.js'
 
@@ -9,18 +11,25 @@ const planCode = dashboard.slice(dashboard.indexOf('let lastPlan'), dashboard.in
 const overviewCode = overview.slice(overview.indexOf('const monthName'), overview.indexOf('  const oldestWait'))
 const overviewSplit = overview.slice(overview.indexOf('const agentCls'), overview.indexOf('// ---- Pieces'))
 const helpers = `
-  const esc = String, money = (n) => '$' + (n >= 100 ? Math.round(n) : Number(n || 0).toFixed(2))
+  const esc = String
   const plural = (n, word) => n + ' ' + word
 `
-const fetchPlan = new Function('JobSummary', 'CostAggregation', 'fetch', 'Date', `${helpers}
+const compilePlan = (legacy = false) => {
+  const parsingContext = createContext()
+  if (legacy) runInContext('delete Array.prototype.toReversed', parsingContext)
+  return compileFunction(`${helpers}
+  ${dashboard.match(/^const money = .*$/m)[0]}
   const { AGENTS: SPLIT_AGENTS, percent: pct } = CostAggregation
   const ui = { range: 'all' }, RANGES = { all: 0 }
   const sw = () => '', deltaHtml = () => '', niceAxis = () => ({ max: 1000 }), axisFmt = money
   const plotWidth = () => 720, barChart = () => '', rangeControl = () => '', tokens = String
   ${planCode}
   return async () => { await loadPlan(); return planPage() }
-`)
+`, ['JobSummary', 'CostAggregation', 'fetch', 'Date'], { parsingContext })
+}
+const fetchPlan = compilePlan()
 const renderOverview = new Function('data', 'CostAggregation', `${helpers}
+  ${overview.match(/^const money = .*$/m)[0]}
   const { displayAmount, splitDisplay, sourceSplitDisplay } = CostAggregation
   const nav = { setSub() {} }
   ${overviewSplit}
@@ -34,7 +43,7 @@ class FixtureDate extends Date {
   constructor(...args) { super(...(args.length ? args : [fixed])) }
   static now() { return fixed }
 }
-const renderPlans = (document, clock = FixtureDate) => fetchPlan(JobSummary, CostAggregation,
+const renderPlans = (document, clock = FixtureDate, renderer = fetchPlan) => renderer(JobSummary, CostAggregation,
   async () => new Response(JSON.stringify(document)), clock)()
 
 const standalone = {
@@ -44,6 +53,26 @@ const standalone = {
 }
 assert.match(await renderPlans(standalone), /\$60\.00<\/b> API-equivalent/)
 assert.match(await renderPlans({ configured: false, config: standalone.config }), /Create <code>\/fixture\/subscriptions\.json<\/code>/)
+
+test('standalone Plans renders without Array.prototype.toReversed', async () => {
+  assert.match(await renderPlans(standalone, FixtureDate, compilePlan(true)), /\$60\.00<\/b> API-equivalent/)
+})
+
+test('both hub views retain cents below $100', async () => {
+  const split = { claude: 99.75, codex: 0, other: 0 }
+  const empty = { claude: 0, codex: 0, other: 0 }
+  const month = {
+    month: '2026-11', api_equivalent_usd: 99.75, jobs: 1, elapsed_share: 0.5,
+    factory_usd: 99.75, outside_usd: 0, by_agent: split, factory: split, outside: empty,
+    plan_fee_full_usd: 0, plan_fee_elapsed_usd: 0, plan_fee_elapsed_by_agent: empty,
+  }
+  const overviewData = { machines: [{}], repos: [], merged_week: 0, needs_you: [], live: [], month }
+  const plans = { subscriptions: [], projects: [], comparison: {
+    now: '2026-11-16T00:00:00Z', current_month: '2026-11', months: { '2026-11': month },
+  } }
+  assert.match(await renderPlans(plans), /<b>\$99\.75<\/b> API-equivalent/)
+  assert.match(renderOverview(overviewData, CostAggregation), /<div class="v">\$99\.75<\/div>/)
+})
 
 if (process.argv.includes('--hub')) {
   const { overview, plans } = JSON.parse(readFileSync(0, 'utf8'))
