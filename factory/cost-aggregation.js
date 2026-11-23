@@ -3,8 +3,12 @@
 ;(function (root) {
   const AGENTS = Object.freeze(['claude', 'codex', 'other'])
   const HALF_CENT = 0.005
-  // Remove arithmetic noise at the display boundary. Aggregates and shares keep the raw amounts.
-  const displayAmount = (usd) => Math.round(usd * 1e9) / 1e9
+  // Use the job summary's relative rounding tolerance at the half-cent boundary.
+  // Aggregates and shares keep the raw amounts.
+  function displayAmount(usd) {
+    const rounding = 4 * Number.EPSILON * Math.max(Math.abs(usd), HALF_CENT)
+    return usd > 0 && usd < HALF_CENT && usd >= HALF_CENT - rounding ? HALF_CENT : usd
+  }
   const emptySplit = () => ({ claude: 0, codex: 0, other: 0 })
   const amount = (v) => Number.isFinite(Number(v)) ? Number(v) : 0
   const agentKey = (a) => a === 'claude' || a === 'codex' ? a : 'other'

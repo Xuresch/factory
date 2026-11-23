@@ -57,7 +57,7 @@ test('half-cent source and role amounts stay visible after floating-point arithm
   ] })
   const builder = roleCosts([job]).find(({ key }) => key === 'builder')
   assert.deepEqual(agents(splitDisplay(builder.split)), ['claude'])
-  assert.deepEqual(agents(splitDisplay({ claude: 0.004999 })), [])
+  assert.deepEqual(agents(splitDisplay({ claude: 100, codex: 0.0049999999 })), ['claude'])
 })
 
 const jobs = [
@@ -123,16 +123,13 @@ test('roles and buckets use the summary split when priced rows name another agen
 })
 
 test('local and hub summaries supply legacy attribution and explicit zeros', () => {
-  for (const doc of [
-    { id: 'legacy', cost_usd: 7 },
-    { id: 'explicit', cost_usd: 5, cost_by_agent: { claude: 0, codex: 5 }, cost_breakdown: [row('builder', 'claude', 'opus', 5)] },
-  ]) {
+  for (const [id, agent] of [['014-total-only', 'claude'], ['010-split-wins', 'codex']]) {
+    const { doc, expect } = fixtures.jobs.find((fixture) => fixture.doc.id === id)
     const local = JobSummary.fromLocal(doc)
-    const hub = JobSummary.fromHub({ ...doc, cost_split: doc.cost_by_agent })
-    const expected = doc.id === 'legacy' ? ['claude'] : ['codex']
-    assert.deepEqual(agents(splitDisplay(local.split)), expected)
+    const hub = JobSummary.fromHub({ ...doc, cost_split: doc.cost_by_agent, cost_by_agent: expect })
+    assert.deepEqual(agents(splitDisplay(local.split)), [agent])
     assert.deepEqual(splitDisplay(local.split), splitDisplay(hub.split))
-    if (doc.id === 'legacy') assert.deepEqual(roleCosts([local]), [])
+    if (id === '014-total-only') assert.deepEqual(roleCosts([local]), [])
   }
   assert.deepEqual(jobTotals([{ cost_usd: 7 }]), { total: 7, split: { claude: 0, codex: 0, other: 0 } })
   const bare = { id: 'bare', cost_usd: 7, cost_breakdown: [row('builder', 'claude', 'opus', 7)] }
@@ -162,7 +159,9 @@ test('hub overview renders both monthly sources and uses the job summary on fini
   const docs = fixtures.jobs.filter(({ doc }) => ['010-split-wins', '014-total-only'].includes(doc.id))
   listeners.get('data')({
     machines: [{ machine: 'm1' }], repos: [], needs_you: [], live: [], events: [],
-    recent: docs.map(({ doc }) => ({ repo: 'o/r', job: { ...doc, cost_split: doc.cost_by_agent } })),
+    recent: docs.map(({ doc, expect }) => ({
+      repo: 'o/r', job: { ...doc, cost_split: doc.cost_by_agent, cost_by_agent: expect },
+    })),
     month: { api_equivalent_usd: 0.0095, factory: { claude: 0.0005, codex: 0.0045 }, outside: { claude: 0.0045 } },
   })
   const monthly = main.innerHTML.match(/<div class="tile spend">[\s\S]*?<div class="pace">/)[0]
