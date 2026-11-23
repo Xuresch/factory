@@ -1745,6 +1745,76 @@ print(json.dumps({"untouched": untouched, "kept": r3 == r, "months": {k: {a: rou
   check "deleted transcripts keep counting" "$out" '"kept": true'
 }
 
+t_dashboard_outside_matches_report() {
+  new_repo outsideagree; commit_all
+  local h="$TMP_ROOT/outsideagree/home"; mkdir -p "$h/.claude/projects/-x" "$h/.codex/sessions/2026/11/14"
+  printf '%s\n' '{"type":"user","cwd":"/w/app","message":{"role":"user","content":"hi"}}' \
+    '{"type":"assistant","timestamp":"2026-11-14T12:00:00Z","message":{"id":"m1","model":"claude-opus-5-5","usage":{"input_tokens":1000000}}}' > "$h/.claude/projects/-x/s1.jsonl"
+  local q='import importlib.machinery as m, importlib.util as u, json
+def load(n):
+    l = m.SourceFileLoader(n, "factory/bin/" + n); x = u.module_from_spec(u.spec_from_loader(n, l)); l.exec_module(x); return x
+d, r = load("dashboard"), load("report")
+print(json.dumps({"same": d.Outside().scan() == r.scan_outside(), "months": r.scan_outside()["months"]}))'
+  local out; out=$(env -u CODEX_HOME -u CLAUDE_CONFIG_DIR -u XDG_CACHE_HOME HOME="$h" python3 -c "$q")
+  check "report scans what the dashboard serves" "$out" '"same": true' &&
+  check "priced" "$out" '"2026-11": {"claude": 4.0, "codex": 0.0}'
+}
+
+t_job_sync_codex_model_change() {
+  new_repo syncmodels; ticket 01 One; commit_all
+  local id; id=$(J create f/01)
+  local h="$TMP_ROOT/syncmodels/home" day; day=$(field "$id" 'd["started"][:10].replace("-", "/")')
+  local jd; jd="$(cd "factory/jobs/$id" && pwd -P)"
+  set_config prices_usd_per_mtok '{"gpt-a":{"input":1,"cached_input":0.1,"output":5},"gpt-b":{"input":2,"cached_input":0.1,"output":10}}'
+  mkdir -p "$h/.codex/sessions/$day" "$h/.config/orca/codex-accounts/a/home/sessions/$day"
+  local tc='{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":%s,"cached_input_tokens":0,"output_tokens":0,"total_tokens":%s}}}}\n'
+  # 1M input on gpt-a, the same total again, then 1M more on gpt-b; a shorter copy in Orca's account
+  # home. No timestamps: a job prices undated usage.
+  { echo '{"type":"session_meta","payload":{"id":"c1","cwd":"/w"}}'
+    echo "{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"Job folder: $jd/ Your brief is $PWD/factory/agents/builder.md\"}}"
+    echo '{"type":"turn_context","payload":{"model":"gpt-a"}}'
+    printf "$tc" 1000000 1000000; printf "$tc" 1000000 1000000
+    echo '{"type":"turn_context","payload":{"model":"gpt-b"}}'
+    printf "$tc" 2000000 2000000; } > "$h/.codex/sessions/$day/rollout-c1.jsonl"
+  head -5 "$h/.codex/sessions/$day/rollout-c1.jsonl" > "$h/.config/orca/codex-accounts/a/home/sessions/$day/rollout-c1.jsonl"
+  env -u CLAUDE_CONFIG_DIR -u XDG_CACHE_HOME HOME="$h" CODEX_HOME="$h/.codex" factory/bin/job sync "$id" >/dev/null
+  check "codex charged per model" "$(field "$id" 'd["cost_by_agent"]')" "{'claude': 0.0, 'codex': 3.0}" &&
+  check "job total" "$(field "$id" 'd["cost_usd"]')" "3.0" &&
+  check "two model rows, one session and 1M tokens each" \
+    "$(field "$id" '[(r["role"], r["model"], r["sessions"], r["input_tokens"], r["cost_usd"]) for r in d["cost_breakdown"]]')" \
+    "[('builder', 'gpt-a', 1, 1000000, 1.0), ('builder', 'gpt-b', 1, 1000000, 2.0)]" &&
+  check "no __pycache__ left in factory/bin" "[$(ls -a factory/bin | grep -c pycache)]" "[0]"
+}
+
+t_job_sync_single_model() {
+  new_repo syncsingle; ticket 01 One; commit_all
+  local id; id=$(J create f/01)
+  local h="$TMP_ROOT/syncsingle/home" day; day=$(field "$id" 'd["started"][:10].replace("-", "/")')
+  local jd; jd="$(cd "factory/jobs/$id" && pwd -P)"
+  local proj; proj="$h/.claude/projects/$(python3 -c 'import re,sys; print(re.sub(r"[^A-Za-z0-9]", "-", sys.argv[1]))' "$(pwd -P)")"
+  set_config prices_usd_per_mtok '{"claude-a":{"input":4,"output":20,"cache_write_5m":5,"cache_write_1h":8,"cache_read":0.2},"gpt-a":{"input":1,"cached_input":0.1,"output":5}}'
+  mkdir -p "$proj" "$h/.codex/sessions/$day"
+  printf '%s\n' "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Job folder: $jd/ Your brief is $PWD/factory/agents/intake.md\"}}" \
+    '{"type":"assistant","timestamp":"2026-11-14T12:00:00Z","message":{"id":"m1","model":"claude-a","usage":{"input_tokens":1000000,"output_tokens":1000}}}' \
+    '{"type":"assistant","timestamp":"2026-11-14T12:00:00Z","message":{"id":"m1","model":"claude-a","usage":{"input_tokens":1000000,"output_tokens":1000}}}' > "$proj/s1.jsonl"
+  { echo '{"type":"session_meta","payload":{"id":"c1"}}'
+    echo "{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"Job folder: $jd/ Your brief is $PWD/factory/agents/builder.md\"}}"
+    echo '{"type":"turn_context","payload":{"model":"gpt-a"}}'
+    echo '{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000000,"cached_input_tokens":200000,"output_tokens":10000,"total_tokens":1010000}}}}'
+  } > "$h/.codex/sessions/$day/rollout-c1.jsonl"
+  env -u XDG_CACHE_HOME HOME="$h" CLAUDE_CONFIG_DIR="$h/.claude" CODEX_HOME="$h/.codex" factory/bin/job sync "$id" >/dev/null
+  # claude: 1M*4 + 1000*20 = 4.02; codex: 800k*1 + 200k*0.1 + 10k*5 = 0.87
+  check "split by agent" "$(field "$id" 'd["cost_by_agent"]')" "{'claude': 4.02, 'codex': 0.87}" &&
+  check "job total" "$(field "$id" 'd["cost_usd"]')" "4.89" &&
+  check "rows in pipeline order, existing schema" "$(field "$id" 'd["cost_breakdown"]')" \
+    "[{'role': 'intake', 'agent': 'claude', 'model': 'claude-a', 'sessions': 1, 'input_tokens': 1000000, 'cached_tokens': 0, 'output_tokens': 1000, 'cost_usd': 4.02}, {'role': 'builder', 'agent': 'codex', 'model': 'gpt-a', 'sessions': 1, 'input_tokens': 800000, 'cached_tokens': 200000, 'output_tokens': 10000, 'cost_usd': 0.87}]"
+}
+
+t_session_usage_module() {
+  local out; out=$(cd "$FACTORY_SRC/.." && python3 -m unittest factory/tests/test_session_usage.py 2>&1); local rc=$?
+  check "factory/tests/test_session_usage.py passes" "[$rc] $out" "[0]" || echo "$out"
+}
+
 t_high_risk_holds_only_when_needed() {
   new_repo holdneeded; ticket 01 One; ticket 02 Two; commit_all
   python3 -c "import json; p='factory/config.json'; c=json.load(open(p)); c['hold']['only_when_needed']=True; json.dump(c, open(p,'w'))"
