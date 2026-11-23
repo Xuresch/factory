@@ -244,12 +244,13 @@ class TestIngest(HubCase):
         self.assertEqual(top["by_agent"], {"claude": 3.2, "codex": 1.5, "other": 0.1})
         m = ov["month"]
         self.assertEqual(m["factory"], {"claude": 3.2, "codex": 1.5, "other": 0.1})
-        self.assertEqual(m["outside"], {"claude": 12.0, "codex": 2.0})
-        self.assertEqual(m["by_agent"], {"claude": 15.2, "codex": 3.5})
+        self.assertEqual(m["outside"], {"claude": 12.0, "codex": 2.0, "other": 0.0})
+        self.assertEqual(m["by_agent"], {"claude": 15.2, "codex": 3.5, "other": 0.1})
         self.assertEqual(m["api_equivalent_usd"], 18.8)
-        self.assertEqual(m["prev"], {"month": prev, "api_equivalent_usd": 8.0,
-                                     "factory": {"claude": 4.0, "codex": 0.0, "other": 0.0},
-                                     "outside": {"claude": 3.0, "codex": 1.0}})
+        self.assertEqual(m["prev"]["month"], prev)
+        self.assertEqual(m["prev"]["api_equivalent_usd"], 8.0)
+        self.assertEqual(m["prev"]["factory"], {"claude": 4.0, "codex": 0.0, "other": 0.0})
+        self.assertEqual(m["prev"]["outside"], {"claude": 3.0, "codex": 1.0, "other": 0.0})
         self.assertEqual(m["days_elapsed"], now.day)
         self.assertEqual(m["days_in_month"], calendar.monthrange(now.year, now.month)[1])
 
@@ -327,6 +328,51 @@ class TestIngest(HubCase):
             self.ok(push("m1", [repo("o/r", [entry("001", "build" if n % 2 else "gate")])]))
 
 
+class TestSubscriptionComparison(HubCase):
+    def test_subscription_comparison_keeps_retained_cost_and_ready_outside_usage(self):
+        now = datetime.datetime.now(datetime.timezone.utc)
+        month = now.strftime("%Y-%m")
+        previous = (now.replace(day=1) - datetime.timedelta(days=1)).strftime("%Y-%m")
+        future = (now.replace(day=28) + datetime.timedelta(days=4)).strftime("%Y-%m")
+        plan = {"name": "Claude Max", "agent": "claude", "usd_per_month": 120}
+        partial = entry("050", started=f"{month}-01T00:30:00Z", cost=50)
+        partial["job"]["cost_by_agent"] = {"claude": 20}
+        legacy = entry("007", started=f"{previous}-15T12:00:00Z", cost=7)
+        del legacy["job"]["cost_by_agent"]
+        self.ok(push("m2", [repo("o/comp", [legacy])], subscriptions=[plan],
+                     outside={"status": "scanning", "months": {month: {"claude": 900}}}))
+        self.ok(push("m1", [repo("o/comp", [partial])], subscriptions=[plan, {
+            "name": "New Codex", "agent": "codex", "usd_per_month": 80, "since": future,
+        }], outside={"status": "ready", "months": {month: {"claude": 10}, previous: {"codex": 3}}}))
+        self.ok(push("m1", [repo("o/comp", [])]))
+        plans = self.get_json("/r/o/comp/_subscriptions.json")
+        overview = self.get_json("/api/overview")["month"]
+        self.assertEqual(overview["api_equivalent_usd"], 60)
+        self.assertEqual(overview["prev"]["api_equivalent_usd"], 10)
+        comparisons = plans["comparison"]["months"]
+        self.assertEqual(plans["comparison"]["current_month"], month)
+        for key, row in [(month, overview), (previous, overview["prev"])]:
+            for field in ("api_equivalent_usd", "factory", "outside", "plan_fee_full_usd"):
+                self.assertEqual(row[field], comparisons[key][field])
+        self.assertEqual(comparisons[month]["factory"], {"claude": 20, "codex": 0, "other": 30})
+        self.assertEqual(comparisons[previous]["factory"], {"claude": 7, "codex": 0, "other": 0})
+        self.assertEqual(comparisons[month]["plan_fee_full_usd"], 120)
+        self.assertEqual(comparisons[previous]["plan_fee_elapsed_usd"], 120)
+        self.assertEqual(plans["subscriptions"], [plan, {
+            "name": "New Codex", "agent": "codex", "usd_per_month": 80, "since": future,
+        }])
+        splits = {j["id"]: j["cost_by_agent"] for p in plans["projects"] for j in p["jobs"]}
+        self.assertEqual(splits["050"], comparisons[month]["factory"])
+        self.assertEqual(splits["007"], comparisons[previous]["factory"])
+        if shutil.which("node"):
+            script = Path(__file__).resolve().parent.parent / "factory/tests/subscription-views.mjs"
+            result = subprocess.run(["node", str(script), "--hub"], text=True, capture_output=True,
+                                    input=json.dumps({"overview": {**self.get_json("/api/overview"), "month": overview},
+                                                      "plans": plans}),
+                                    env={**os.environ, "TZ": "America/Los_Angeles"})
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
 class TestTree(HubCase):
     def setUp(self):
         super().setUp()
@@ -383,7 +429,7 @@ class TestTree(HubCase):
         self.assertEqual(data["config"], "factory hub")
         self.assertEqual(data["projects"], [{"name": "o/r", "missing": False, "jobs": [
             {"id": "001", "stage": "merged", "started": "2026-11-17T10:00:00Z", "ended": None,
-             "cost_usd": 2.0, "cost_by_agent": {"claude": 2.0, "codex": 0.0}}]}])
+             "cost_usd": 2.0, "cost_by_agent": {"claude": 2.0, "codex": 0.0, "other": 0.0}}]}])
         self.assertEqual(data["outside"], {"status": "scanning"})
 
     def test_subscriptions_aggregate_two_machines(self):
@@ -595,10 +641,9 @@ class TestJobSummary(HubCase):
         for agent, got in ov["repos"][0]["cost_by_agent"].items():
             self.assertAlmostEqual(got, sum(f["expect"][agent] for f in SUMMARY_FIXTURES))
 
-        # The subscription feed already reads the projected Claude and Codex amounts.
+        # The subscription feed exposes the full projected Agent split.
         subs = {j["id"]: j["cost_by_agent"] for j in self.get_json("/r/o/r/_subscriptions.json")["projects"][0]["jobs"]}
-        self.assertEqual(subs["014-total-only"], {"claude": 12.0, "codex": 0.0})
-        self.assertEqual(subs["010-split-wins"], {"claude": 0.0, "codex": 5.0})
+        self.assertEqual(subs, jobs)
 
     def test_startup_reprojects_a_version_3_total_only_job(self):
         fixture = next(f for f in SUMMARY_FIXTURES if f["doc"]["id"] == "014-total-only")

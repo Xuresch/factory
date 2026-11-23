@@ -137,7 +137,7 @@ Content-Encoding: gzip            (optional)
     }],
     "tickets": {".scratch/deps/02.md": "..."}
   }],
-  "subscriptions": [{"name": "Claude Max 5x", "agent": "claude", "usd_per_month": 100}],
+  "subscriptions": [{"name": "Claude Max 5x", "agent": "claude", "usd_per_month": 100, "since": "2026-11"}],
   "outside": { "...bin/session_usage outside_summary() result, or omitted when unchanged...": 1 }
 }
 ```
@@ -150,6 +150,8 @@ Content-Encoding: gzip            (optional)
   what was sent (files not sent are deleted), and a repo the machine reported
   before but that is absent from `repos` is marked removed for that machine.
 - Omitted `config` / `subscriptions` / `outside` keys = unchanged.
+- A subscription's optional `since` is its first active UTC month (`YYYY-MM`).
+  Plans without `since` count as active in every month.
 - Response `200 {"ok": true, "need_full": bool}`. `need_full` is true when the
   hub has no record of this machine (fresh database) or of a repo in a non-full
   push. `401` wrong/missing token, `400` bad body, `413` body over 64 MB.
@@ -208,24 +210,26 @@ All JSON, `Cache-Control: no-store`.
   "events":    [{"at": "…", "machine": "…", "repo": "…", "job": "…", "title": "…", "from": "build", "to": "gate"}],
   "daily": [{"day": "2026-11-04", "cost_usd": 2.4, "jobs": 5,
              "by_agent": {"claude": 2.0, "codex": 0.4, "other": 0.0}}],
-  "month": {"month": "2026-11", "api_equivalent_usd": 80.1, "subscriptions_usd": 200,
-             "by_agent": {"claude": 50.0, "codex": 30.1},
+  "month": {"month": "2026-11", "api_equivalent_usd": 81.1, "subscriptions_usd": 200,
+             "jobs": 5, "factory_usd": 31.1, "outside_usd": 50.0, "elapsed_share": 0.6,
+             "by_agent": {"claude": 50.0, "codex": 30.1, "other": 1.0},
              "factory": {"claude": 20.0, "codex": 10.1, "other": 1.0},
-             "outside": {"claude": 30.0, "codex": 20.0},
-             "days_elapsed": 18, "days_in_month": 30,
-             "prev": {"month": "2026-10", "api_equivalent_usd": 95.0,
-                      "factory": {"claude": 40.0, "codex": 5.0, "other": 0.0},
-                      "outside": {"claude": 40.0, "codex": 10.0}}}
+             "outside": {"claude": 30.0, "codex": 20.0, "other": 0.0},
+             "plan_fee_full_usd": 200, "plan_fee_elapsed_usd": 120,
+             "plan_fee_elapsed_by_agent": {"claude": 120, "codex": 0, "other": 0},
+             "monthly_pace_usd": 139.1,
+             "days_elapsed": 19, "days_in_month": 30,
+             "prev": {"month": "2026-10", "...": "same comparison row for the previous month"}}
 }
 ```
 
   `daily` covers the last 14 days by job start (local hub time, UTC is fine).
   `recent`: the 20 most recently ended jobs in merged/rejected. `events`: last 100.
   `href` of a job: `/r/<owner>/<name>/dashboard.html#job=<served id>`.
-  `month`: this month's API-equivalent cost of factory jobs started this month
-  (sum of `cost_usd` / `cost_by_agent`) plus outside usage for the month summed
-  over machines; `subscriptions_usd` the sum of the deduplicated subscriptions'
-  `usd_per_month`.
+  `month` contains the current UTC month's comparison row. `month.prev` is the
+  previous UTC month's row. The API-equivalent adds all factory jobs started
+  in the month, including retained jobs, and Outside usage from ready scans
+  using the reported month keys.
   Totals sum the projected `{claude, codex, other}` Agent split per job.
   A non-empty stored split wins, including explicit zeroes. Otherwise the hub
   uses priced rows, or attributes a total-only job entirely to `claude`.
@@ -233,11 +237,14 @@ All JSON, `Cache-Control: no-store`.
   `repos[].cost_by_agent` covers all jobs, `cost_month_by_agent` the jobs
   started this month, and `daily[].by_agent` each day. Top-level `daily` is
   the same 14 days summed over all repos.
-  `month.factory` is the split of jobs started this month, `month.outside` the
-  outside usage this month summed over machines, `month.by_agent` their
-  claude/codex sum. `month.prev` repeats `api_equivalent_usd`, `factory` and
-  `outside` for the previous calendar month; `days_elapsed` (today's UTC day of
-  month) and `days_in_month` allow a pro-rata projection.
+  The comparison row includes the factory and Outside usage totals and their
+  Agent splits. Active plans are deduplicated by name and agent in machine name
+  and report order. The elapsed Plan fee uses elapsed UTC time, and equals the
+  full Plan fee in completed months. The current row gains `monthly_pace_usd`
+  after three full UTC days, based on the latest seven days of factory jobs
+  within the month and the month-to-date mean of Outside usage.
+  `subscriptions_usd`, `days_elapsed` (today's UTC day of month), and
+  `days_in_month` remain on the overview response for existing readers.
 - `GET /api/stream` → `text/event-stream`. Events: `event: job` (the event
   object), `event: seen` (`{machine, at}`). A `: ping` comment every 15 s.
 - `GET /healthz` → `ok`.
@@ -262,7 +269,7 @@ serves from `factory/`:
 | `jobs/<id>/job.json` | the stored job.json (id rewritten when prefixed) |
 | `jobs/<id>/<path>` | the stored file, `text/markdown; charset=utf-8` |
 | `.scratch/<path>` | the stored ticket |
-| `_subscriptions.json` | aggregated over **every** repo and machine, in the shape `bin/dashboard` answers: `{subscriptions, projects: [{name, jobs: [{id, stage, started, ended, cost_usd, cost_by_agent}], missing: false}], config: "factory hub", outside}`. `outside` merges all machines: `months` summed per month and agent, `by_cwd` concatenated with `cwd` prefixed `<machine>:`, `unpriced` summed, `factory_sessions` summed, `status` "ready" when at least one machine sent one, else `{"status": "scanning"}`. Subscriptions deduplicated by (name, agent). |
+| `_subscriptions.json` | Over **every** repo and machine. The hub adds `comparison: {now, current_month, months}` to the standalone document shape. `months` is keyed by UTC month and holds the same comparison rows used by `/api/overview`. `projects[].jobs[].cost_by_agent` includes the projected `claude`, `codex`, and `other` split. `outside` combines ready scans: `months` summed by month and agent, `by_cwd` concatenated with `cwd` prefixed `<machine>:`, `unpriced` summed, `factory_sessions` summed, `status` "ready" when at least one scan is ready or `{"status": "scanning"}` otherwise. |
 | `hub` | (JSON) `{"repo": "...", "overview": "/"}` so the page knows it is under a hub |
 
 `/all/` is the same tree over every repo at once: job ids `<name>~<id>` (or

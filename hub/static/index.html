@@ -795,8 +795,7 @@ function paint(html) {
   }
 }
 
-const monthName = (ym) => new Date(`${ym}-15T12:00:00`).toLocaleDateString('en-US', { month: 'short' })
-const sum = (o) => Object.values(o || {}).reduce((s, v) => s + (Number(v) || 0), 0)
+const monthName = (ym) => new Date(`${ym}-01T00:00:00Z`).toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' })
 
 function render() {
   const d = data
@@ -814,36 +813,32 @@ function render() {
   const merged7 = exact ? d.merged_week : d.recent.filter((e) => e.job.stage === 'merged' && t(e.job.ended) >= week).length
   const capped = !exact && d.recent.length >= 20 && d.recent.every((e) => t(e.job.ended || 0) >= week)
   const m = d.month || {}
-  const api = Number(m.api_equivalent_usd) || 0, subs = Number(m.subscriptions_usd) || 0
+  const api = m.api_equivalent_usd || 0
   const needs = d.needs_you.length, running = d.live.length
   nav.setSub(`${plural(d.repos.length, 'repo')} · ${plural(d.machines.length, 'machine')} · ${running} running · ${needs} waiting on you`)
 
-  // Spend tile: factory and outside, per agent, on pace, against last month and against what you pay.
-  const fac = m.factory || {}, out = m.outside || {}
   const haveSplit = m.factory || m.outside
   const display = monthlySplit(m, api)
-  const facT = sum(fac), outT = sum(out)
-  const el = Number(m.days_elapsed) || 0, dim = Number(m.days_in_month) || 0
-  const pace = el >= 3 && dim ? api / el * dim : 0
+  const pace = m.monthly_pace_usd
   const prevApi = Number(m.prev?.api_equivalent_usd) || 0
   let delta = ''
   // A ratio only means something when the factory already ran last month;
   // otherwise last month is a partial record (the hub or the usage cache was
   // younger), so show its figure plainly.
-  const prevFactory = sum(m.prev?.factory || {})
-  if (pace && prevApi > 0 && prevFactory <= 0) {
-    delta = `<span class="dl" title="Last month's record is partial: the factory had no jobs then">${esc(monthName(m.prev.month))}: ${money(prevApi)}</span>`
-  } else if (pace && prevApi > 0) {
+  if (pace != null && prevApi > 0 && m.prev.factory_usd > 0) {
     const r = pace / prevApi
     delta = `<span class="dl ${r > 1.5 ? 'up' : ''}" title="On pace for ${money(pace)} against ${money(prevApi)} in ${esc(monthName(m.prev.month))}">${r >= 0.995 ? '↑' : '↓'} ${r >= 3 ? `×${r.toFixed(1)}` : `${r >= 1 ? '+' : '−'}${Math.round(Math.abs(r - 1) * 100)}%`} vs ${esc(monthName(m.prev.month))}</span>`
+  } else if (prevApi > 0) {
+    delta = `<span class="dl">${esc(monthName(m.prev.month))}: ${money(prevApi)}</span>`
   }
   const fo = haveSplit
-    ? `<span class="lg"><span><span class="sw o" aria-hidden="true"></span>factory ${money(facT)}</span><span><span class="sw o out" aria-hidden="true"></span>outside ${money(outT)}</span></span>` : ''
-  const spend = `<div class="tile spend"><div class="k">Spend in ${esc(m.month ? monthName(m.month) : 'this month')}, API-equivalent</div>
+    ? `<span class="lg"><span><span class="sw o" aria-hidden="true"></span>factory ${money(m.factory_usd)}</span><span><span class="sw o out" aria-hidden="true"></span>outside ${money(m.outside_usd)}</span></span>` : ''
+  const spend = `<div class="tile spend"><div class="k">${esc(m.month ? monthName(m.month) : 'This month')} API-equivalent</div>
       <div class="v">${money(api)}${delta}</div>
       ${renderSplit(display, 'tall full')}
       ${legend(display)}${fo}
-      <div class="pace">${pace ? `on pace for <b>${money(pace)}</b> · ` : ''}${subs > 0 ? `vs <b>${money(subs)}</b> subscriptions · ${(api / subs).toFixed(1)}×` : 'no subscriptions listed'}</div></div>`
+      ${pace != null ? `<div class="pace">Monthly pace <b>${money(pace)}</b></div>` : ''}
+      <div class="pace">Full Plan fee <b>${money(m.plan_fee_full_usd)}</b> · Elapsed Plan fee <b>${money(m.plan_fee_elapsed_usd)}</b></div></div>`
 
   const oldestWait = needs ? [...d.needs_you].sort((a, b) => t(lastAt(a.job)) - t(lastAt(b.job)))[0] : null
   const longest = running ? [...d.live].sort((a, b) => t(lastAt(a.job)) - t(lastAt(b.job)))[0] : null
