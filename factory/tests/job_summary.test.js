@@ -13,20 +13,19 @@ const { spawnSync } = require('node:child_process')
 const FACTORY = path.resolve(__dirname, '..')
 const J = require(path.join(FACTORY, 'job-summary.js'))
 const FIXTURES = JSON.parse(fs.readFileSync(path.join(__dirname, 'job_summary_fixtures.json'), 'utf8')).jobs
-const near = (a, b) => assert.ok(Math.abs(a - b) < 1e-9, a + ' != ' + b)
-const sameSplit = (got, want, what) => { for (const k of ['claude', 'codex', 'other']) near(got[k], want[k], what) }
+const near = (a, b, what = '') => assert.ok(Math.abs(a - b) < 1e-9, `${what} expected ${b}, got ${a}`)
+const sameSplit = (got, want, what = '') => { for (const k of ['claude', 'codex', 'other']) near(got[k], want[k], `${what} ${k}`) }
 
 // What the hub serves for a job.json (hub/src/project.rs + api.rs): derived columns, the recorded split
 // as cost_split, the priced rows, the timing in seconds, the served id.
 function hubJob(doc, { id = doc.id, repo = 'o/r', machine = 'm1' } = {}) {
   const rows = doc.cost_breakdown || []
   const rec = doc.cost_by_agent && typeof doc.cost_by_agent === 'object' ? doc.cost_by_agent : null
-  const by = (a) => (rec ? Number(rec[a] || 0) : rows.filter((r) => r.agent === a).reduce((s, r) => s + r.cost_usd, 0))
-  const rest = doc.cost_usd - by('claude') - by('codex')
+  const projected = FIXTURES.find((f) => f.doc.id === doc.id)?.expect ?? J.fromLocal(doc).split
   const secs = doc.started && doc.ended ? (Date.parse(doc.ended) - Date.parse(doc.started)) / 1000 : null
   const { cost_by_agent, ...rest_doc } = doc
   return { ...rest_doc, id, key: doc.id, repo, machine, href: '/r/' + repo + '/dashboard.html#job=' + id,
-    cost_by_agent: { claude: by('claude'), codex: by('codex'), other: rest > 0.005 ? rest : 0 }, cost_split: rec,
+    cost_by_agent: projected, cost_split: rec,
     cost_breakdown: rows, duration_s: secs, wait_s: secs === null ? null : 0, work_s: secs, rounds: doc.rounds || [] }
 }
 
@@ -82,6 +81,12 @@ test('the rule: stored split, then priced rows, then a total-only job is claude'
   sameSplit(J.agentSplit({ total: 2, split: {}, rows: [{ agent: 'mystery', cost_usd: 2 }] }), { claude: 0, codex: 0, other: 2 })
   sameSplit(J.agentSplit({ total: 1.004, split: { claude: 1 } }), { claude: 1, codex: 0, other: 0 })
   sameSplit(J.agentSplit({ total: 1.006, split: { claude: 1 } }), { claude: 1, codex: 0, other: 0.006 })
+})
+
+test('hub job summaries use the projected Agent split', () => {
+  const doc = hubJob(FIXTURES[0].doc)
+  const projected = { claude: 0, codex: 0, other: 5 }
+  sameSplit(J.fromHub({ ...doc, cost_by_agent: projected }).split, projected)
 })
 
 test('an unassigned half cent counts as Other', () => {

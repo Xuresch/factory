@@ -1,5 +1,5 @@
 {
-  "about": "Jobs whose Agent split factory/job-summary.js resolves; run through the local adapter (factory/tests/job_summary.test.js) and the hub adapter (hub/test_server.py). expect: {claude, codex, other}.",
+  "about": "Job documents and expected Agent splits shared by the browser job summary and the Rust hub projection.",
   "jobs": [
     {
       "doc": {
@@ -172,6 +172,86 @@
         "claude": 5,
         "codex": 2,
         "other": 0
+      }
+    },
+    {
+      "doc": {
+        "id": "017-half-cent",
+        "title": "exact half-cent residue",
+        "stage": "merged",
+        "started": "2026-11-18T10:00:00Z",
+        "ended": "2026-11-18T11:00:00Z",
+        "round": 1,
+        "cost_usd": 0.305,
+        "cost_by_agent": {
+          "claude": 0.1,
+          "codex": 0.2
+        }
+      },
+      "expect": {
+        "claude": 0.1,
+        "codex": 0.2,
+        "other": 0.005
+      }
+    },
+    {
+      "doc": {
+        "id": "018-above-half-cent",
+        "title": "residue over half a cent",
+        "stage": "merged",
+        "started": "2026-11-18T10:00:00Z",
+        "ended": "2026-11-18T11:00:00Z",
+        "round": 1,
+        "cost_usd": 3.006,
+        "cost_by_agent": {
+          "claude": 1,
+          "codex": 1,
+          "other": 1
+        }
+      },
+      "expect": {
+        "claude": 1,
+        "codex": 1,
+        "other": 1.006
+      }
+    },
+    {
+      "doc": {
+        "id": "019-zero-cost",
+        "title": "zero-cost job",
+        "stage": "merged",
+        "started": "2026-11-18T10:00:00Z",
+        "ended": "2026-11-18T11:00:00Z",
+        "round": 1,
+        "cost_usd": 0
+      },
+      "expect": {
+        "claude": 0,
+        "codex": 0,
+        "other": 0
+      }
+    },
+    {
+      "doc": {
+        "id": "020-unknown-priced-row",
+        "title": "unknown agent in priced rows",
+        "stage": "merged",
+        "started": "2026-11-18T10:00:00Z",
+        "ended": "2026-11-18T11:00:00Z",
+        "round": 1,
+        "cost_usd": 2.004,
+        "cost_breakdown": [
+          {
+            "role": "builder",
+            "agent": "new-agent",
+            "cost_usd": 2
+          }
+        ]
+      },
+      "expect": {
+        "claude": 0,
+        "codex": 0,
+        "other": 2
       }
     }
   ]
