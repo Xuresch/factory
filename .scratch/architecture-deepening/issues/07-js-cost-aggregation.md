@@ -71,3 +71,7 @@ Use the unrounded agent total to select agents at or above $0.005. The bar, acce
 - The job summary format, legacy attribution, and local or hub normalization rules owned by ticket 05.
 - Usage accounting, outside usage attribution, Plan fee, and Monthly pace calculations.
 - Navigation, chart layout, and visual redesign.
+
+## Comments
+
+**2026-11-20** Review of #17 found the Cost per role chart still totals raw Agent rows, so a job with a stored split (fixture 010-split-wins) shows $5 Claude there and $5 Codex in the board, drawer and per-job chart. This ticket should make that chart use the job summary's Agent split.
