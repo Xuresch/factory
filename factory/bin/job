@@ -2818,11 +2818,14 @@ def wait_reason(job):
 
 
 def human_ask(job, limit=600):
-    """decision.md `## For the human`, squeezed onto a few lines for a
-    notification: the question and the line ranges to check, so the human can
-    answer without opening the job folder. "" without one."""
-    f = job_dir(job["id"]) / "decision.md"
-    text = " ".join(l.strip() for l in (section(f, "For the human") or "").splitlines() if l.strip()) if f.exists() else ""
+    """Put the spec or decision's questions on one line for a notification."""
+    if job["stage"] == "paused" and job["paused"]["after"] == "spec":
+        text = "; ".join(needs_a_human(job))
+    elif job["stage"] == "needs-human":
+        f = job_dir(job["id"]) / "decision.md"
+        text = " ".join(l.strip() for l in (section(f, "For the human") or "").splitlines() if l.strip()) if f.exists() else ""
+    else:
+        return ""
     return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
 
 
@@ -2833,7 +2836,7 @@ def announce(job, old):
     if stage in WAITING:
         why, action = wait_reason(job)
         what = f"paused after {job['paused']['after']}" if stage == "paused" else stage
-        ask = human_ask(job) if stage == "needs-human" else ""
+        ask = human_ask(job)
         notify(f"Factory: {name} waits for you", f"{what}: {why}\nDo: {action}" + (f"\nAsks: {ask}" if ask else ""),
                "high", link_of(job), ["hourglass"])
     elif stage == "merged":

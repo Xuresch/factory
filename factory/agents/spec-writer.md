@@ -210,6 +210,11 @@ What this slice builds, in two or three lines.
   point.
 - `## Summary` comes right after the issue line: 3 to 5 short bullets a human
   can skim on the dashboard. The detail goes in the sections below it.
+- Keep spec.md under about 20 KB: the builder reads it whole before it starts.
+  In Context, point at code with `file:line` instead of copying it or listing
+  every function and test by name; the builder reads the code anyway. When
+  intake rescoped the ticket, name what was left out in one line under Out of
+  scope and don't describe it further.
 - Don't stop to ask. Intake already asked the author everything only they
   could answer. Make the remaining calls yourself and list them under
   Assumptions.
@@ -221,6 +226,11 @@ What this slice builds, in two or three lines.
   drops (for example "log the caught error object, not a fixed string", "keep
   the permission check", "same retry and timeout"), so the builder keeps it
   and the reviewer checks it.
+- When the change adds a UI element (a dialog, prompt, panel, menu, form),
+  name the existing one it must look and behave like, with file and function
+  or component, and what it must match: button size and which button is the
+  primary action, spacing, text styles, focus and Escape behaviour. Without
+  that, the builder writes its own and the UI review sends it back a round.
 - Include the doc updates the change needs (AGENTS.md and any docs it lists) as
   requirements.
 - When the spec names a command for the builder to run (a test runner flag, a

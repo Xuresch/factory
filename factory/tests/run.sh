@@ -1511,6 +1511,17 @@ t_resume_records_acceptance() {
   check "default line without a note" "$(cat "factory/jobs/$id2/accepted.md")" "accepted spec.md as written"
 }
 
+t_notify_paused_spec_needs_a_human() {
+  new_repo notifyspec; ticket 01 One; commit_all
+  local inbox="$TMP_ROOT/notifyspec/inbox"
+  notify_to "[{\"command\": \"cat >> '$inbox'\"}]"
+  local id; id=$(J create f/01); intake "$id" high security
+  factory/bin/route "$id" >/dev/null && J advance "$id" spec >/dev/null || return 1
+  printf '# Spec\n\n## Needs a human\n- Is the flag on in production?\n- Which storage format should we use?\n' > "factory/jobs/$id/spec.md"
+  check "paused" "$(J advance "$id" build)" "paused" &&
+  check "notification lists both items" "$(cat "$inbox")" "Asks: Is the flag on in production?; Which storage format should we use?"
+}
+
 t_resume_records_needs_a_human_results() {
   new_repo needsresult; ticket 01 One; ticket 02 Two; commit_all
   local id; id=$(J create f/01); intake "$id" high security
