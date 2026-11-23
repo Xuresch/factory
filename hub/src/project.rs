@@ -423,13 +423,13 @@ pub fn project(doc: &Value, lines: &HashMap<String, String>, seen: &Seen<'_>) ->
     };
     const RESIDUE: f64 = 0.005;
     let rest = cost_usd - claude - codex - other;
-    // Subtraction can put an exact half cent just below the cutoff.
-    let rounding = f64::EPSILON
-        * cost_usd
-            .abs()
-            .max(claude.abs())
-            .max(codex.abs())
-            .max(other.abs());
+    let max_amount = cost_usd
+        .abs()
+        .max(claude.abs())
+        .max(codex.abs())
+        .max(other.abs());
+    // Allow for accumulated rounding across four dollar amounts and three subtractions.
+    let rounding = 4.0 * f64::EPSILON * max_amount;
     if rest > 0.0 && rest >= RESIDUE - rounding {
         other += rest.max(RESIDUE);
     }

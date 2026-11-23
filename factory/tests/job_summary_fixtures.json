@@ -253,6 +253,26 @@
         "codex": 0,
         "other": 2
       }
+    },
+    {
+      "doc": {
+        "id": "021-half-cent-fractional-split",
+        "title": "exact half cent after fractional agent amounts",
+        "stage": "merged",
+        "started": "2026-11-18T10:00:00Z",
+        "ended": "2026-11-18T11:00:00Z",
+        "round": 1,
+        "cost_usd": 2.32,
+        "cost_by_agent": {
+          "claude": 0.2886,
+          "codex": 2.0264
+        }
+      },
+      "expect": {
+        "claude": 0.2886,
+        "codex": 2.0264,
+        "other": 0.005
+      }
     }
   ]
 }

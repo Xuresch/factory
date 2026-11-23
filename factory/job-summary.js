@@ -39,8 +39,8 @@
       : Array.isArray(rows) && rows.length ? fold(rows.map((r) => [r && r.agent, r && r.cost_usd]))
       : { claude: t, codex: 0, other: 0 }
     const rest = t - p.claude - p.codex - p.other
-    // Subtracting dollar amounts can put an exact half cent just below the cutoff.
-    const rounding = Number.EPSILON * Math.max(Math.abs(t), Math.abs(p.claude), Math.abs(p.codex), Math.abs(p.other))
+    // Allow for accumulated rounding across four dollar amounts and three subtractions.
+    const rounding = 4 * Number.EPSILON * Math.max(Math.abs(t), Math.abs(p.claude), Math.abs(p.codex), Math.abs(p.other))
     if (rest > 0 && rest >= RESIDUE - rounding) p.other += Math.max(rest, RESIDUE)
     return p
   }
