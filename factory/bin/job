@@ -116,6 +116,8 @@ from pathlib import Path
 sys.dont_write_bytecode = True  # no __pycache__ in factory/bin of the repos the factory runs in
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import session_usage  # noqa: E402  (factory/bin/session_usage.py)
+import jobfiles  # noqa: E402  (factory/bin/jobfiles.py: how a job folder reads)
+from jobfiles import first_line, header, section  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 FACTORY = REPO / "factory"
@@ -726,7 +728,7 @@ def load(job_id):
         die(f"no job {job_id}")
     if job_id not in _locks and job_id not in _busy and not take_lock(job_id):
         _busy[job_id] = lock_holder(job_id)
-    return json.loads(path.read_text())  # save() replaces it whole: safe to read without the lock
+    return jobfiles.read_job(path)  # save() replaces it whole: safe to read without the lock
 
 
 def save(job):
@@ -763,27 +765,6 @@ def resolve(arg):
     if not matches:
         die(f"no job for issue {key}")
     return matches[0]
-
-
-def first_line(path):
-    return path.read_text().split("\n", 1)[0].strip() if path.exists() else None
-
-
-def header(path):
-    """KEY: value lines at the top of an agent's file, up to the first blank line."""
-    fields = {}
-    for line in path.read_text().splitlines():
-        if not line.strip():
-            break
-        key, _, value = line.partition(":")
-        fields[key.strip().upper()] = value.strip()
-    return fields
-
-
-def section(path, heading):
-    """Body of a `## heading` section, or None."""
-    m = re.search(rf"^## {re.escape(heading)}\n(.*?)(?=^## |\Z)", path.read_text(), re.M | re.S)
-    return m.group(1).strip() if m else None
 
 
 def round_dir(job, n=None):
@@ -1028,17 +1009,16 @@ def sync(job):
         raise_risk(job["intake"])
     if job["round"]:
         rd = round_dir(job)
-        gate = header(rd / "checks.md").get("GATE") if (rd / "checks.md").exists() else None
-        job["gate"] = gate
+        gate = jobfiles.verdict("checks", rd / "checks.md")
+        job["gate"] = None if gate == jobfiles.PENDING else gate
         if job["agents"] and job["stage"] in {"review", "approve", "merging", "merged", "needs-human"}:
             job["reviews"], job["review_problems"] = {}, {}
             for r in reviewers(job):
                 f = rd / f"review-{r}.md"
-                line = first_line(f)
-                m = re.fullmatch(r"VERDICT:\s*(PASS|CHANGES)", line or "")
-                problem = review_problem(r, f, m, job if job["stage"] == "review" else None)
-                job["reviews"][r] = "pending" if line is None else "invalid" if problem else m.group(1)
-                if problem and line is not None:
+                v = jobfiles.verdict("review", f)
+                problem = review_problem(r, f, v, job if job["stage"] == "review" else None)
+                job["reviews"][r] = v if v == jobfiles.PENDING else "invalid" if problem else v
+                if problem and v != jobfiles.PENDING:
                     job["review_problems"][r] = problem
     totals, cost_rows = job_cost(job)
     claude, codex = totals["claude"], totals["codex"]
@@ -1463,7 +1443,7 @@ def stuck_disputes(job):
     now_answers, out = rounds.get(job["round"], {}), []
     for lens in reviewers(job):
         f = round_dir(job) / f"review-{lens}.md"
-        if first_line(f) != "VERDICT: CHANGES":
+        if jobfiles.verdict("review", f) != "CHANGES":
             continue
         for fid, (status, why) in review_findings(f)[1].items():
             key = f"{lens} {fid}"
@@ -1493,13 +1473,14 @@ def reset_findings(job):
 
 
 def review_problem(lens, path, verdict, job=None):
-    """Why a review file doesn't count, or None. A lens with required sections
+    """Why a review file doesn't count, or None: the Progression check on the
+    Verdict it declares (jobfiles.verdict). A lens with required sections
     (config.json `review_sections`, e.g. code: Standards and Spec) must have them.
     With `job` (a round under review): the verdict fits the findings'
     severities, and every finding the last round left open is answered."""
     if not path.exists():
         return None
-    if not verdict:
+    if verdict not in ("PASS", "CHANGES"):
         return "its first line isn't `VERDICT: PASS` or `VERDICT: CHANGES`"
     need = CONFIG.get("review_sections", {}).get(lens, [])
     missing = [h for h in need if section(path, h) is None]
@@ -1515,11 +1496,11 @@ def review_problem(lens, path, verdict, job=None):
                 f"round-{n}/review-{lens}.md: one line each, `F<n> resolved`, `F<n> still open: <why>` "
                 f"or `F<n> withdrawn: <why>`")
     still = open_findings(path)
-    if verdict.group(1) == "CHANGES" and not still:
+    if verdict == "CHANGES" and not still:
         return ("it says CHANGES but no finding is a blocker or a should: write each finding as "
                 "`F<n> [blocker|should|nit] <path:line> <problem and fix>` under `## Findings`; "
                 "a review with only nits is a PASS")
-    if verdict.group(1) == "PASS" and still:
+    if verdict == "PASS" and still:
         return (f"it says PASS but leaves {', '.join(still)} open (a blocker, a should or `still open`): "
                 f"that is CHANGES, or mark what doesn't block as [nit]")
     return None
@@ -1570,8 +1551,8 @@ def review_table(job):
 
     def cell(lens, n):
         f = round_dir(job, n) / f"review-{lens}.md"
-        m = re.fullmatch(r"VERDICT:\s*(PASS|CHANGES)", first_line(f) or "")
-        if not m:
+        v = jobfiles.verdict("review", f)
+        if v not in ("PASS", "CHANGES"):
             return "–"
         if section(f, "Skipped") is not None:
             return "carried"
@@ -1579,11 +1560,11 @@ def review_table(job):
         counts = [f"{sum(1 for s, _ in new.values() if s == sev)} {sev}" for sev in ("blocker", "should", "nit")
                   if any(s == sev for s, _ in new.values())]
         who = log.get(str(n), {}).get(lens)
-        return m.group(1) + (f" ({', '.join(counts)})" if counts else "") + (f"<br>{who}" if who else "")
+        return v + (f" ({', '.join(counts)})" if counts else "") + (f"<br>{who}" if who else "")
 
     def gate(n):
-        f = round_dir(job, n) / "checks.md"
-        return header(f).get("GATE", "–") if f.exists() else "–"
+        v = jobfiles.verdict("checks", round_dir(job, n) / "checks.md")
+        return "–" if v == jobfiles.PENDING else v
 
     rows = ["## Factory review", "", f"Rounds: {job['round']}", "",
             "| | " + " | ".join(f"Round {n}" for n in rounds) + " |", "| --- |" + " --- |" * len(rounds),
@@ -2096,10 +2077,11 @@ def advance(job, stage):
         checks = round_dir(job) / "checks.md"
         require(checks.exists(), f"run the gate first: factory/bin/gate {job['id']}")
         h = header(checks)
+        gate = jobfiles.verdict("checks", checks)
         require(h.get("COMMIT") == git(job, "rev-parse", "HEAD").stdout.strip(),
                 "checks.md was written for another commit; run the gate again")
         if stage == "review":
-            require(h.get("GATE") == "PASS", "the gate didn't pass")
+            require(gate == "PASS", "the gate didn't pass")
             job["reviews"] = {r: "pending" for r in reviewers(job)}
             job["review_head"] = h["COMMIT"]
             k = merge_only_from(job, h["COMMIT"])
@@ -2110,7 +2092,8 @@ def advance(job, stage):
                 r: describe(e) for r, e in job["agents"]["reviewers"].items() if r not in job["skipped_reviews"]}
             record_diff(job, h["COMMIT"])
         else:
-            require(h.get("GATE") == "FAIL", "the gate passed")
+            require(gate == "FAIL", "the gate passed" if gate == "PASS"
+                    else "checks.md's first line isn't `GATE: PASS` or `GATE: FAIL`; run the gate again")
             last = job["round"] >= job["round_limit"]
             require(last == (stage == "needs-human"),
                     f"round {job['round']} of {job['round_limit']}: go to {'needs-human' if last else 'build'}")
@@ -4015,9 +3998,9 @@ def friction(job):
             out.append(f"the merge failed in {rd.name}")
         if first_line(rd / "base-sync.md") == "SYNC: CONFLICT":
             out.append(f"a base conflict in {rd.name}")
-        if first_line(rd / "checks.md") == "GATE: FAIL":
+        if jobfiles.verdict("checks", rd / "checks.md") == "FAIL":
             out.append(f"the gate failed in {rd.name}")
-        if any(first_line(f) == "VERDICT: CHANGES" for f in rd.glob("review-*.md")):
+        if any(jobfiles.verdict("review", f) == "CHANGES" for f in rd.glob("review-*.md")):
             out.append(f"reviews asked for changes in {rd.name}")
     limit = CONFIG.get("retro_cost_usd")
     if limit and job.get("cost_usd", 0) > limit:
@@ -4142,7 +4125,7 @@ def unlocked(job):
     finally:
         if lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-        fresh = json.loads((job_dir(job["id"]) / "job.json").read_text())
+        fresh = jobfiles.load_job(JOBS, job["id"])
         job.clear()
         job.update(fresh)
 
@@ -4457,7 +4440,7 @@ def cmd_approve(job):
     if job["stage"] != "needs-human":
         die(f"{job['id']} is in {job['stage']}, not needs-human")
     rd = round_dir(job)
-    gate_ok = (rd / "checks.md").exists() and header(rd / "checks.md").get("GATE") == "PASS"
+    gate_ok = jobfiles.verdict("checks", rd / "checks.md") == "PASS"
     reviews_ok = bool(job["reviews"]) and all(v == "PASS" for v in job["reviews"].values())
     if not (gate_ok and reviews_ok):
         die(f"round {job['round']} has no passing gate and reviews to approve; "
@@ -4720,7 +4703,7 @@ def peer_jobs():
     """Every job, read without taking its lock: a `job merge` holds its job for minutes."""
     if not JOBS.exists():
         return []
-    return [json.loads((p / "job.json").read_text()) for p in sorted(JOBS.iterdir()) if (p / "job.json").exists()]
+    return [jobfiles.read_job(p / "job.json") for p in sorted(JOBS.iterdir()) if (p / "job.json").exists()]
 
 
 def overlap(job):
@@ -5107,7 +5090,7 @@ def next_gate(job, since):
     head = git(job, "rev-parse", "HEAD").stdout.strip()
     if not f.exists() or header(f).get("COMMIT") != head:
         return [("run", f"factory/bin/gate {i}")]
-    if header(f).get("GATE") == "PASS":
+    if jobfiles.verdict("checks", f) == "PASS":
         return [("advance", f"{JOB} advance {i} review")]
     return [("advance", f"{JOB} advance {i} {after_round(job)}")]
 
@@ -5139,13 +5122,13 @@ def next_review(job, since):
     verdicts = {}
     for lens in reviewers(job):
         f = rd / f"review-{lens}.md"
-        m = re.fullmatch(r"VERDICT:\s*(PASS|CHANGES)", first_line(f) or "")
-        problem = review_problem(lens, f, m, job)
+        v = jobfiles.verdict("review", f)
+        problem = review_problem(lens, f, v, job)
         if problem:
             out.append(("send", f"{JOB} send {i} reviewer-{lens} "
                         + shlex.quote(f"review-{lens}.md does not count: {problem}. Fix it and report again.")))
         else:
-            verdicts[lens] = m.group(1)
+            verdicts[lens] = v
     if out:
         return out
     if all(v == "PASS" for v in verdicts.values()):

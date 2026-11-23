@@ -2929,6 +2929,247 @@ t_report_install_service() {
   check "restart delay" "$(cat "$u")" "RestartSec=10"
 }
 
+# ---- job folder formats: factory/bin/jobfiles.py ------------------------------
+
+FIXTURES="$FACTORY_SRC/tests/fixtures"
+
+t_legacy_updater_can_decode_verdict_fixtures() {
+  python3 - "$FIXTURES/verdicts" <<'EOF'
+import sys
+from pathlib import Path
+
+# An installed updater from before ticket 03 uses read_text on every copied file.
+for path in Path(sys.argv[1]).rglob("*"):
+    if path.is_file():
+        path.read_text(encoding="utf-8")
+EOF
+}
+
+t_verdict_fixtures() {  # the shared fixtures: hub/src/project.rs and dashboard-verdicts.mjs read the same files
+  new_repo vfix; commit_all
+  mkdir -p factory/jobs && cp -r "$FIXTURES/verdicts" factory/jobs/900-verdicts && rm factory/jobs/900-verdicts/expected.json
+  local out; out=$(python3 - "$FIXTURES/verdicts/expected.json" <<'EOF'
+import importlib.machinery as m, importlib.util as u, json, sys
+from pathlib import Path
+l = m.SourceFileLoader("job", "factory/bin/job"); job = u.module_from_spec(u.spec_from_loader("job", l)); l.exec_module(job)
+import jobfiles
+want = json.load(open(sys.argv[1]))["verdicts"]
+d = Path("factory/jobs/900-verdicts")
+for encoded in d.rglob("*.md.hex"):
+    encoded.with_suffix("").write_bytes(bytes.fromhex(encoded.read_text(encoding="ascii")))
+    encoded.unlink()
+bad = [(p, jobfiles.verdict(jobfiles.kind_of(p), d / p), v) for p, v in want.items() if jobfiles.verdict(jobfiles.kind_of(p), d / p) != v]
+print("mismatches:", bad)
+doc = jobfiles.load_job("factory/jobs", "900-verdicts")
+print("table:", job.review_table(doc))
+print("pass without sections:", job.review_problem("code", d / "round-2/review-code.md", jobfiles.verdict("review", d / "round-2/review-code.md")))
+print("double-space CHANGES:", jobfiles.verdict("review", d / "round-2/review-ui.md"),
+      job.review_problem("ui", d / "round-2/review-ui.md", jobfiles.verdict("review", d / "round-2/review-ui.md")))
+EOF
+)
+  check "every fixture artifact reads as expected.json says" "$out" "mismatches: []" &&
+  check "gate row: first line only, pending as –" "$out" "| gate | PASS | PASS | PASS | PASS | PASS | FAIL | FAIL | invalid | invalid | invalid | invalid | invalid | invalid | PASS | invalid | – |" &&
+  check "the historical round names its recorded reviewer" "$out" "| code | CHANGES (1 should)<br>codex/gpt-6.1-terra:high | PASS |" &&
+  check "a declared PASS still fails the Progression check" "$out" "pass without sections: it has no ## Standards, ## Spec section" &&
+  check "VERDICT:  CHANGES with findings counts" "$out" "double-space CHANGES: CHANGES None"
+}
+
+t_dashboard_verdict_fixtures() {
+  if ! command -v node >/dev/null; then echo "node not installed: dashboard verdicts not checked"; return 0; fi
+  local out; out=$(node "$FACTORY_SRC/tests/dashboard-verdicts.mjs" 2>&1)
+  check "standalone and hub mode agree with expected.json" "[$?] $out" "[0] ok: "
+}
+
+t_spaced_changes_reads_the_same() {  # sync, the review table, the Progression check and disputes
+  local id; dispute_setup spaced || return 1
+  J start "$id" reviewer-code >/dev/null
+  rv "$id" 2 code CHANGES "F1 still open: the API is public" "None."
+  sed -i '1s/^VERDICT: CHANGES$/VERDICT:  CHANGES/' "factory/jobs/$id/round-2/review-code.md"
+  check "spaced" "$(head -1 "factory/jobs/$id/round-2/review-code.md")" "VERDICT:  CHANGES" || return 1
+  J sync "$id" >/dev/null
+  check "sync reads CHANGES" "$(field "$id" "d['reviews']['code'], d['review_problems']")" "('CHANGES', {})" &&
+  check "the dispute check sees it: a human decides" "$(J next "$id")" "advance: factory/bin/job advance $id needs-human" &&
+  check "the review table says CHANGES" "$(python3 - "$id" <<'EOF'
+import importlib.machinery as m, importlib.util as u, sys
+l = m.SourceFileLoader("job", "factory/bin/job"); job = u.module_from_spec(u.spec_from_loader("job", l)); l.exec_module(job)
+print(job.review_table(job.load(sys.argv[1])))
+EOF
+)" "| code | CHANGES (1 should)"
+}
+
+t_gate_reuse_reads_checks_md() {
+  new_repo reuse; commit_all
+  local out; out=$(python3 - <<'EOF'
+import importlib.machinery as m, importlib.util as u
+from contextlib import contextmanager
+from pathlib import Path
+from unittest.mock import patch
+l = m.SourceFileLoader("gate", "factory/bin/gate"); g = u.module_from_spec(u.spec_from_loader("gate", l)); l.exec_module(g)
+f = Path("checks.md"); h = g.checks_hash()
+cases = {
+    "passing": f"GATE: PASS\nCOMMIT: abc\nCHECKS_SH: {h}\n\n## Summary\n",
+    "spaced": f"GATE:  PASS\nCOMMIT: abc\nCHECKS_SH: {h}\n",
+    "later header": f"REPORT: ready\nGATE: PASS\nCOMMIT: abc\nCHECKS_SH: {h}\n",
+    "failed": f"GATE: FAIL\nCOMMIT: abc\nCHECKS_SH: {h}\n",
+    "other commit": f"GATE: PASS\nCOMMIT: def\nCHECKS_SH: {h}\n",
+    "other script": "GATE: PASS\nCOMMIT: abc\nCHECKS_SH: 0000\n",
+}
+for name, text in cases.items():
+    f.write_text(text); print(name, g.reusable(f, "abc"))
+f.write_text(cases["other commit"])
+replacement = f.with_suffix(".new")
+replacement.write_text(cases["failed"])
+original_open = Path.open
+
+@contextmanager
+def replace_after_first_read(path, *args, **kwargs):
+    with original_open(path, *args, **kwargs) as stream:
+        yield stream
+    if path == f and replacement.exists():
+        replacement.replace(f)
+
+with patch.object(Path, "open", replace_after_first_read):
+    print("replaced while reading", g.reusable(f, "abc"))
+f.unlink(); print("missing", g.reusable(f, "abc"))
+f.write_text(cases["passing"]); g.CHECKS.write_text(g.CHECKS.read_text() + 'echo "$FACTORY_GATE"\n')
+f.write_text(cases["passing"].replace(h, g.checks_hash())); print("reads FACTORY_GATE", g.reusable(f, "abc"))
+EOF
+)
+  check "reused: PASS, same commit and script" "$out" "passing True" &&
+  check "whitespace after the colon" "$out" "spaced True" &&
+  check "a later-only GATE header is no Verdict" "$out" "later header False" &&
+  check "FAIL" "$out" "failed False" &&
+  check "changed commit" "$out" "other commit False" &&
+  check "changed script" "$out" "other script False" &&
+  check "PASS for the old commit cannot reuse FAIL for the new commit" "$out" "replaced while reading False" &&
+  check "no checks.md" "$out" "missing False" &&
+  check "a script that tells round from merge" "$out" "reads FACTORY_GATE False"
+}
+
+t_readers_share_jobfiles() {  # job, gate (and --hook), route and report read job.json through jobfiles.py
+  new_repo shared; ticket 01 One; commit_all
+  mv factory/bin/jobfiles.py factory/bin/_jobfiles_real.py
+  cat > factory/bin/jobfiles.py <<'EOF'
+import os, sys
+import _jobfiles_real as _r
+from _jobfiles_real import *  # noqa
+from _jobfiles_real import PENDING, INVALID  # noqa
+def _logged(name):
+    fn = getattr(_r, name)
+    def call(*a, **k):
+        with open(os.environ["JOBFILES_LOG"], "a") as f:
+            f.write(f"{os.path.basename(sys.argv[0])} {name}\n")
+        return fn(*a, **k)
+    return call
+for _n in ("read_job", "load_job", "job_snapshot"):
+    globals()[_n] = _logged(_n)
+EOF
+  export JOBFILES_LOG="$PWD/../jobfiles.log"; : > "$JOBFILES_LOG"
+  local id; id=$(J create f/01) || return 1; intake "$id" low none
+  : > "$JOBFILES_LOG"; factory/bin/route "$id" > ../route.out || return 1
+  check "route still records and prints the agents" "$(cat ../route.out)" "builder" &&
+  check "route reads the synced document through jobfiles" "$(cat "$JOBFILES_LOG")" "route load_job" &&
+  check "job reads through jobfiles" "$(cat "$JOBFILES_LOG")" "job read_job" || return 1
+  J advance "$id" spec >/dev/null; echo "# Spec" > "factory/jobs/$id/spec.md"; J advance "$id" build >/dev/null
+  build_commit "$id" y.txt y; ready "$id"; J advance "$id" gate >/dev/null
+  : > "$JOBFILES_LOG"; factory/bin/gate "$id" >/dev/null || return 1
+  check "the gate" "$(cat "$JOBFILES_LOG")" "gate load_job" || return 1
+  python3 - "factory/jobs/$id/.lock" <<'EOF' &
+import fcntl, json, os, sys, time
+f = open(sys.argv[1], "a+"); fcntl.flock(f, fcntl.LOCK_EX); f.seek(0); f.truncate()
+f.write(json.dumps({"command": "merge", "pid": os.getpid(), "since": time.time()})); f.flush()
+time.sleep(30)
+EOF
+  local holder=$!
+  for _ in $(seq 50); do grep -q merge "factory/jobs/$id/.lock" 2>/dev/null && break; sleep 0.1; done
+  printf '{"message":{"content":"Job: %s. Build it."}}\n' "$id" > ../transcript.jsonl
+  : > "$JOBFILES_LOG"
+  echo "{\"agent_transcript_path\":\"$PWD/../transcript.jsonl\"}" | timeout 20 factory/bin/gate --hook; local rc=$?
+  kill "$holder"; wait "$holder" 2>/dev/null
+  check "the hook reads a whole document while the job is locked" "[$rc] $(cat "$JOBFILES_LOG")" "[0] gate load_job" || return 1
+  local before after; before=$(stat -c %i "factory/jobs/$id/job.json")
+  J advance "$id" review >/dev/null || return 1; after=$(stat -c %i "factory/jobs/$id/job.json")
+  check "a job write replaces job.json whole" "[$([[ "$before" != "$after" ]] && echo replaced)]" "[replaced]" || return 1
+  H="$TMP_ROOT/shared/home"; mkdir -p "$H/.config/factory"; echo '{"url":"http://127.0.0.1:9","token":"t"}' > "$H/.config/factory/hub.json"
+  : > "$JOBFILES_LOG"; rpt --dry-run --no-outside > ../report.out
+  check "the reporter reads the same document" "$(cat "$JOBFILES_LOG") $(grep -c "\"id\": \"$id\"" ../report.out)" "report job_snapshot"
+}
+
+t_report_preserves_unreadable_verdict_artifacts() {
+  rpt_setup rptunreadable; rpt_job 001-a
+  local checks=factory/jobs/001-a/round-1/checks.md
+  printf 'GATE: PASS\n' > "$checks"
+  rpt >/dev/null || return 1
+  chmod 000 "$checks"
+  rpt >/dev/null || return 1
+  check "unreadable check is sent with an invalid first line" \
+    "$(hub 'b[1]["repos"][0]["jobs"][0]["files"], b[1]["repos"][0]["jobs"][0]["files_removed"]')" \
+    "{'round-1/checks.md': ''} []" || return 1
+  rpt >/dev/null || return 1
+  check "unchanged unreadable check is not sent again" "$(hub 'b[2]["repos"][0]["jobs"]')" "[]" || return 1
+  rm "$checks"
+  rpt >/dev/null || return 1
+  check "the missing check is removed" "$(hub 'b[3]["repos"][0]["jobs"][0]["files_removed"]')" "['round-1/checks.md']"
+}
+
+t_dashboard_distinguishes_unreadable_artifacts() {
+  new_repo dashboardverdicts
+  local dir=factory/jobs/001-a/round-1
+  mkdir -p "$dir"
+  printf 'GATE: PASS\n' > "$dir/checks.md"
+  chmod 000 "$dir/checks.md"
+  python3 - <<'EOF'
+import functools
+import http.client
+import http.server
+import importlib.machinery as m
+import importlib.util as u
+import threading
+
+loader = m.SourceFileLoader("dashboard", "factory/bin/dashboard")
+dashboard = u.module_from_spec(u.spec_from_loader("dashboard", loader))
+loader.exec_module(dashboard)
+handler = functools.partial(dashboard.Handler, directory=str(dashboard.FACTORY))
+with http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler) as server:
+    worker = threading.Thread(target=server.serve_forever)
+    worker.start()
+    try:
+        for name, expected in [("checks.md", 403), ("review-code.md", 404)]:
+            with_request = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            try:
+                with_request.request("GET", f"/jobs/001-a/round-1/{name}")
+                response = with_request.getresponse()
+                assert response.status == expected, (name, response.status, expected)
+            finally:
+                with_request.close()
+    finally:
+        server.shutdown()
+        worker.join()
+EOF
+}
+
+t_report_keeps_snapshots() {
+  rpt_setup rptkeep; rpt_job 001-a; rpt_job 002-b
+  printf 'VERDICT: PASS\n\nnot UTF-8: \xff\n' > factory/jobs/001-a/round-1/review-code.md
+  rpt >/dev/null || return 1
+  local state="$H/.cache/factory/report-state.json"
+  check "the hash is of the raw bytes" "$(python3 - "$state" <<'EOF'
+import hashlib, json, sys
+s = json.load(open(sys.argv[1])); mine = next(r for h in s.values() if isinstance(h, dict) for r in h.values() if isinstance(r, dict) and "001-a" in r)
+raw = open("factory/jobs/001-a/round-1/review-code.md", "rb").read()
+print(mine["001-a"]["round-1/review-code.md"] == hashlib.sha1(raw).hexdigest(),
+      mine["001-a"]["job.json"] == hashlib.sha1(open("factory/jobs/001-a/job.json", "rb").read()).hexdigest())
+EOF
+)" "True True" &&
+  check "the text goes as UTF-8 with U+FFFD" "$(hub 'ascii(b[0]["repos"][0]["jobs"][0]["files"]["round-1/review-code.md"])')" "not UTF-8: \\ufffd" || return 1
+  local old; old=$(sha1sum factory/jobs/001-a/round-1/review-code.md | cut -d' ' -f1)
+  echo '[1, 2]' > factory/jobs/001-a/job.json; echo changed > factory/jobs/001-a/round-1/review-code.md; chmod 000 factory/jobs/002-b/job.json
+  rpt >/dev/null; chmod 644 factory/jobs/002-b/job.json
+  check "non-object and unreadable job.json: kept, nothing sent" "$(hub 'b[1]["repos"][0]["job_ids"], b[1]["repos"][0]["jobs"]')" "['001-a', '002-b'] []" &&
+  check "and the state keeps the old snapshot" "$(python3 -c "
+import json; s = json.load(open('$state')); print([r['001-a']['round-1/review-code.md'] == '$old' for h in s.values() if isinstance(h, dict) for r in h.values() if isinstance(r, dict) and '001-a' in r])")" "[True]"
+}
+
 # ---- Ticket effects: the tracker seam --------------------------------------
 
 jobpy() {  # jobpy <python>: run it with factory/bin/job loaded as `j` (its tracker as config.json picks it)

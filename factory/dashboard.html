@@ -602,21 +602,37 @@ let openJobId = null
 let openPath = null
 let openText = null
 
-async function fetchText(url) {
+// ---- verdicts: begin (factory/tests/dashboard-verdicts.mjs runs this block) ----
+
+const artifactDecoder = new TextDecoder('utf-8', { ignoreBOM: true })
+
+async function fetchText(url, artifactKind) {
   const res = await fetch(url, { cache: 'no-store' })
   if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`)
-  return res.text()
+  return artifactKind ? artifactDecoder.decode(await res.arrayBuffer()) : res.text()
 }
 
+// A file's first line: null when there is no such file (or no answer), '' when it can't be read.
 async function fetchFirst(url) {
-  try { return (await fetchText(url)).split('\n')[0].trim() } catch { return null }
+  let res
+  try { res = await fetch(url, { cache: 'no-store' }) } catch { return null }
+  if (res.status === 404) return null
+  if (!res.ok) return ''
+  return artifactDecoder.decode(await res.arrayBuffer()).split('\n', 1)[0]
 }
 
 // ---- Board ---------------------------------------------------------------
 
-function verdictOf(line) {
+// The Verdict a round artifact's first line declares, the rule of factory/bin/jobfiles.py and the
+// hub: pending without the file, invalid unless it is its kind's prefix and one of its values.
+const DECLARATIONS = {
+  review: /^VERDICT:\p{White_Space}*(PASS|CHANGES)$/u,
+  checks: /^GATE:\p{White_Space}*(PASS|FAIL)$/u,
+}
+
+function verdictOf(kind, line) {
   if (line === null) return 'pending'
-  const m = line.match(/^(?:VERDICT|GATE):\s*(PASS|CHANGES|FAIL)$/)
+  const m = line.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, '').match(DECLARATIONS[kind])
   return m ? m[1] : 'invalid'
 }
 
@@ -630,16 +646,18 @@ async function roundVerdicts(job, n) {
   const key = `${job.id}/${n}`
   if (roundCache.has(key)) return roundCache.get(key)
   const dir = `jobs/${job.id}/round-${n}/`
-  const v = { gate: verdictOf(await fetchFirst(dir + 'checks.md')), reviews: {} }
+  const v = { gate: verdictOf('checks', await fetchFirst(dir + 'checks.md')), reviews: {} }
   if (v.gate === 'PASS') {
     await Promise.all(Object.keys(job.agents?.reviewers || {}).map(async (r) => {
-      v.reviews[r] = verdictOf(await fetchFirst(`${dir}review-${r}.md`))
+      v.reviews[r] = verdictOf('review', await fetchFirst(`${dir}review-${r}.md`))
     }))
   }
   const settled = v.gate === 'FAIL' || (v.gate === 'PASS' && Object.values(v.reviews).every((x) => x === 'PASS' || x === 'CHANGES'))
   if (settled && n < job.round) roundCache.set(key, v)
   return v
 }
+
+// ---- verdicts: end ----
 
 function chip(label, v, waiting, title, extra = '') {
   const cls = ['PASS', 'CHANGES', 'FAIL'].includes(v) ? v : v === 'pending' ? (waiting ? 'wait' : '') : 'bad'
@@ -856,6 +874,16 @@ function tone(first) {
 
 const firstLines = new Map()
 
+function roundArtifactKind(path) {
+  if (/^round-\d+\/(merge-)?checks\.md$/.test(path)) return 'checks'
+  if (/^round-\d+\/review-[^/]+\.md$/.test(path)) return 'review'
+  return null
+}
+
+function verdictTone(verdict) {
+  return { PASS: 'good', CHANGES: 'warn', FAIL: 'stop' }[verdict] || null
+}
+
 async function refreshDrawer() {
   const id = openJobId
   let job = jobs.find((j) => j.id === id)
@@ -887,11 +915,13 @@ async function refreshDrawer() {
     text = await fetchText(job.issue_url).catch(() =>
       `Can't load ${job.issue_url}.\n\nStart the dashboard with \`factory/bin/dashboard\`: plain \`python3 -m http.server\` serves only factory/, not the tickets in .scratch/.`)
   } else if (openPath) {
-    text = await fetchText(base + openPath)
-    firstLines.set(base + openPath, text.split('\n')[0].trim())
+    text = await fetchText(base + openPath, roundArtifactKind(openPath))
+    firstLines.set(base + openPath, text.split('\n', 1)[0])
   }
   if (!hub) await Promise.all(files.filter((f) => f !== COSTS && f !== TICKET && !firstLines.has(base + f)).map(async (f) => {
-    firstLines.set(base + f, (await fetchText(base + f)).split('\n')[0].trim())
+    const kind = roundArtifactKind(f)
+    const first = kind ? await fetchFirst(base + f) : (await fetchText(base + f)).split('\n', 1)[0]
+    firstLines.set(base + f, first)
   }))
 
   let group = null
@@ -906,8 +936,10 @@ async function refreshDrawer() {
       : esc(f.replace(/\.md$/, ''))
     const match = f.match(/^round-(\d+)\/(checks|review-(.+))\.md$/)
     const roundData = match && (job.rounds || []).find((r) => r.round === Number(match[1]))
-    const verdict = match && (match[2] === 'checks' ? roundData?.gate : roundData?.reviews?.[match[3]])
-    const t = tone(firstLines.get(base + f) || (verdict ? `${match[2] === 'checks' ? 'GATE' : 'VERDICT'}: ${verdict}` : ''))
+    const verdict = roundData ? (match[2] === 'checks' ? roundData.gate : roundData.reviews?.[match[3]]) : undefined
+    const kind = roundArtifactKind(f)
+    const first = firstLines.get(base + f) ?? null
+    const t = kind ? verdictTone(verdict ?? verdictOf(kind, first)) : tone(first?.trim())
     return `${head}<button class="file ${f === openPath ? 'on' : ''}" data-file="${esc(f)}">
       <span class="v ${t || ''}"></span>${name}</button>`
   }).join('') || '<div class="empty">No files yet.</div>'
@@ -915,7 +947,7 @@ async function refreshDrawer() {
   if (text !== openText) {
     openText = text
     $('d-doc').innerHTML = text === null ? '<p class="note">Intake hasn’t written anything yet.</p>'
-      : openPath === COSTS ? text : markdown(text)
+      : openPath === COSTS ? text : markdown(text, roundArtifactKind(openPath))
   }
 }
 
@@ -1241,13 +1273,13 @@ function splitSummary(lines) {
   }
 }
 
-function markdown(src) {
+function markdown(src, artifactKind) {
   const split = splitSummary(src.replace(/\r/g, '').split('\n'))
   const lines = split.lines
   let i = 0
   let html = ''
   const first = (lines[0] || '').trim()
-  const t = tone(first)
+  const t = artifactKind ? verdictTone(verdictOf(artifactKind, src.split('\n', 1)[0])) : tone(first)
   if (t) {
     html += `<div class="verdict ${t}">${esc(first)}</div>`
     i = 1

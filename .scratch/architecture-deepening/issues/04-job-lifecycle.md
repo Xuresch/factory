@@ -54,3 +54,7 @@
 - CLI syntax changes, new stages, and changes to configured retry or fallback limits.
 - Rebuilding tracker adapters or changing persisted job-folder formats.
 - Redesigning worker scheduling, slice execution, or the merge retry and CI wait mechanisms.
+
+## Comments
+
+**2026-11-20** Review of #18 found that when a checks file has a matching COMMIT but GATE: PASS only on a later line, job next recommends advancing to build or needs-human while job advance rejects the invalid Verdict. The lifecycle's progression advice should come from the same Verdict rule.
