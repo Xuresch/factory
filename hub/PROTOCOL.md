@@ -226,11 +226,13 @@ All JSON, `Cache-Control: no-store`.
   (sum of `cost_usd` / `cost_by_agent`) plus outside usage for the month summed
   over machines; `subscriptions_usd` the sum of the deduplicated subscriptions'
   `usd_per_month`.
-  Agent splits are `{claude, codex, other}` per job, summed: `other` is
-  `cost_usd` minus claude+codex when that exceeds 0.005 (a job without
-  `cost_by_agent` is all `other`), else 0. `repos[].cost_by_agent` covers all
-  jobs, `cost_month_by_agent` the jobs started this month, `daily[].by_agent`
-  each day; top-level `daily` is the same 14 days summed over all repos.
+  Totals sum the projected `{claude, codex, other}` Agent split per job.
+  A non-empty stored split wins, including explicit zeroes. Otherwise the hub
+  uses priced rows, or attributes a total-only job entirely to `claude`.
+  Unknown agents and any positive residue of at least $0.005 go to `other`.
+  `repos[].cost_by_agent` covers all jobs, `cost_month_by_agent` the jobs
+  started this month, and `daily[].by_agent` each day. Top-level `daily` is
+  the same 14 days summed over all repos.
   `month.factory` is the split of jobs started this month, `month.outside` the
   outside usage this month summed over machines, `month.by_agent` their
   claude/codex sum. `month.prev` repeats `api_equivalent_usd`, `factory` and

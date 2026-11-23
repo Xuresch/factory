@@ -46,10 +46,10 @@ moving from job.json to the API changes little.
 }
 ```
 
-`cost_by_agent` is derived (projected columns; `other` is what the total holds beyond
-claude and codex). `cost_split` is the split as job.json recorded it, null when it
-recorded none; the pages resolve the Agent split from it, `cost_breakdown` and
-`cost_usd` (`factory/job-summary.js`).
+`cost_by_agent` is the projected Agent split used by the hub pages and totals.
+It uses a non-empty stored split, then priced rows, then the full total as `claude`
+for a total-only job. Unknown agents and any positive residue of at least half a
+cent go to `other`. `cost_split` is the original job.json split, or null if absent.
 
 `cost_breakdown` is job_costs by seq (a handful of rows per job; the costs pages
 aggregate it per model and role over any range of jobs). `paused` is null unless `paused_after` is set. `rounds[].gate` / `reviews[lens]`

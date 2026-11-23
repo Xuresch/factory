@@ -1,5 +1,5 @@
-// The job summary: one shape for a job in every view, local or on the hub, and the one place
-// that decides a job's Agent split (GLOSSARY.md). factory/dashboard.html and the hub's overview
+// The job summary: one shape for a job in every view, with an Agent split computed locally
+// or supplied by the hub (GLOSSARY.md). factory/dashboard.html and the hub's overview
 // (hub/static/index.html) load it; factory/tests/job_summary.test.js runs it under node.
 //
 // A summary is the job's own fields plus
@@ -39,8 +39,8 @@
       : Array.isArray(rows) && rows.length ? fold(rows.map((r) => [r && r.agent, r && r.cost_usd]))
       : { claude: t, codex: 0, other: 0 }
     const rest = t - p.claude - p.codex - p.other
-    // Subtracting dollar amounts can put an exact half cent just below the cutoff.
-    const rounding = Number.EPSILON * Math.max(Math.abs(t), Math.abs(p.claude), Math.abs(p.codex), Math.abs(p.other))
+    // Allow for accumulated rounding across four dollar amounts and three subtractions.
+    const rounding = 4 * Number.EPSILON * Math.max(Math.abs(t), Math.abs(p.claude), Math.abs(p.codex), Math.abs(p.other))
     if (rest > 0 && rest >= RESIDUE - rounding) p.other += Math.max(rest, RESIDUE)
     return p
   }
@@ -83,8 +83,7 @@
       times: timesOf(doc, now), rounds }
   }
 
-  // A hub job summary (hub/API.md). cost_split is the split the job recorded, null when it had none;
-  // the hub's own cost_by_agent is derived and cannot tell a recorded zero from a missing split.
+  // A hub job summary (hub/API.md). The hub applies the Agent split rule at projection time.
   // repo: the view's repo, or 'all'.
   function fromHub(doc, { repo = 'all', now } = {}) {
     const timed = doc.work_s !== null && doc.work_s !== undefined && doc.wait_s !== null && doc.wait_s !== undefined
@@ -93,7 +92,7 @@
     const repoName = repo === 'all' ? (doc.repo || null) : repo
     return { ...doc, id: String(doc.id), repo: repoName, repoLabel: repo === 'all' ? repoName : null,
       cost_usd: num(doc.cost_usd),
-      split: agentSplit({ total: doc.cost_usd, split: doc.cost_split, rows: doc.cost_breakdown }),
+      split: doc.cost_by_agent,
       times: timed ? { total: num(doc.duration_s) * 1000, work: num(doc.work_s) * 1000, wait: num(doc.wait_s) * 1000 } : timesOf(doc, now),
       rounds }
   }

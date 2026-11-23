@@ -13,7 +13,7 @@ use serde_json::{Map, Value};
 use crate::store::{int, opt, real, text, Param, Statement};
 use crate::util::parse_iso;
 
-pub const PROJECTION_VERSION: i64 = 3;
+pub const PROJECTION_VERSION: i64 = 4;
 
 pub const LIVE: [&str; 7] = [
     "intake", "spec", "build", "gate", "review", "approve", "merging",
@@ -99,6 +99,14 @@ fn f(v: Option<&Value>) -> f64 {
         Some(Value::Number(n)) => n.as_f64().unwrap_or(0.0),
         Some(Value::String(x)) => x.trim().parse().unwrap_or(0.0),
         _ => 0.0,
+    }
+}
+
+fn agent_index(agent: &str) -> usize {
+    match agent {
+        "claude" => 0,
+        "codex" => 1,
+        _ => 2,
     }
 }
 
@@ -368,8 +376,9 @@ pub fn project(doc: &Value, lines: &HashMap<String, String>, seen: &Seen<'_>) ->
 
     // cost_breakdown → costs and tokens
     let (mut tokens_in, mut tokens_cached, mut tokens_out) = (0, 0, 0);
-    let mut by_agent: BTreeMap<String, f64> = BTreeMap::new();
-    for (n, c) in arr(g("cost_breakdown")).iter().enumerate() {
+    let mut priced_split = [0.0; 3];
+    let priced_rows = arr(g("cost_breakdown"));
+    for (n, c) in priced_rows.iter().enumerate() {
         let role = s(c.get("role")).unwrap_or("");
         let agent = s(c.get("agent"));
         let usd = f(c.get("cost_usd"));
@@ -381,7 +390,7 @@ pub fn project(doc: &Value, lines: &HashMap<String, String>, seen: &Seen<'_>) ->
         tokens_in += ti;
         tokens_cached += tc;
         tokens_out += to;
-        *by_agent.entry(agent.unwrap_or("").to_owned()).or_default() += usd;
+        priced_split[agent_index(agent.unwrap_or(""))] += usd;
         children.push((
             INS_COST,
             vec![
@@ -399,16 +408,32 @@ pub fn project(doc: &Value, lines: &HashMap<String, String>, seen: &Seen<'_>) ->
         ));
     }
     let cost_usd = f(g("cost_usd"));
-    // cost_by_agent is what bin/job reports; the breakdown is the fallback
-    let agent_cost = |a: &str| match obj(g("cost_by_agent")) {
-        Some(m) => f(m.get(a)),
-        None => by_agent.get(a).copied().unwrap_or(0.0),
+    let stored_split = obj(g("cost_by_agent"));
+    // Agent split rule, also used for local jobs in factory/job-summary.js.
+    let [claude, codex, mut other] = match stored_split.filter(|m| !m.is_empty()) {
+        Some(split) => {
+            let mut amounts = [0.0; 3];
+            for (agent, usd) in split {
+                amounts[agent_index(agent)] += f(Some(usd));
+            }
+            amounts
+        }
+        None if !priced_rows.is_empty() => priced_split,
+        None => [cost_usd, 0.0, 0.0],
     };
-    let (claude, codex) = (agent_cost("claude"), agent_cost("codex"));
-    let rest = cost_usd - claude - codex;
-    let other = if rest > 0.005 { rest } else { 0.0 };
-    // the split as recorded, so a page can tell a recorded zero from a missing split
-    let cost_split = obj(g("cost_by_agent")).map(|m| Value::Object(m.clone()).to_string());
+    const RESIDUE: f64 = 0.005;
+    let rest = cost_usd - claude - codex - other;
+    let max_amount = cost_usd
+        .abs()
+        .max(claude.abs())
+        .max(codex.abs())
+        .max(other.abs());
+    // Allow for accumulated rounding across four dollar amounts and three subtractions.
+    let rounding = 4.0 * f64::EPSILON * max_amount;
+    if rest > 0.0 && rest >= RESIDUE - rounding {
+        other += rest.max(RESIDUE);
+    }
+    let cost_split = stored_split.map(|m| Value::Object(m.clone()).to_string());
 
     // rounds: gate verdict, diff size, continues
     let round = i(g("round"));
@@ -990,6 +1015,33 @@ mod tests {
         assert_eq!(rows(&p, INS_SURFACE).len(), 2);
         assert_eq!(rows(&p, INS_APPROVAL).len(), 2);
         assert_eq!(rows(&p, INS_FINDING)[1][2], text("ui"));
+    }
+
+    #[test]
+    fn agent_split_matches_shared_job_summaries() {
+        let fixtures: Value = serde_json::from_str(include_str!(
+            "../../factory/tests/job_summary_fixtures.json"
+        ))
+        .unwrap();
+        for fixture in fixtures["jobs"].as_array().unwrap() {
+            let doc = &fixture["doc"];
+            let p = project(doc, &HashMap::new(), &seen());
+            for (agent, column) in [
+                ("claude", "cost_claude"),
+                ("codex", "cost_codex"),
+                ("other", "cost_other"),
+            ] {
+                let Param::Real(got) = col(&p, column) else {
+                    panic!("{column} must be a dollar amount");
+                };
+                let want = fixture["expect"][agent].as_f64().unwrap();
+                assert!(
+                    (got - want).abs() < 1e-9,
+                    "{} {agent}: expected {want}, got {got}",
+                    doc["id"]
+                );
+            }
+        }
     }
 
     #[test]
