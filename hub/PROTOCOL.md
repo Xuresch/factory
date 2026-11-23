@@ -98,9 +98,9 @@ report --install-service   write ~/.config/systemd/user/factory-report.service a
   is written only after the hub answered 2xx.
 - Full push: on the first run, when the hub answers `need_full: true`, after any
   failed push, and every 10 minutes.
-- Outside usage: imports `factory/bin/dashboard` (SourceFileLoader, as the tests
-  do) and calls `Outside().scan()` itself on its own thread every 5 minutes;
-  sends `summarize()`'s result when its hash changed. `outside: false` or
+- Outside usage: imports `factory/bin/session_usage.py`, the scan
+  `factory/bin/dashboard` serves, and calls `scan_outside()` on its own thread
+  every 5 minutes; sends `outside_summary()`'s result when its hash changed. `outside: false` or
   `subscriptions.json` `"outside": false` turns it off.
 - Subscriptions: the `subscriptions` list from `subscriptions.json`, when it
   changed. Missing file: `[]`.
@@ -138,7 +138,7 @@ Content-Encoding: gzip            (optional)
     "tickets": {".scratch/deps/02.md": "..."}
   }],
   "subscriptions": [{"name": "Claude Max 5x", "agent": "claude", "usd_per_month": 100}],
-  "outside": { "...bin/dashboard summarize() result, or omitted when unchanged...": 1 }
+  "outside": { "...bin/session_usage outside_summary() result, or omitted when unchanged...": 1 }
 }
 ```
 
@@ -252,6 +252,7 @@ serves from `factory/`:
 | Path | Answer |
 |---|---|
 | `dashboard.html` | the hub's copy of `factory/dashboard.html` (`$FACTORY_HUB_DASHBOARD`, default `../factory/dashboard.html` next to `hub/`, in the image `/app/factory/dashboard.html`) |
+| `job-summary.js` | `factory/job-summary.js`, read next to the dashboard file (in the image `/app/factory/job-summary.js`); the overview loads it from `/all/job-summary.js` |
 | `config.json` | the repo's last reported config (404 if none) |
 | `jobs/` | an HTML directory listing in `python -m http.server` format: `<a href="<id>/"><id>/</a>` per job |
 | `jobs/<id>/` | listing of that job's files and subdirectories (`round-1/`), plus `job.json` |

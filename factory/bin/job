@@ -113,6 +113,12 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.dont_write_bytecode = True  # no __pycache__ in factory/bin of the repos the factory runs in
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import session_usage  # noqa: E402  (factory/bin/session_usage.py)
+import jobfiles  # noqa: E402  (factory/bin/jobfiles.py: how a job folder reads)
+from jobfiles import first_line, header, section  # noqa: E402
+
 REPO = Path(__file__).resolve().parents[2]
 FACTORY = REPO / "factory"
 JOBS = FACTORY / "jobs"
@@ -393,13 +399,13 @@ def local_issue(key):
     }
 
 
-def commit_ticket(job, message):
+def commit_ticket(key, message):
     """Commit the ticket file in the main checkout, so status flips and the
     factory's comments don't pile up as uncommitted changes there. Only that
     one path is committed; nothing else the user has staged or changed."""
     if not CONFIG.get("commit_tickets", True):
         return
-    path = ticket_path(job["issue"])
+    path = ticket_path(key)
     rel = str(path.relative_to(REPO))
     if run(["git", "ls-files", "--error-unmatch", rel], check=False).returncode != 0:
         return  # an untracked .scratch/: the user doesn't keep tickets in git
@@ -503,25 +509,143 @@ def open_blockers(issue):
             if local_issue(f"{feature}/{nn}")["state"] == "OPEN"]
 
 
-def comment(kind, number, body):
-    if GITHUB:
-        gh(kind, "comment", str(number), "--body", f"{MARKER}\n{body}")
-    else:
-        append_comment(number, body)
+def pr_comment(number, body):
+    """A factory comment on a pull request: the merge workflow's, not a Ticket effect."""
+    gh("pr", "comment", str(number), "--body", f"{MARKER}\n{body}")
 
 
-def label(kind, number, add=None, remove=None):
-    """GitHub: add/remove labels. Local: a ticket has one Status, so `add` replaces it."""
-    if not GITHUB:
-        if add:
-            set_status(number, add)
-        return
-    args = [kind, "edit", str(number)]
-    if add:
-        args += ["--add-label", add]
-    if remove:
-        args += ["--remove-label", remove]
-    gh(*args)
+# ---- Ticket effects: what the factory writes on a ticket --------------------
+#
+# Job commands say what happened to a ticket, never how the tracker spells it:
+#
+#   TICKETS.wait(key, on)                   it waits on a human ("human") or for an answer ("info")
+#   TICKETS.resume(key, waited)             the wait is over: the ticket is back in the queue
+#   TICKETS.done(key, body, waited, why, protected_change=...)  completed, with its comment
+#   TICKETS.reject(key, body, waited, outcome)  turned away: `wontfix`, or `returned` to triage
+#   TICKETS.comment(key, body)              a factory comment; labels and Status stay as they are
+#
+# The adapter turns that into labels and `gh` calls on GitHub, or the Status
+# line, `## Comments` and ticket commit of a local ticket. MemoryTickets keeps
+# them in memory for lifecycle tests. Merging, PR state and branches are not
+# Ticket effects: the merge workflow (is_merged, cmd_merge) owns them.
+
+WAITS = {"human": "needs_human", "info": "needs_info"}  # what a ticket waits on → its LABELS role
+
+
+class GitHubTickets:
+    """Labels, comments and closing on a GitHub issue. Labels the factory
+    doesn't own stay; a comment starts with MARKER."""
+
+    def __init__(self, labels):
+        self.labels = labels
+
+    def _edit(self, key, add=None, remove=()):
+        remove = ",".join(x for x in remove if x)
+        if not (add or remove):
+            return
+        gh("issue", "edit", str(key), *(["--add-label", add] if add else []),
+           *(["--remove-label", remove] if remove else []))
+
+    def _waiting(self, waited):
+        return self.labels[WAITS[waited]] if waited else None
+
+    def comment(self, key, body):
+        gh("issue", "comment", str(key), "--body", f"{MARKER}\n{body}")
+
+    def wait(self, key, on="human"):
+        self._edit(key, add=self.labels[WAITS[on]], remove=[self.labels["queue"]])
+
+    def resume(self, key, waited="human"):
+        self._edit(key, add=self.labels["queue"], remove=[self._waiting(waited)])
+
+    def done(self, key, body, waited=None, why=None, *, protected_change=False):
+        if protected_change:
+            # Record the human's completion reason even if the label edit fails.
+            self.comment(key, body)
+        self._edit(key, remove=[self.labels["queue"], self._waiting(waited)])
+        if not protected_change:
+            self.comment(key, body)
+        self._close(key)  # merged is done, also when a human approved, merged or made it
+
+    def reject(self, key, body=None, waited=None, outcome="wontfix"):
+        if body:
+            self.comment(key, body)
+        self._edit(key, add=self.labels[outcome], remove=[self.labels["queue"], self._waiting(waited)])
+
+    def _close(self, key):
+        """Close the issue unless the merge already did (a PR into a non-default branch doesn't)."""
+        try:
+            if gh_json("issue", "view", str(key), "--json", "state")["state"] != "CLOSED":
+                gh("issue", "close", str(key), "--reason", "completed")
+        except Refused as e:
+            print(f"job: couldn't close issue #{key}: {e}", file=sys.stderr)
+
+
+class LocalTickets:
+    """The one Status line and the `## Comments` of a local Markdown ticket;
+    `Labels:` stay. Done commits the ticket file under commit_ticket's rules."""
+
+    def __init__(self, labels):
+        self.labels = labels
+
+    def comment(self, key, body):
+        append_comment(key, body)
+
+    def wait(self, key, on="human"):
+        set_status(key, self.labels[WAITS[on]])
+
+    def resume(self, key, waited="human"):
+        set_status(key, self.labels["queue"])
+
+    def done(self, key, body, waited=None, why=None, *, protected_change=False):
+        set_status(key, "done")
+        self.comment(key, body)
+        commit_ticket(key, f"chore(factory): close {key}" + (f"\n\n{why}" if why else ""))
+
+    def reject(self, key, body=None, waited=None, outcome="wontfix"):
+        if body:
+            self.comment(key, body)
+        set_status(key, self.labels[outcome])
+
+
+class MemoryTickets:
+    """Ticket effects kept in memory: lifecycle tests read `tickets` and
+    `effects` instead of a `gh` log or a ticket file."""
+
+    def __init__(self):
+        self.tickets = {}
+        self.effects = []
+
+    def ticket(self, key):
+        return self.tickets.setdefault(str(key), {"state": "OPEN", "status": "queue", "comments": []})
+
+    def comment(self, key, body):
+        self.ticket(key)["comments"].append(body)
+        self.effects.append(("comment", str(key)))
+
+    def wait(self, key, on="human"):
+        self.ticket(key)["status"] = WAITS[on]
+        self.effects.append(("wait", str(key), on))
+
+    def resume(self, key, waited="human"):
+        self.ticket(key)["status"] = "queue"
+        self.effects.append(("resume", str(key), waited))
+
+    def done(self, key, body, waited=None, why=None, *, protected_change=False):
+        t = self.ticket(key)
+        t["comments"].append(body)
+        t.update(state="CLOSED", status="done", why=why)
+        self.effects.append(("done", str(key), waited))
+
+    def reject(self, key, body=None, waited=None, outcome="wontfix"):
+        t = self.ticket(key)
+        if body:
+            t["comments"].append(body)
+        t["status"] = outcome
+        self.effects.append(("reject", str(key), outcome))
+
+
+TICKETS = (GitHubTickets if GITHUB else LocalTickets)(LABELS)
 
 
 # ---- Job files -------------------------------------------------------------
@@ -604,7 +728,7 @@ def load(job_id):
         die(f"no job {job_id}")
     if job_id not in _locks and job_id not in _busy and not take_lock(job_id):
         _busy[job_id] = lock_holder(job_id)
-    return json.loads(path.read_text())  # save() replaces it whole: safe to read without the lock
+    return jobfiles.read_job(path)  # save() replaces it whole: safe to read without the lock
 
 
 def save(job):
@@ -641,27 +765,6 @@ def resolve(arg):
     if not matches:
         die(f"no job for issue {key}")
     return matches[0]
-
-
-def first_line(path):
-    return path.read_text().split("\n", 1)[0].strip() if path.exists() else None
-
-
-def header(path):
-    """KEY: value lines at the top of an agent's file, up to the first blank line."""
-    fields = {}
-    for line in path.read_text().splitlines():
-        if not line.strip():
-            break
-        key, _, value = line.partition(":")
-        fields[key.strip().upper()] = value.strip()
-    return fields
-
-
-def section(path, heading):
-    """Body of a `## heading` section, or None."""
-    m = re.search(rf"^## {re.escape(heading)}\n(.*?)(?=^## |\Z)", path.read_text(), re.M | re.S)
-    return m.group(1).strip() if m else None
 
 
 def round_dir(job, n=None):
@@ -833,55 +936,14 @@ def cmd_comments(job, seen=False):
         print(f"### @{c['author']['login']}, {c['createdAt']}\n\n{quote(c['body'])}\n")
 
 
-# ---- Cost from Claude Code transcripts -------------------------------------
+# ---- Cost from Claude Code and Codex sessions ------------------------------
 
 
 def project_dir(path):
-    config = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude"))
-    return config / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(path))
-
-
-def user_text(entry):
-    msg = entry.get("message")
-    if entry.get("type") != "user" or not isinstance(msg, dict):
-        return ""
-    content = msg.get("content")
-    if isinstance(content, str):
-        return content
-    return " ".join(b.get("text", "") for b in content or [] if isinstance(b, dict))
-
-
-def transcripts(job):
-    """Claude Code transcripts that may belong to this job.
-
-    Orca starts each Claude worker as its own session, in the main checkout
-    (intake) or the job's worktree (everyone else), so look in both projects.
-    The subagent layout covers jobs run with the Agent tool.
-    """
-    for d in (project_dir(REPO), project_dir(job["worktree"])):
-        yield from d.glob("*.jsonl")
-        yield from d.glob("*/subagents/agent-*.jsonl")
+    return session_usage.claude_projects_root() / re.sub(r"[^A-Za-z0-9]", "-", str(path))
 
 
 _warned = set()
-ROLE_RE = re.compile(r"factory/agents/([\w-]+)\.md")
-
-
-def role_of(text):
-    """The worker's role, from `Your brief is <repo>/factory/agents/<role>.md`."""
-    m = ROLE_RE.search(text)
-    return m.group(1) if m else "unknown"
-
-
-def add_row(rows, role, agent, model, fresh, cached, output, cost):
-    """Sum into rows keyed by (role, agent, model)."""
-    row = rows.setdefault((role, agent, model), {
-        "role": role, "agent": agent, "model": model, "sessions": 0,
-        "input_tokens": 0, "cached_tokens": 0, "output_tokens": 0, "cost_usd": 0.0})
-    row["input_tokens"] += fresh
-    row["cached_tokens"] += cached
-    row["output_tokens"] += output
-    row["cost_usd"] += cost
 
 
 def warn_unpriced(model):
@@ -891,137 +953,22 @@ def warn_unpriced(model):
               file=sys.stderr)
 
 
-def cost_usd(job):
-    """API-equivalent cost of every Claude session whose brief names this job's folder.
+def job_cost(job):
+    """API-equivalent cost of every session whose brief names this job's folder.
 
-    Every factory brief contains `Job folder: <path>/`, which ties a transcript
-    to its job across sessions. Codex sessions are counted by codex_cost_usd.
-    A model with no price in config.json is skipped with a warning instead of
-    failing the command.
+    Every factory brief contains `Job folder: <path>/`, which ties a session to
+    its job. Orca starts each Claude worker in the main checkout (intake) or the
+    job's worktree (everyone else), so both Claude projects are read; Codex
+    rollouts from the job's start date on, in every Codex home. bin/session_usage
+    reads and prices them. A model with no price in config.json is skipped with
+    a warning instead of failing the command.
     """
-    needle = f"Job folder: {job_dir(job['id'])}/"
-    prices = CONFIG["prices_usd_per_mtok"]
-    total, rows = 0.0, {}
-    for path in transcripts(job):
-        usage_by_message, ours, role = {}, False, "unknown"
-        with path.open() as f:
-            for i, line in enumerate(f):
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not ours:
-                    if needle in user_text(entry):
-                        ours, role = True, role_of(user_text(entry))
-                    elif i > 40:
-                        break
-                    continue
-                msg = entry.get("message")
-                if entry.get("type") == "assistant" and isinstance(msg, dict) and msg.get("usage"):
-                    usage_by_message[msg["id"]] = (msg["model"], msg["usage"])
-        counted = set()
-        for model, u in usage_by_message.values():
-            tokens = (u.get("input_tokens", 0) + u.get("output_tokens", 0)
-                      + u.get("cache_creation_input_tokens", 0) + u.get("cache_read_input_tokens", 0))
-            if tokens == 0:
-                continue
-            if model not in prices:
-                warn_unpriced(model)
-                continue
-            p = prices[model]
-            split = u.get("cache_creation") or {}
-            write_1h = split.get("ephemeral_1h_input_tokens", 0)
-            write_5m = u.get("cache_creation_input_tokens", 0) - write_1h
-            cost = (u.get("input_tokens", 0) * p["input"]
-                    + u.get("output_tokens", 0) * p["output"]
-                    + write_5m * p["cache_write_5m"]
-                    + write_1h * p["cache_write_1h"]
-                    + u.get("cache_read_input_tokens", 0) * p["cache_read"]) / 1e6
-            total += cost
-            add_row(rows, role, "claude", model,
-                    u.get("input_tokens", 0) + u.get("cache_creation_input_tokens", 0),
-                    u.get("cache_read_input_tokens", 0), u.get("output_tokens", 0), cost)
-            counted.add((role, "claude", model))
-        for key in counted:
-            rows[key]["sessions"] += 1
-    return round(total, 2), rows
+    return session_usage.job_usage(
+        f"{job_dir(job['id'])}/",
+        [project_dir(REPO), project_dir(job["worktree"])],
+        session_usage.codex_session_dirs(CONFIG.get("codex_homes", [])),
+        CONFIG["prices_usd_per_mtok"], since=job["started"][:10], on_unpriced=warn_unpriced)
 
-
-# ---- Cost from Codex sessions ----------------------------------------------
-
-
-def codex_homes():
-    """Where Codex writes sessions: $CODEX_HOME or ~/.codex, and every account
-    Orca launches Codex workers with (~/.config/orca/codex-accounts/<id>/home)."""
-    homes = [Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))]
-    homes += sorted((Path.home() / ".config" / "orca" / "codex-accounts").glob("*/home"))
-    homes += [Path(p).expanduser() for p in CONFIG.get("codex_homes", [])]
-    return list(dict.fromkeys(homes))
-
-
-def codex_sessions(job):
-    """Rollout files from the job's start date on: sessions/YYYY/MM/DD/rollout-*.jsonl."""
-    start = job["started"][:10]
-    for home in codex_homes():
-        for path in (home / "sessions").glob("*/*/*/rollout-*.jsonl"):
-            day = "-".join(path.parts[-4:-1])
-            if day >= start:
-                yield path
-
-
-def codex_cost_usd(job):
-    """API-equivalent cost of every Codex session whose brief names this job's folder.
-
-    A rollout starts with session_meta, then the task, which holds the brief's
-    `Job folder: <path>/`. Its token_count events carry running totals for the
-    whole session, follow-up rounds included, so the last one counts. A session
-    found twice (two homes, a resumed file) counts once, at its largest total.
-    input_tokens includes cached and cache-write tokens; output_tokens includes
-    reasoning.
-    """
-    needle = f"Job folder: {job_dir(job['id'])}/"
-    prices = CONFIG["prices_usd_per_mtok"]
-    sessions = {}
-    for path in codex_sessions(job):
-        sid, model, total, ours, role = path.stem, None, None, False, "unknown"
-        with path.open() as f:
-            for i, line in enumerate(f):
-                if not ours and i > 60:
-                    break
-                if not ours and needle in line:
-                    ours, role = True, role_of(line)
-                if '"session_meta"' in line[:80] or '"turn_context"' in line[:80] or '"token_count"' in line:
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    p = entry.get("payload") or {}
-                    if entry.get("type") == "session_meta":
-                        sid = p.get("session_id") or p.get("id") or sid
-                    elif entry.get("type") == "turn_context":
-                        model = p.get("model") or model
-                    elif p.get("type") == "token_count" and p.get("info"):
-                        total = p["info"].get("total_token_usage") or total
-        if ours and total:
-            best = sessions.get(sid)
-            if not best or total.get("total_tokens", 0) > best[1].get("total_tokens", 0):
-                sessions[sid] = (model, total, role)
-    cost, rows = 0.0, {}
-    for model, u, role in sessions.values():
-        if model not in prices:
-            warn_unpriced(model)
-            continue
-        p = prices[model]
-        cached = u.get("cached_input_tokens", 0)
-        written = u.get("cache_write_input_tokens", 0)
-        fresh = u.get("input_tokens", 0) - cached - written
-        one = (fresh * p["input"] + cached * p["cached_input"]
-               + written * p.get("cache_write", p["input"])
-               + u.get("output_tokens", 0) * p["output"]) / 1e6
-        cost += one
-        add_row(rows, role, "codex", model, fresh + written, cached, u.get("output_tokens", 0), one)
-        rows[(role, "codex", model)]["sessions"] += 1
-    return round(cost, 2), rows
 
 
 # ---- Sync: fields derived from files ---------------------------------------
@@ -1062,24 +1009,24 @@ def sync(job):
         raise_risk(job["intake"])
     if job["round"]:
         rd = round_dir(job)
-        gate = header(rd / "checks.md").get("GATE") if (rd / "checks.md").exists() else None
-        job["gate"] = gate
+        gate = jobfiles.verdict("checks", rd / "checks.md")
+        job["gate"] = None if gate == jobfiles.PENDING else gate
         if job["agents"] and job["stage"] in {"review", "approve", "merging", "merged", "needs-human"}:
             job["reviews"], job["review_problems"] = {}, {}
             for r in reviewers(job):
                 f = rd / f"review-{r}.md"
-                line = first_line(f)
-                m = re.fullmatch(r"VERDICT:\s*(PASS|CHANGES)", line or "")
-                problem = review_problem(r, f, m, job if job["stage"] == "review" else None)
-                job["reviews"][r] = "pending" if line is None else "invalid" if problem else m.group(1)
-                if problem and line is not None:
+                v = jobfiles.verdict("review", f)
+                problem = review_problem(r, f, v, job if job["stage"] == "review" else None)
+                job["reviews"][r] = v if v == jobfiles.PENDING else "invalid" if problem else v
+                if problem and v != jobfiles.PENDING:
                     job["review_problems"][r] = problem
-    (claude, claude_rows), (codex, codex_rows) = cost_usd(job), codex_cost_usd(job)
+    totals, cost_rows = job_cost(job)
+    claude, codex = totals["claude"], totals["codex"]
     job["cost_by_agent"] = {"claude": claude, "codex": codex}
     # One row per role, agent and model, in pipeline order, for the dashboard.
     order = ["intake", "spec-writer", "builder", "reviewer-code", "reviewer-security",
              "reviewer-ux", "reviewer-ui", "approver"]
-    rows = list(claude_rows.values()) + list(codex_rows.values())
+    rows = list(cost_rows.values())
     rows.sort(key=lambda r: (order.index(r["role"]) if r["role"] in order else len(order), r["agent"]))
     for r in rows:
         r["cost_usd"] = round(r["cost_usd"], 4)
@@ -1496,7 +1443,7 @@ def stuck_disputes(job):
     now_answers, out = rounds.get(job["round"], {}), []
     for lens in reviewers(job):
         f = round_dir(job) / f"review-{lens}.md"
-        if first_line(f) != "VERDICT: CHANGES":
+        if jobfiles.verdict("review", f) != "CHANGES":
             continue
         for fid, (status, why) in review_findings(f)[1].items():
             key = f"{lens} {fid}"
@@ -1526,13 +1473,14 @@ def reset_findings(job):
 
 
 def review_problem(lens, path, verdict, job=None):
-    """Why a review file doesn't count, or None. A lens with required sections
+    """Why a review file doesn't count, or None: the Progression check on the
+    Verdict it declares (jobfiles.verdict). A lens with required sections
     (config.json `review_sections`, e.g. code: Standards and Spec) must have them.
     With `job` (a round under review): the verdict fits the findings'
     severities, and every finding the last round left open is answered."""
     if not path.exists():
         return None
-    if not verdict:
+    if verdict not in ("PASS", "CHANGES"):
         return "its first line isn't `VERDICT: PASS` or `VERDICT: CHANGES`"
     need = CONFIG.get("review_sections", {}).get(lens, [])
     missing = [h for h in need if section(path, h) is None]
@@ -1548,11 +1496,11 @@ def review_problem(lens, path, verdict, job=None):
                 f"round-{n}/review-{lens}.md: one line each, `F<n> resolved`, `F<n> still open: <why>` "
                 f"or `F<n> withdrawn: <why>`")
     still = open_findings(path)
-    if verdict.group(1) == "CHANGES" and not still:
+    if verdict == "CHANGES" and not still:
         return ("it says CHANGES but no finding is a blocker or a should: write each finding as "
                 "`F<n> [blocker|should|nit] <path:line> <problem and fix>` under `## Findings`; "
                 "a review with only nits is a PASS")
-    if verdict.group(1) == "PASS" and still:
+    if verdict == "PASS" and still:
         return (f"it says PASS but leaves {', '.join(still)} open (a blocker, a should or `still open`): "
                 f"that is CHANGES, or mark what doesn't block as [nit]")
     return None
@@ -1603,8 +1551,8 @@ def review_table(job):
 
     def cell(lens, n):
         f = round_dir(job, n) / f"review-{lens}.md"
-        m = re.fullmatch(r"VERDICT:\s*(PASS|CHANGES)", first_line(f) or "")
-        if not m:
+        v = jobfiles.verdict("review", f)
+        if v not in ("PASS", "CHANGES"):
             return "–"
         if section(f, "Skipped") is not None:
             return "carried"
@@ -1612,11 +1560,11 @@ def review_table(job):
         counts = [f"{sum(1 for s, _ in new.values() if s == sev)} {sev}" for sev in ("blocker", "should", "nit")
                   if any(s == sev for s, _ in new.values())]
         who = log.get(str(n), {}).get(lens)
-        return m.group(1) + (f" ({', '.join(counts)})" if counts else "") + (f"<br>{who}" if who else "")
+        return v + (f" ({', '.join(counts)})" if counts else "") + (f"<br>{who}" if who else "")
 
     def gate(n):
-        f = round_dir(job, n) / "checks.md"
-        return header(f).get("GATE", "–") if f.exists() else "–"
+        v = jobfiles.verdict("checks", round_dir(job, n) / "checks.md")
+        return "–" if v == jobfiles.PENDING else v
 
     rows = ["## Factory review", "", f"Rounds: {job['round']}", "",
             "| | " + " | ".join(f"Round {n}" for n in rounds) + " |", "| --- |" + " --- |" * len(rounds),
@@ -1991,33 +1939,19 @@ def advance(job, stage):
                 create_follow_ups(job)
             except Exception as e:
                 print(f"{job['id']}: couldn't file the follow-ups: {str(e).strip()[:200]}", file=sys.stderr)
-        body = merge_summary(job, rough)
-        if not GITHUB:
-            set_status(job["issue"], "done")
-            comment("issue", job["issue"], body)
-            commit_ticket(job, f"chore(factory): close {job['issue']}\n\n{job['title']} (factory job {job['id']})")
-        else:
-            waiting = {"needs-human": LABELS["needs_human"], "needs-info": LABELS["needs_info"]}.get(old)
-            label("issue", job["issue"], remove=",".join(x for x in (LABELS["queue"], waiting) if x))
-            comment("issue", job["issue"], body)
-            close_issue(job["issue"])  # merged is done, also when a human approved or merged it
+        waited = {"needs-human": "human", "paused": "human", "needs-info": "info"}.get(old)
+        TICKETS.done(job["issue"], merge_summary(job, rough), waited=waited,
+                     why=f"{job['title']} (factory job {job['id']})")
 
     elif stage == "rejected" and (old in WAITING | REJECTABLE or (old == "intake" and (d / "rejection.md").exists())):
         require((d / "rejection.md").exists(), "use `job reject` to reject a job")
         reason = (d / "rejection.md").read_text().split("\n", 1)[1].strip()
-        waiting = LABELS["needs_info"] if old == "needs-info" else LABELS["needs_human"]  # paused too
+        waited = "info" if old == "needs-info" else "human"  # paused too
         if job.get("protected_only") and old == "needs-human":  # a human made the change by hand
-            comment("issue", job["issue"], f"### Factory: closed, a human made this change\n\n{reason}")
-            if GITHUB:
-                label("issue", job["issue"], remove=f"{LABELS['queue']},{waiting}")
-                close_issue(job["issue"])
-            else:
-                set_status(job["issue"], "done")
-                commit_ticket(job, f"chore(factory): close {job['issue']}\n\n{job['title']} "
-                                   f"(made by hand, factory job {job['id']})")
+            TICKETS.done(job["issue"], f"### Factory: closed, a human made this change\n\n{reason}", waited=waited,
+                         why=f"{job['title']} (made by hand, factory job {job['id']})", protected_change=True)
         else:
-            comment("issue", job["issue"], f"### Factory: rejected\n\n{reason}")
-            label("issue", job["issue"], add=LABELS["wontfix"], remove=f"{LABELS['queue']},{waiting}")
+            TICKETS.reject(job["issue"], f"### Factory: rejected\n\n{reason}", waited=waited)
         if job["pr"] and GITHUB:
             gh("pr", "close", str(job["pr"]))
             run(["git", "push", "origin", "--delete", job["branch"]], check=False)
@@ -2050,7 +1984,7 @@ def advance(job, stage):
                 run(["git", "worktree", "add", "-b", job["branch"], job["worktree"], jref(job)])
                 job["fork_point"] = run(["git", "rev-parse", jref(job)]).stdout.strip()
                 setup_worktree(job["worktree"], job_dir(job["id"]) / "worktree-setup.log")
-        comment("issue", job["issue"], f"{title}\n\n{intake_body()}")
+        TICKETS.comment(job["issue"], f"{title}\n\n{intake_body()}")
         if stage != "spec":  # an accepted job files them when it merges: a human may still take them back in
             create_follow_ups(job)
         if stage == "spec" and spec_from_intake(job):
@@ -2061,9 +1995,9 @@ def advance(job, stage):
                 next_round(job)
                 stage = "build"
         if stage == "needs-info":
-            label("issue", job["issue"], add=LABELS["needs_info"], remove=LABELS["queue"])
+            TICKETS.wait(job["issue"], on="info")
         elif stage == "rejected":
-            label("issue", job["issue"], add=LABELS["returned"], remove=LABELS["queue"])
+            TICKETS.reject(job["issue"], outcome="returned")
 
     elif old == "needs-info":
         require_slot(job["id"])
@@ -2071,7 +2005,7 @@ def advance(job, stage):
         (d / "intake.md").rename(d / f"intake-{k}.md")
         job["intake"] = None
         write_issue_md(job)
-        label("issue", job["issue"], add=LABELS["queue"], remove=LABELS["needs_info"])
+        TICKETS.resume(job["issue"], waited="info")
 
     elif old == "spec" and stage == "needs-human":
         require((d / "spec.md").exists(), "spec.md doesn't exist")
@@ -2143,10 +2077,11 @@ def advance(job, stage):
         checks = round_dir(job) / "checks.md"
         require(checks.exists(), f"run the gate first: factory/bin/gate {job['id']}")
         h = header(checks)
+        gate = jobfiles.verdict("checks", checks)
         require(h.get("COMMIT") == git(job, "rev-parse", "HEAD").stdout.strip(),
                 "checks.md was written for another commit; run the gate again")
         if stage == "review":
-            require(h.get("GATE") == "PASS", "the gate didn't pass")
+            require(gate == "PASS", "the gate didn't pass")
             job["reviews"] = {r: "pending" for r in reviewers(job)}
             job["review_head"] = h["COMMIT"]
             k = merge_only_from(job, h["COMMIT"])
@@ -2157,7 +2092,8 @@ def advance(job, stage):
                 r: describe(e) for r, e in job["agents"]["reviewers"].items() if r not in job["skipped_reviews"]}
             record_diff(job, h["COMMIT"])
         else:
-            require(h.get("GATE") == "FAIL", "the gate passed")
+            require(gate == "FAIL", "the gate passed" if gate == "PASS"
+                    else "checks.md's first line isn't `GATE: PASS` or `GATE: FAIL`; run the gate again")
             last = job["round"] >= job["round_limit"]
             require(last == (stage == "needs-human"),
                     f"round {job['round']} of {job['round_limit']}: go to {'needs-human' if last else 'build'}")
@@ -2220,7 +2156,7 @@ def advance(job, stage):
                 and (d / "approval.md").stat().st_mtime > (d / "decision.md").stat().st_mtime,
                 "use `job approve` to merge an escalated job")
         job["approved"] = {"round": job["round"], "head": job.get("review_head"), "by": "human"}
-        label("issue", job["issue"], add=LABELS["queue"], remove=LABELS["needs_human"])
+        TICKETS.resume(job["issue"])
 
     elif old == "needs-human":
         feedback = sorted(d.glob("feedback-*.md"))
@@ -2232,7 +2168,7 @@ def advance(job, stage):
         job.pop("reviewed_at", None)  # and no round after it is merge-only
         job.pop("approved", None)
         next_round(job)
-        label("issue", job["issue"], add=LABELS["queue"], remove=LABELS["needs_human"])
+        TICKETS.resume(job["issue"])
 
     elif old == "merging" and stage == "build":
         require(job.get("merge_back"), "only `job merge` sends a job back from merging")
@@ -2251,10 +2187,10 @@ def advance(job, stage):
         if job["pr"]:
             if gh_json("pr", "view", str(job["pr"]), "--json", "isDraft")["isDraft"]:
                 gh("pr", "ready", str(job["pr"]))
-            comment("pr", job["pr"], body)
+            pr_comment(job["pr"], body)
         else:
-            comment("issue", job["issue"], body)
-        label("issue", job["issue"], add=LABELS["needs_human"], remove=LABELS["queue"])
+            TICKETS.comment(job["issue"], body)
+        TICKETS.wait(job["issue"])
 
     if stage in TERMINAL and Path(job["worktree"]).exists():
         remove_worktree(job["worktree"], teardown=job_dir(job["id"]) / "worktree-teardown.log")
@@ -2611,7 +2547,7 @@ def create_follow_ups(job):
         job.setdefault("follow_ups", []).append({"title": title, "issue": ref})
         created.append(f"{ref}: {title}")
     if created:
-        comment("issue", job["issue"], "### Factory: follow-ups filed\n\n"
+        TICKETS.comment(job["issue"], "### Factory: follow-ups filed\n\n"
                 + "\n".join(f"- {c}" for c in created)
                 + f"\n\nThey wait as `{LABELS['returned']}` for triage.")
     return created
@@ -2915,7 +2851,7 @@ def ask_human_early(job):
         return
     if any(a.get("after") == "spec" for a in job.get("accepted") or []):
         return
-    comment("issue", job["issue"],
+    TICKETS.comment(job["issue"],
             f"### Factory: questions for a human while {job['id']} builds\n\n"
             + "\n".join(f"{i}. {t}" for i, t in enumerate(items, 1))
             + "\n\nReply here, numbered like the list. The build goes on meanwhile; an item still open "
@@ -2950,32 +2886,32 @@ def pause(job, after, resume):
     job["paused"] = {"after": after, "resume": resume, "at": now()}
     if after == "budget":
         limit = job.get("cost_allowance", CONFIG["max_cost_usd"])
-        comment("issue", job["issue"],
+        TICKETS.comment(job["issue"],
                 f"### Factory: paused, over budget\n\nThis job has cost ${job['cost_usd']:.2f} "
                 f"(API-equivalent), over its ${limit:.2f} allowance (`max_cost_usd`). Resume to allow "
                 f"another ${CONFIG['max_cost_usd']:.2f}, give feedback to change course, or reject it.")
-        return label("issue", job["issue"], add=LABELS["needs_human"], remove=LABELS["queue"])
+        return TICKETS.wait(job["issue"])
     if after == "dependencies":
         deps = "\n".join(f"- {x}" for x in new_dependencies(job))
-        comment("issue", job["issue"],
+        TICKETS.comment(job["issue"],
                 f"### Factory: new dependencies need your OK\n\nThe spec adds:\n\n{deps}\n\nResume to "
                 f"approve them (the approver then won't ask again), edit `factory/jobs/{job['id']}/spec.md` "
                 f"to drop one, or send feedback.")
-        return label("issue", job["issue"], add=LABELS["needs_human"], remove=LABELS["queue"])
+        return TICKETS.wait(job["issue"])
     todo = needs_a_human(job) if after == "spec" else []
     if todo:
         items = "\n".join(f"- {x}" for x in todo)
-        comment("issue", job["issue"],
+        TICKETS.comment(job["issue"],
                 f"### Factory: paused after spec, needs you\n\nBefore this job is built, the spec "
                 f"needs from you:\n\n{items}\n\nDo them, then resume with the result of each, one line per item "
                 f"(it goes to accepted.md for the approver). Review `factory/jobs/{job['id']}/spec.md` "
                 f"too if you like; your edits are binding. Or send feedback, or reject the job.")
-        return label("issue", job["issue"], add=LABELS["needs_human"], remove=LABELS["queue"])
+        return TICKETS.wait(job["issue"])
     f = "intake.md" if after == "intake" else "spec.md"
-    comment("issue", job["issue"],
+    TICKETS.comment(job["issue"],
             f"### Factory: paused after {after}\n\nReview `factory/jobs/{job['id']}/{f}`. Edit it if you want "
             f"(your version is binding), then resume. Or send feedback to redo it, or reject the job.")
-    label("issue", job["issue"], add=LABELS["needs_human"], remove=LABELS["queue"])
+    TICKETS.wait(job["issue"])
 
 
 def append_binding_note(path):
@@ -3043,7 +2979,7 @@ def cmd_resume(job, note=""):
         print(f"{job['id']}: no result recorded for {len(todo)} Needs-a-human item(s) in spec.md; "
               "the approver escalates each one nobody answered", file=sys.stderr)
     sync(job)
-    label("issue", job["issue"], add=LABELS["queue"], remove=LABELS["needs_human"])
+    TICKETS.resume(job["issue"])
     job["stage"], job["ended"] = p["resume"], None
     job.pop("paused")
     if job["stage"] == "build":  # it may have waited for hours: build on the current base
@@ -3100,7 +3036,7 @@ def cmd_rewind(job, target, text):
         reopened = reopen_slices(job, f"feedback-{k}.md")
     job.pop("paused", None)
     job.pop("protected_only", None)
-    label("issue", job["issue"], add=LABELS["queue"], remove=LABELS["needs_human"])
+    TICKETS.resume(job["issue"])
     job["stage"], job["ended"] = target, None
     job.setdefault("history", []).append({"stage": target, "round": job["round"], "at": now(), "t": time.time()})
     save(job)
@@ -4043,15 +3979,6 @@ def merged_by_hand(job):
     return job.get("stage") not in {"merging"} and bool(job.get("pr"))
 
 
-def close_issue(number):
-    """Close a GitHub issue the merge didn't close (a PR into a non-default branch doesn't)."""
-    try:
-        if gh_json("issue", "view", str(number), "--json", "state")["state"] != "CLOSED":
-            gh("issue", "close", str(number), "--reason", "completed")
-    except Refused as e:
-        print(f"job: couldn't close issue #{number}: {e}", file=sys.stderr)
-
-
 def friction(job):
     """What made this job harder than one clean pass, or [] for a clean job."""
     d = job_dir(job["id"])
@@ -4071,9 +3998,9 @@ def friction(job):
             out.append(f"the merge failed in {rd.name}")
         if first_line(rd / "base-sync.md") == "SYNC: CONFLICT":
             out.append(f"a base conflict in {rd.name}")
-        if first_line(rd / "checks.md") == "GATE: FAIL":
+        if jobfiles.verdict("checks", rd / "checks.md") == "FAIL":
             out.append(f"the gate failed in {rd.name}")
-        if any(first_line(f) == "VERDICT: CHANGES" for f in rd.glob("review-*.md")):
+        if any(jobfiles.verdict("review", f) == "CHANGES" for f in rd.glob("review-*.md")):
             out.append(f"reviews asked for changes in {rd.name}")
     limit = CONFIG.get("retro_cost_usd")
     if limit and job.get("cost_usd", 0) > limit:
@@ -4198,7 +4125,7 @@ def unlocked(job):
     finally:
         if lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-        fresh = json.loads((job_dir(job["id"]) / "job.json").read_text())
+        fresh = jobfiles.load_job(JOBS, job["id"])
         job.clear()
         job.update(fresh)
 
@@ -4394,7 +4321,7 @@ def cmd_main_ci(job):
     head = (f"### Factory: CI failed on {base} after the merge" if failed
             else f"### Factory: CI on {base} still running after the merge")
     try:
-        comment("issue", job["issue"], f"{head}\n\nPR #{job['pr']} merged as {sha[:7]}.\n\n"
+        TICKETS.comment(job["issue"], f"{head}\n\nPR #{job['pr']} merged as {sha[:7]}.\n\n"
                 + "\n".join(f"- {l}" if not l.startswith("- ") else l
                             for l in ci_summary(job, sha, ci).splitlines())
                 + f"\n\nThe job stays merged; fix it on {base}. Details: factory/jobs/{job['id']}/{rel}"
@@ -4513,7 +4440,7 @@ def cmd_approve(job):
     if job["stage"] != "needs-human":
         die(f"{job['id']} is in {job['stage']}, not needs-human")
     rd = round_dir(job)
-    gate_ok = (rd / "checks.md").exists() and header(rd / "checks.md").get("GATE") == "PASS"
+    gate_ok = jobfiles.verdict("checks", rd / "checks.md") == "PASS"
     reviews_ok = bool(job["reviews"]) and all(v == "PASS" for v in job["reviews"].values())
     if not (gate_ok and reviews_ok):
         die(f"round {job['round']} has no passing gate and reviews to approve; "
@@ -4776,7 +4703,7 @@ def peer_jobs():
     """Every job, read without taking its lock: a `job merge` holds its job for minutes."""
     if not JOBS.exists():
         return []
-    return [json.loads((p / "job.json").read_text()) for p in sorted(JOBS.iterdir()) if (p / "job.json").exists()]
+    return [jobfiles.read_job(p / "job.json") for p in sorted(JOBS.iterdir()) if (p / "job.json").exists()]
 
 
 def overlap(job):
@@ -5163,7 +5090,7 @@ def next_gate(job, since):
     head = git(job, "rev-parse", "HEAD").stdout.strip()
     if not f.exists() or header(f).get("COMMIT") != head:
         return [("run", f"factory/bin/gate {i}")]
-    if header(f).get("GATE") == "PASS":
+    if jobfiles.verdict("checks", f) == "PASS":
         return [("advance", f"{JOB} advance {i} review")]
     return [("advance", f"{JOB} advance {i} {after_round(job)}")]
 
@@ -5195,13 +5122,13 @@ def next_review(job, since):
     verdicts = {}
     for lens in reviewers(job):
         f = rd / f"review-{lens}.md"
-        m = re.fullmatch(r"VERDICT:\s*(PASS|CHANGES)", first_line(f) or "")
-        problem = review_problem(lens, f, m, job)
+        v = jobfiles.verdict("review", f)
+        problem = review_problem(lens, f, v, job)
         if problem:
             out.append(("send", f"{JOB} send {i} reviewer-{lens} "
                         + shlex.quote(f"review-{lens}.md does not count: {problem}. Fix it and report again.")))
         else:
-            verdicts[lens] = m.group(1)
+            verdicts[lens] = v
     if out:
         return out
     if all(v == "PASS" for v in verdicts.values()):

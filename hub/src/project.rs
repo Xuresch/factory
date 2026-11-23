@@ -13,7 +13,7 @@ use serde_json::{Map, Value};
 use crate::store::{int, opt, real, text, Param, Statement};
 use crate::util::parse_iso;
 
-pub const PROJECTION_VERSION: i64 = 1;
+pub const PROJECTION_VERSION: i64 = 3;
 
 pub const LIVE: [&str; 7] = [
     "intake", "spec", "build", "gate", "review", "approve", "merging",
@@ -35,15 +35,33 @@ pub fn stage_group(stage: &str) -> &'static str {
     }
 }
 
-/// The verdict a checks/review file's first line states, as dashboard.html reads it.
-pub fn verdict(first_line: Option<&str>) -> Option<String> {
+/// The kind of round artifact a Verdict is read from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Artifact {
+    /// round-N/checks.md: `GATE: PASS | FAIL`
+    Checks,
+    /// round-N/review-<lens>.md: `VERDICT: PASS | CHANGES`
+    Review,
+}
+
+impl Artifact {
+    fn declaration(self) -> (&'static str, &'static [&'static str]) {
+        match self {
+            Artifact::Checks => ("GATE:", &["PASS", "FAIL"]),
+            Artifact::Review => ("VERDICT:", &["PASS", "CHANGES"]),
+        }
+    }
+}
+
+/// The Verdict an artifact's first line declares, the rule of factory/bin/jobfiles.py
+/// and dashboard.html: None (pending) without the file; "invalid" unless the line is
+/// the kind's prefix, optional whitespace and one of its values.
+pub fn verdict(kind: Artifact, first_line: Option<&str>) -> Option<String> {
     let line = first_line?.trim();
-    let rest = line
-        .strip_prefix("VERDICT:")
-        .or_else(|| line.strip_prefix("GATE:"))
-        .map(str::trim);
-    Some(match rest {
-        Some(v @ ("PASS" | "CHANGES" | "FAIL")) => v.to_owned(),
+    let (prefix, values) = kind.declaration();
+    let value = line.strip_prefix(prefix).map(str::trim_start);
+    Some(match value {
+        Some(v) if values.contains(&v) => v.to_owned(),
         _ => "invalid".to_owned(),
     })
 }
@@ -154,7 +172,7 @@ pub struct Projection {
 }
 
 /// The projected columns of `jobs`, after id, checkout_id, job_key, doc, doc_hash.
-pub const JOB_COLUMNS: [&str; 52] = [
+pub const JOB_COLUMNS: [&str; 53] = [
     "projection_version",
     "title",
     "stage",
@@ -193,6 +211,7 @@ pub const JOB_COLUMNS: [&str; 52] = [
     "cost_claude",
     "cost_codex",
     "cost_other",
+    "cost_split",
     "input_tokens",
     "cached_tokens",
     "output_tokens",
@@ -388,6 +407,8 @@ pub fn project(doc: &Value, lines: &HashMap<String, String>, seen: &Seen<'_>) ->
     let (claude, codex) = (agent_cost("claude"), agent_cost("codex"));
     let rest = cost_usd - claude - codex;
     let other = if rest > 0.005 { rest } else { 0.0 };
+    // the split as recorded, so a page can tell a recorded zero from a missing split
+    let cost_split = obj(g("cost_by_agent")).map(|m| Value::Object(m.clone()).to_string());
 
     // rounds: gate verdict, diff size, continues
     let round = i(g("round"));
@@ -414,6 +435,7 @@ pub fn project(doc: &Value, lines: &HashMap<String, String>, seen: &Seen<'_>) ->
     for &r in &rounds {
         let size = diff_sizes.and_then(|d| d.get(&r.to_string()));
         let gate = verdict(
+            Artifact::Checks,
             lines
                 .get(&format!("round-{r}/checks.md"))
                 .map(String::as_str),
@@ -459,7 +481,10 @@ pub fn project(doc: &Value, lines: &HashMap<String, String>, seen: &Seen<'_>) ->
                     })
             });
             let (agent, model, effort) = who.unwrap_or((None, None, None));
-            let v = verdict(lines.get(&format!("{prefix}{lens}.md")).map(String::as_str));
+            let v = verdict(
+                Artifact::Review,
+                lines.get(&format!("{prefix}{lens}.md")).map(String::as_str),
+            );
             children.push((
                 INS_ROUND_REVIEW,
                 vec![
@@ -663,6 +688,7 @@ pub fn project(doc: &Value, lines: &HashMap<String, String>, seen: &Seen<'_>) ->
         real(claude),
         real(codex),
         real(other),
+        opt(cost_split.as_deref()),
         int(tokens_in),
         int(tokens_cached),
         int(tokens_out),
@@ -715,13 +741,136 @@ mod tests {
 
     #[test]
     fn verdict_reads_like_the_dashboard() {
-        assert_eq!(verdict(None), None);
-        assert_eq!(verdict(Some("GATE: PASS")).as_deref(), Some("PASS"));
+        use Artifact::{Checks, Review};
+        assert_eq!(verdict(Checks, None), None);
+        assert_eq!(verdict(Checks, Some("GATE: PASS")).as_deref(), Some("PASS"));
         assert_eq!(
-            verdict(Some("VERDICT: CHANGES")).as_deref(),
+            verdict(Review, Some("VERDICT: CHANGES")).as_deref(),
             Some("CHANGES")
         );
-        assert_eq!(verdict(Some("# Review")).as_deref(), Some("invalid"));
+        assert_eq!(
+            verdict(Review, Some("# Review")).as_deref(),
+            Some("invalid")
+        );
+        // each kind has its own prefix and values
+        assert_eq!(
+            verdict(Review, Some("GATE: PASS")).as_deref(),
+            Some("invalid")
+        );
+        assert_eq!(
+            verdict(Review, Some("VERDICT: FAIL")).as_deref(),
+            Some("invalid")
+        );
+        assert_eq!(
+            verdict(Checks, Some("GATE: CHANGES")).as_deref(),
+            Some("invalid")
+        );
+        assert_eq!(
+            verdict(Checks, Some("VERDICT: PASS")).as_deref(),
+            Some("invalid")
+        );
+    }
+
+    /// Every file of a job folder in factory/tests/fixtures/, as the reporter sends it
+    /// (UTF-8 with U+FFFD for bad bytes): job.json and the first line of each .md.
+    fn fixture(name: &str) -> (Value, HashMap<String, String>, Value) {
+        fn walk(dir: &std::path::Path, root: &std::path::Path, out: &mut HashMap<String, String>) {
+            for e in std::fs::read_dir(dir).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    walk(&p, root, out);
+                } else {
+                    let rel = p
+                        .strip_prefix(root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    let (rel, bytes) = if rel.ends_with(".md") {
+                        (rel.as_str(), std::fs::read(&p).unwrap())
+                    } else if let Some(rel) =
+                        rel.strip_suffix(".hex").filter(|p| p.ends_with(".md"))
+                    {
+                        // Keep invalid UTF-8 out of the old updater's input.
+                        let bytes = std::fs::read_to_string(&p)
+                            .unwrap()
+                            .split_ascii_whitespace()
+                            .map(|byte| u8::from_str_radix(byte, 16).unwrap())
+                            .collect();
+                        (rel, bytes)
+                    } else {
+                        continue;
+                    };
+                    out.insert(
+                        rel.to_owned(),
+                        first_line(&String::from_utf8_lossy(&bytes)).to_owned(),
+                    );
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../factory/tests/fixtures")
+            .join(name);
+        let read = |f: &str| -> Value {
+            serde_json::from_str(&std::fs::read_to_string(root.join(f)).unwrap()).unwrap()
+        };
+        let mut lines = HashMap::new();
+        walk(&root, &root, &mut lines);
+        (read("job.json"), lines, read("expected.json"))
+    }
+
+    #[test]
+    fn verdicts_match_the_shared_fixtures() {
+        let (doc, lines, expected) = fixture("verdicts");
+        let want = |path: &str| -> Param {
+            match expected["verdicts"][path].as_str() {
+                None | Some("pending") => Param::Null,
+                Some(v) => text(v),
+            }
+        };
+        let p = project(&doc, &lines, &seen());
+        let rounds = rows(&p, INS_ROUND);
+        assert_eq!(rounds.len(), 16);
+        for r in &rounds {
+            let path = format!(
+                "round-{}/checks.md",
+                match r[0] {
+                    Param::Integer(n) => n,
+                    _ => unreachable!(),
+                }
+            );
+            assert_eq!(r[1], want(&path), "{path}");
+        }
+        let reviews = rows(&p, INS_ROUND_REVIEW);
+        let mut seen_paths = 0;
+        for r in &reviews {
+            let (Param::Integer(n), Param::Text(lens)) = (&r[0], &r[1]) else {
+                unreachable!()
+            };
+            let path = format!("round-{n}/review-{lens}.md");
+            assert_eq!(r[2], want(&path), "{path}");
+            seen_paths += 1;
+        }
+        let reviews_expected = expected["verdicts"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .filter(|k| k.contains("/review-"))
+            .count();
+        assert_eq!(
+            seen_paths, reviews_expected,
+            "every review artifact is projected"
+        );
+        // the historical round keeps the reviewers its review_log recorded
+        for (lens, who) in expected["reviewers"]["1"].as_object().unwrap() {
+            let row = reviews
+                .iter()
+                .find(|r| r[0] == int(1) && r[1] == text(lens))
+                .unwrap();
+            for (n, key) in [(3, "agent"), (4, "model"), (5, "effort")] {
+                let want = who[key].as_str().map_or(Param::Null, text);
+                assert_eq!(row[n], want, "round 1 {lens} {key}");
+            }
+        }
     }
 
     #[test]
@@ -841,6 +990,23 @@ mod tests {
         assert_eq!(rows(&p, INS_SURFACE).len(), 2);
         assert_eq!(rows(&p, INS_APPROVAL).len(), 2);
         assert_eq!(rows(&p, INS_FINDING)[1][2], text("ui"));
+    }
+
+    #[test]
+    fn cost_split_keeps_what_was_recorded() {
+        let split = |doc: serde_json::Value| {
+            col(&project(&doc, &HashMap::new(), &seen()), "cost_split").clone()
+        };
+        assert_eq!(
+            split(json!({"cost_usd": 3.0, "cost_by_agent": {"claude": 0, "codex": 0}})),
+            text(r#"{"claude":0,"codex":0}"#)
+        );
+        assert_eq!(
+            split(json!({"cost_usd": 3.0, "cost_by_agent": {}})),
+            text("{}")
+        );
+        assert_eq!(split(json!({"cost_usd": 12.0})), Param::Null);
+        assert_eq!(split(json!({"cost_by_agent": "x"})), Param::Null);
     }
 
     #[test]

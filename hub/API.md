@@ -25,6 +25,7 @@ moving from job.json to the API changes little.
   "started": "…", "ended": null, "last_activity": "…",
   "duration_s": 3600, "wait_s": 600, "work_s": 3000,
   "cost_usd": 9.29, "cost_by_agent": {"claude": 5.2, "codex": 4.0, "other": 0.09},
+  "cost_split": {"claude": 5.2, "codex": 4.0},
   "tokens": {"input": 1, "cached": 2, "output": 3},
   "cost_breakdown": [{"role": "builder-s1", "role_base": "builder", "agent": "claude",
                       "model": "claude-opus-5-5", "sessions": 1, "input_tokens": 1,
@@ -45,10 +46,16 @@ moving from job.json to the API changes little.
 }
 ```
 
+`cost_by_agent` is derived (projected columns; `other` is what the total holds beyond
+claude and codex). `cost_split` is the split as job.json recorded it, null when it
+recorded none; the pages resolve the Agent split from it, `cost_breakdown` and
+`cost_usd` (`factory/job-summary.js`).
+
 `cost_breakdown` is job_costs by seq (a handful of rows per job; the costs pages
 aggregate it per model and role over any range of jobs). `paused` is null unless `paused_after` is set. `rounds[].gate` / `reviews[lens]`
-are the verdicts read from `round-N/checks.md` / `round-N/review-<lens>.md`
-(`PASS`, `CHANGES`, `FAIL`, `invalid`, or null when the file is not there yet).
+are the Verdicts the first lines of `round-N/checks.md` / `round-N/review-<lens>.md`
+declare: `GATE: PASS|FAIL` and `VERDICT: PASS|CHANGES`, whitespace after the colon
+allowed; `invalid` for any other first line, null when the file is not there yet.
 
 ## Endpoints
 

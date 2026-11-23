@@ -8,9 +8,9 @@ on:
   push:
     branches: [main]
     tags: ["hub-v*"]
-    paths: ["hub/**", "factory/dashboard.html", ".github/workflows/hub-image.yml"]
+    paths: ["hub/**", "factory/dashboard.html", "factory/job-summary.js", ".github/workflows/hub-image.yml"]
   pull_request:
-    paths: ["hub/**", "factory/dashboard.html", ".github/workflows/hub-image.yml"]
+    paths: ["hub/**", "factory/dashboard.html", "factory/job-summary.js", ".github/workflows/hub-image.yml"]
   workflow_dispatch:
 
 permissions:

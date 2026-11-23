@@ -204,6 +204,8 @@ elif cmd[0] == "api" and any(a.startswith("repos/{owner}/{repo}/") for a in args
     pages = [items[i:i + 2] for i in range(0, len(items), 2)] or [[]]
     print("".join(json.dumps(p) for p in (pages if "--paginate" in args else pages[:1])))
 elif cmd == ["issue", "edit"]:  # --add-label / --remove-label (comma-separated) change issue-<n>.json
+    if (d / "edit-fail").exists():
+        sys.exit("HTTP 403: Resource not accessible by integration")
     i = load(f"issue-{args[2]}.json")
     drop = (opt("--remove-label") or "").split(",") + (opt("--add-label") or "").split(",")
     i["labels"] = [l for l in i["labels"] if l["name"] not in drop]
@@ -211,7 +213,9 @@ elif cmd == ["issue", "edit"]:  # --add-label / --remove-label (comma-separated)
     save(f"issue-{args[2]}.json", i)
 elif cmd in (["issue", "comment"], ["pr", "comment"], ["pr", "close"]):
     pass
-elif cmd == ["issue", "close"]:
+elif cmd == ["issue", "close"]:  # close-fail: GitHub refuses
+    if (d / "close-fail").exists():
+        sys.exit("HTTP 403: Resource not accessible by integration")
     i = load(f"issue-{args[2]}.json"); i["state"] = "CLOSED"; save(f"issue-{args[2]}.json", i)
 elif cmd == ["pr", "create"]:
     save("pr.json", {"number": 7, "url": "https://github.com/o/r/pull/7", "headRefName": opt("--head"), "title": opt("--title"),
@@ -1554,6 +1558,24 @@ t_gh_hand_merge_closes_issue() {
   check "summary says by hand" "$(cat "$GH_LOG")" "Merged by a human."
 }
 
+t_gh_hand_merge_clears_paused_wait_label() {
+  new_gh_repo ghpausedmerge; gh_issue 1 One
+  gh_issue_set 1 'i["labels"].append({"name": "ui"})'
+  mkdir -p docs/agents
+  printf '| ready-for-human | `awaiting-human` |\n' > docs/agents/triage-labels.md
+  local id; id=$(gh_to_approve 1) || return 1
+  set_config max_cost_usd -1
+  J advance "$id" approve >/dev/null || return 1
+  check "paused for a human" "$(field "$id" "d['stage']")" "paused" &&
+  check "configured waiting label applied" "$(gh_labels_of 1)" "['awaiting-human', 'ui']" || return 1
+
+  gh_pr_set 'pr["state"] = "MERGED"'
+  J queue >/dev/null || return 1
+  check "merged" "$(field "$id" "d['stage']")" "merged" &&
+  check "issue closed" "$(python3 -c "import json; print(json.load(open('$GH/issue-1.json'))['state'])")" "CLOSED" &&
+  check "only the unrelated label remains" "$(gh_labels_of 1)" "['ui']"
+}
+
 t_gate_strips_coauthor_trailers() {
   new_repo trailers; ticket 01 One; commit_all
   local id; id=$(to_build 01 low none)
@@ -1704,6 +1726,12 @@ print(json.dumps(d.subscriptions()))'
   unset XDG_CONFIG_HOME
 }
 
+t_job_summary() {  # factory/job-summary.js and the dashboard's use of it, under node
+  if ! command -v node >/dev/null; then echo "    FAIL: needs node"; return 1; fi
+  local out; out=$(node --test "$FACTORY_SRC/tests/job_summary.test.js" 2>&1)
+  check "node --test factory/tests/job_summary.test.js" "$out" "ℹ fail 0"
+}
+
 t_dashboard_outside() {
   new_repo dashout; commit_all
   local h="$TMP_ROOT/dashout/home"; local cl="$h/.claude/projects/-x" cx="$h/.codex/sessions/2026/11/14"
@@ -1743,6 +1771,76 @@ print(json.dumps({"untouched": untouched, "kept": r3 == r, "months": {k: {a: rou
   check "cache written" "[$(test -s "$h/.cache/factory/usage.json" && echo y)]" "[y]" &&
   check "nothing new, cache not rewritten" "$out" '"untouched": true' &&
   check "deleted transcripts keep counting" "$out" '"kept": true'
+}
+
+t_dashboard_outside_matches_report() {
+  new_repo outsideagree; commit_all
+  local h="$TMP_ROOT/outsideagree/home"; mkdir -p "$h/.claude/projects/-x" "$h/.codex/sessions/2026/11/14"
+  printf '%s\n' '{"type":"user","cwd":"/w/app","message":{"role":"user","content":"hi"}}' \
+    '{"type":"assistant","timestamp":"2026-11-14T12:00:00Z","message":{"id":"m1","model":"claude-opus-5-5","usage":{"input_tokens":1000000}}}' > "$h/.claude/projects/-x/s1.jsonl"
+  local q='import importlib.machinery as m, importlib.util as u, json
+def load(n):
+    l = m.SourceFileLoader(n, "factory/bin/" + n); x = u.module_from_spec(u.spec_from_loader(n, l)); l.exec_module(x); return x
+d, r = load("dashboard"), load("report")
+print(json.dumps({"same": d.Outside().scan() == r.scan_outside(), "months": r.scan_outside()["months"]}))'
+  local out; out=$(env -u CODEX_HOME -u CLAUDE_CONFIG_DIR -u XDG_CACHE_HOME HOME="$h" python3 -c "$q")
+  check "report scans what the dashboard serves" "$out" '"same": true' &&
+  check "priced" "$out" '"2026-11": {"claude": 4.0, "codex": 0.0}'
+}
+
+t_job_sync_codex_model_change() {
+  new_repo syncmodels; ticket 01 One; commit_all
+  local id; id=$(J create f/01)
+  local h="$TMP_ROOT/syncmodels/home" day; day=$(field "$id" 'd["started"][:10].replace("-", "/")')
+  local jd; jd="$(cd "factory/jobs/$id" && pwd -P)"
+  set_config prices_usd_per_mtok '{"gpt-a":{"input":1,"cached_input":0.1,"output":5},"gpt-b":{"input":2,"cached_input":0.1,"output":10}}'
+  mkdir -p "$h/.codex/sessions/$day" "$h/.config/orca/codex-accounts/a/home/sessions/$day"
+  local tc='{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":%s,"cached_input_tokens":0,"output_tokens":0,"total_tokens":%s}}}}\n'
+  # 1M input on gpt-a, the same total again, then 1M more on gpt-b; a shorter copy in Orca's account
+  # home. No timestamps: a job prices undated usage.
+  { echo '{"type":"session_meta","payload":{"id":"c1","cwd":"/w"}}'
+    echo "{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"Job folder: $jd/ Your brief is $PWD/factory/agents/builder.md\"}}"
+    echo '{"type":"turn_context","payload":{"model":"gpt-a"}}'
+    printf "$tc" 1000000 1000000; printf "$tc" 1000000 1000000
+    echo '{"type":"turn_context","payload":{"model":"gpt-b"}}'
+    printf "$tc" 2000000 2000000; } > "$h/.codex/sessions/$day/rollout-c1.jsonl"
+  head -5 "$h/.codex/sessions/$day/rollout-c1.jsonl" > "$h/.config/orca/codex-accounts/a/home/sessions/$day/rollout-c1.jsonl"
+  env -u CLAUDE_CONFIG_DIR -u XDG_CACHE_HOME HOME="$h" CODEX_HOME="$h/.codex" factory/bin/job sync "$id" >/dev/null
+  check "codex charged per model" "$(field "$id" 'd["cost_by_agent"]')" "{'claude': 0.0, 'codex': 3.0}" &&
+  check "job total" "$(field "$id" 'd["cost_usd"]')" "3.0" &&
+  check "two model rows, one session and 1M tokens each" \
+    "$(field "$id" '[(r["role"], r["model"], r["sessions"], r["input_tokens"], r["cost_usd"]) for r in d["cost_breakdown"]]')" \
+    "[('builder', 'gpt-a', 1, 1000000, 1.0), ('builder', 'gpt-b', 1, 1000000, 2.0)]" &&
+  check "no __pycache__ left in factory/bin" "[$(ls -a factory/bin | grep -c pycache)]" "[0]"
+}
+
+t_job_sync_single_model() {
+  new_repo syncsingle; ticket 01 One; commit_all
+  local id; id=$(J create f/01)
+  local h="$TMP_ROOT/syncsingle/home" day; day=$(field "$id" 'd["started"][:10].replace("-", "/")')
+  local jd; jd="$(cd "factory/jobs/$id" && pwd -P)"
+  local proj; proj="$h/.claude/projects/$(python3 -c 'import re,sys; print(re.sub(r"[^A-Za-z0-9]", "-", sys.argv[1]))' "$(pwd -P)")"
+  set_config prices_usd_per_mtok '{"claude-a":{"input":4,"output":20,"cache_write_5m":5,"cache_write_1h":8,"cache_read":0.2},"gpt-a":{"input":1,"cached_input":0.1,"output":5}}'
+  mkdir -p "$proj" "$h/.codex/sessions/$day"
+  printf '%s\n' "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Job folder: $jd/ Your brief is $PWD/factory/agents/intake.md\"}}" \
+    '{"type":"assistant","timestamp":"2026-11-14T12:00:00Z","message":{"id":"m1","model":"claude-a","usage":{"input_tokens":1000000,"output_tokens":1000}}}' \
+    '{"type":"assistant","timestamp":"2026-11-14T12:00:00Z","message":{"id":"m1","model":"claude-a","usage":{"input_tokens":1000000,"output_tokens":1000}}}' > "$proj/s1.jsonl"
+  { echo '{"type":"session_meta","payload":{"id":"c1"}}'
+    echo "{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"Job folder: $jd/ Your brief is $PWD/factory/agents/builder.md\"}}"
+    echo '{"type":"turn_context","payload":{"model":"gpt-a"}}'
+    echo '{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000000,"cached_input_tokens":200000,"output_tokens":10000,"total_tokens":1010000}}}}'
+  } > "$h/.codex/sessions/$day/rollout-c1.jsonl"
+  env -u XDG_CACHE_HOME HOME="$h" CLAUDE_CONFIG_DIR="$h/.claude" CODEX_HOME="$h/.codex" factory/bin/job sync "$id" >/dev/null
+  # claude: 1M*4 + 1000*20 = 4.02; codex: 800k*1 + 200k*0.1 + 10k*5 = 0.87
+  check "split by agent" "$(field "$id" 'd["cost_by_agent"]')" "{'claude': 4.02, 'codex': 0.87}" &&
+  check "job total" "$(field "$id" 'd["cost_usd"]')" "4.89" &&
+  check "rows in pipeline order, existing schema" "$(field "$id" 'd["cost_breakdown"]')" \
+    "[{'role': 'intake', 'agent': 'claude', 'model': 'claude-a', 'sessions': 1, 'input_tokens': 1000000, 'cached_tokens': 0, 'output_tokens': 1000, 'cost_usd': 4.02}, {'role': 'builder', 'agent': 'codex', 'model': 'gpt-a', 'sessions': 1, 'input_tokens': 800000, 'cached_tokens': 200000, 'output_tokens': 10000, 'cost_usd': 0.87}]"
+}
+
+t_session_usage_module() {
+  local out; out=$(cd "$FACTORY_SRC/.." && python3 -m unittest factory/tests/test_session_usage.py 2>&1); local rc=$?
+  check "factory/tests/test_session_usage.py passes" "[$rc] $out" "[0]" || echo "$out"
 }
 
 t_high_risk_holds_only_when_needed() {
@@ -2295,6 +2393,21 @@ t_protected_intake_needs_human() {
   check "stage rejected" "$(field "$id" "d['stage']")" "rejected"
 }
 
+t_gh_protected_completion_comment_survives_label_refusal() {
+  new_gh_repo ghproteditfail; gh_issue 1 One
+  local id; id=$(J create 1) || return 1
+  protected_intake "$id" factory/checks.sh
+  J advance "$id" needs-human >/dev/null || return 1
+  : > "$GH_LOG"
+  touch "$GH/edit-fail"
+  local out rc=0; out=$(J reject "$id" 2>&1 <<< "Made by hand in abc123.") || rc=$?
+  check "reject reports failure" "[$rc]" "[1]" &&
+  check "label refusal reported" "$out" "HTTP 403: Resource not accessible by integration" &&
+  check "completion reason posted before the label edit" "$(cat "$GH_LOG")" \
+    $'issue comment 1 --body <!-- factory -->\n### Factory: closed, a human made this change\n\nBy @op while the job was needs-human.\n\nMade by hand in abc123.\nissue edit 1 --remove-label ready-for-agent,ready-for-human' &&
+  check "job still waits on a human" "$(field "$id" "d['stage']")" "needs-human"
+}
+
 t_protected_intake_feedback_goes_back_to_intake() {
   new_repo protintakefb; ticket 01 One; commit_all
   local id; id=$(J create f/01) || return 1
@@ -2820,6 +2933,439 @@ t_report_install_service() {
   check "unit" "$(cat "$u")" "ExecStart=$PWD/factory/bin/report --watch" &&
   check "restarts" "$(cat "$u")" "Restart=always" &&
   check "restart delay" "$(cat "$u")" "RestartSec=10"
+}
+
+# ---- job folder formats: factory/bin/jobfiles.py ------------------------------
+
+FIXTURES="$FACTORY_SRC/tests/fixtures"
+
+t_legacy_updater_can_decode_verdict_fixtures() {
+  python3 - "$FIXTURES/verdicts" <<'EOF'
+import sys
+from pathlib import Path
+
+# An installed updater from before ticket 03 uses read_text on every copied file.
+for path in Path(sys.argv[1]).rglob("*"):
+    if path.is_file():
+        path.read_text(encoding="utf-8")
+EOF
+}
+
+t_verdict_fixtures() {  # the shared fixtures: hub/src/project.rs and dashboard-verdicts.mjs read the same files
+  new_repo vfix; commit_all
+  mkdir -p factory/jobs && cp -r "$FIXTURES/verdicts" factory/jobs/900-verdicts && rm factory/jobs/900-verdicts/expected.json
+  local out; out=$(python3 - "$FIXTURES/verdicts/expected.json" <<'EOF'
+import importlib.machinery as m, importlib.util as u, json, sys
+from pathlib import Path
+l = m.SourceFileLoader("job", "factory/bin/job"); job = u.module_from_spec(u.spec_from_loader("job", l)); l.exec_module(job)
+import jobfiles
+want = json.load(open(sys.argv[1]))["verdicts"]
+d = Path("factory/jobs/900-verdicts")
+for encoded in d.rglob("*.md.hex"):
+    encoded.with_suffix("").write_bytes(bytes.fromhex(encoded.read_text(encoding="ascii")))
+    encoded.unlink()
+bad = [(p, jobfiles.verdict(jobfiles.kind_of(p), d / p), v) for p, v in want.items() if jobfiles.verdict(jobfiles.kind_of(p), d / p) != v]
+print("mismatches:", bad)
+doc = jobfiles.load_job("factory/jobs", "900-verdicts")
+print("table:", job.review_table(doc))
+print("pass without sections:", job.review_problem("code", d / "round-2/review-code.md", jobfiles.verdict("review", d / "round-2/review-code.md")))
+print("double-space CHANGES:", jobfiles.verdict("review", d / "round-2/review-ui.md"),
+      job.review_problem("ui", d / "round-2/review-ui.md", jobfiles.verdict("review", d / "round-2/review-ui.md")))
+EOF
+)
+  check "every fixture artifact reads as expected.json says" "$out" "mismatches: []" &&
+  check "gate row: first line only, pending as –" "$out" "| gate | PASS | PASS | PASS | PASS | PASS | FAIL | FAIL | invalid | invalid | invalid | invalid | invalid | invalid | PASS | invalid | – |" &&
+  check "the historical round names its recorded reviewer" "$out" "| code | CHANGES (1 should)<br>codex/gpt-6.1-terra:high | PASS |" &&
+  check "a declared PASS still fails the Progression check" "$out" "pass without sections: it has no ## Standards, ## Spec section" &&
+  check "VERDICT:  CHANGES with findings counts" "$out" "double-space CHANGES: CHANGES None"
+}
+
+t_dashboard_verdict_fixtures() {
+  if ! command -v node >/dev/null; then echo "node not installed: dashboard verdicts not checked"; return 0; fi
+  local out; out=$(node "$FACTORY_SRC/tests/dashboard-verdicts.mjs" 2>&1)
+  check "standalone and hub mode agree with expected.json" "[$?] $out" "[0] ok: "
+}
+
+t_spaced_changes_reads_the_same() {  # sync, the review table, the Progression check and disputes
+  local id; dispute_setup spaced || return 1
+  J start "$id" reviewer-code >/dev/null
+  rv "$id" 2 code CHANGES "F1 still open: the API is public" "None."
+  sed -i '1s/^VERDICT: CHANGES$/VERDICT:  CHANGES/' "factory/jobs/$id/round-2/review-code.md"
+  check "spaced" "$(head -1 "factory/jobs/$id/round-2/review-code.md")" "VERDICT:  CHANGES" || return 1
+  J sync "$id" >/dev/null
+  check "sync reads CHANGES" "$(field "$id" "d['reviews']['code'], d['review_problems']")" "('CHANGES', {})" &&
+  check "the dispute check sees it: a human decides" "$(J next "$id")" "advance: factory/bin/job advance $id needs-human" &&
+  check "the review table says CHANGES" "$(python3 - "$id" <<'EOF'
+import importlib.machinery as m, importlib.util as u, sys
+l = m.SourceFileLoader("job", "factory/bin/job"); job = u.module_from_spec(u.spec_from_loader("job", l)); l.exec_module(job)
+print(job.review_table(job.load(sys.argv[1])))
+EOF
+)" "| code | CHANGES (1 should)"
+}
+
+t_gate_reuse_reads_checks_md() {
+  new_repo reuse; commit_all
+  local out; out=$(python3 - <<'EOF'
+import importlib.machinery as m, importlib.util as u
+from contextlib import contextmanager
+from pathlib import Path
+from unittest.mock import patch
+l = m.SourceFileLoader("gate", "factory/bin/gate"); g = u.module_from_spec(u.spec_from_loader("gate", l)); l.exec_module(g)
+f = Path("checks.md"); h = g.checks_hash()
+cases = {
+    "passing": f"GATE: PASS\nCOMMIT: abc\nCHECKS_SH: {h}\n\n## Summary\n",
+    "spaced": f"GATE:  PASS\nCOMMIT: abc\nCHECKS_SH: {h}\n",
+    "later header": f"REPORT: ready\nGATE: PASS\nCOMMIT: abc\nCHECKS_SH: {h}\n",
+    "failed": f"GATE: FAIL\nCOMMIT: abc\nCHECKS_SH: {h}\n",
+    "other commit": f"GATE: PASS\nCOMMIT: def\nCHECKS_SH: {h}\n",
+    "other script": "GATE: PASS\nCOMMIT: abc\nCHECKS_SH: 0000\n",
+}
+for name, text in cases.items():
+    f.write_text(text); print(name, g.reusable(f, "abc"))
+f.write_text(cases["other commit"])
+replacement = f.with_suffix(".new")
+replacement.write_text(cases["failed"])
+original_open = Path.open
+
+@contextmanager
+def replace_after_first_read(path, *args, **kwargs):
+    with original_open(path, *args, **kwargs) as stream:
+        yield stream
+    if path == f and replacement.exists():
+        replacement.replace(f)
+
+with patch.object(Path, "open", replace_after_first_read):
+    print("replaced while reading", g.reusable(f, "abc"))
+f.unlink(); print("missing", g.reusable(f, "abc"))
+f.write_text(cases["passing"]); g.CHECKS.write_text(g.CHECKS.read_text() + 'echo "$FACTORY_GATE"\n')
+f.write_text(cases["passing"].replace(h, g.checks_hash())); print("reads FACTORY_GATE", g.reusable(f, "abc"))
+EOF
+)
+  check "reused: PASS, same commit and script" "$out" "passing True" &&
+  check "whitespace after the colon" "$out" "spaced True" &&
+  check "a later-only GATE header is no Verdict" "$out" "later header False" &&
+  check "FAIL" "$out" "failed False" &&
+  check "changed commit" "$out" "other commit False" &&
+  check "changed script" "$out" "other script False" &&
+  check "PASS for the old commit cannot reuse FAIL for the new commit" "$out" "replaced while reading False" &&
+  check "no checks.md" "$out" "missing False" &&
+  check "a script that tells round from merge" "$out" "reads FACTORY_GATE False"
+}
+
+t_readers_share_jobfiles() {  # job, gate (and --hook), route and report read job.json through jobfiles.py
+  new_repo shared; ticket 01 One; commit_all
+  mv factory/bin/jobfiles.py factory/bin/_jobfiles_real.py
+  cat > factory/bin/jobfiles.py <<'EOF'
+import os, sys
+import _jobfiles_real as _r
+from _jobfiles_real import *  # noqa
+from _jobfiles_real import PENDING, INVALID  # noqa
+def _logged(name):
+    fn = getattr(_r, name)
+    def call(*a, **k):
+        with open(os.environ["JOBFILES_LOG"], "a") as f:
+            f.write(f"{os.path.basename(sys.argv[0])} {name}\n")
+        return fn(*a, **k)
+    return call
+for _n in ("read_job", "load_job", "job_snapshot"):
+    globals()[_n] = _logged(_n)
+EOF
+  export JOBFILES_LOG="$PWD/../jobfiles.log"; : > "$JOBFILES_LOG"
+  local id; id=$(J create f/01) || return 1; intake "$id" low none
+  : > "$JOBFILES_LOG"; factory/bin/route "$id" > ../route.out || return 1
+  check "route still records and prints the agents" "$(cat ../route.out)" "builder" &&
+  check "route reads the synced document through jobfiles" "$(cat "$JOBFILES_LOG")" "route load_job" &&
+  check "job reads through jobfiles" "$(cat "$JOBFILES_LOG")" "job read_job" || return 1
+  J advance "$id" spec >/dev/null; echo "# Spec" > "factory/jobs/$id/spec.md"; J advance "$id" build >/dev/null
+  build_commit "$id" y.txt y; ready "$id"; J advance "$id" gate >/dev/null
+  : > "$JOBFILES_LOG"; factory/bin/gate "$id" >/dev/null || return 1
+  check "the gate" "$(cat "$JOBFILES_LOG")" "gate load_job" || return 1
+  python3 - "factory/jobs/$id/.lock" <<'EOF' &
+import fcntl, json, os, sys, time
+f = open(sys.argv[1], "a+"); fcntl.flock(f, fcntl.LOCK_EX); f.seek(0); f.truncate()
+f.write(json.dumps({"command": "merge", "pid": os.getpid(), "since": time.time()})); f.flush()
+time.sleep(30)
+EOF
+  local holder=$!
+  for _ in $(seq 50); do grep -q merge "factory/jobs/$id/.lock" 2>/dev/null && break; sleep 0.1; done
+  printf '{"message":{"content":"Job: %s. Build it."}}\n' "$id" > ../transcript.jsonl
+  : > "$JOBFILES_LOG"
+  echo "{\"agent_transcript_path\":\"$PWD/../transcript.jsonl\"}" | timeout 20 factory/bin/gate --hook; local rc=$?
+  kill "$holder"; wait "$holder" 2>/dev/null
+  check "the hook reads a whole document while the job is locked" "[$rc] $(cat "$JOBFILES_LOG")" "[0] gate load_job" || return 1
+  local before after; before=$(stat -c %i "factory/jobs/$id/job.json")
+  J advance "$id" review >/dev/null || return 1; after=$(stat -c %i "factory/jobs/$id/job.json")
+  check "a job write replaces job.json whole" "[$([[ "$before" != "$after" ]] && echo replaced)]" "[replaced]" || return 1
+  H="$TMP_ROOT/shared/home"; mkdir -p "$H/.config/factory"; echo '{"url":"http://127.0.0.1:9","token":"t"}' > "$H/.config/factory/hub.json"
+  : > "$JOBFILES_LOG"; rpt --dry-run --no-outside > ../report.out
+  check "the reporter reads the same document" "$(cat "$JOBFILES_LOG") $(grep -c "\"id\": \"$id\"" ../report.out)" "report job_snapshot"
+}
+
+t_report_preserves_unreadable_verdict_artifacts() {
+  rpt_setup rptunreadable; rpt_job 001-a
+  local checks=factory/jobs/001-a/round-1/checks.md
+  printf 'GATE: PASS\n' > "$checks"
+  rpt >/dev/null || return 1
+  chmod 000 "$checks"
+  rpt >/dev/null || return 1
+  check "unreadable check is sent with an invalid first line" \
+    "$(hub 'b[1]["repos"][0]["jobs"][0]["files"], b[1]["repos"][0]["jobs"][0]["files_removed"]')" \
+    "{'round-1/checks.md': ''} []" || return 1
+  rpt >/dev/null || return 1
+  check "unchanged unreadable check is not sent again" "$(hub 'b[2]["repos"][0]["jobs"]')" "[]" || return 1
+  rm "$checks"
+  rpt >/dev/null || return 1
+  check "the missing check is removed" "$(hub 'b[3]["repos"][0]["jobs"][0]["files_removed"]')" "['round-1/checks.md']"
+}
+
+t_dashboard_distinguishes_unreadable_artifacts() {
+  new_repo dashboardverdicts
+  local dir=factory/jobs/001-a/round-1
+  mkdir -p "$dir"
+  printf 'GATE: PASS\n' > "$dir/checks.md"
+  chmod 000 "$dir/checks.md"
+  python3 - <<'EOF'
+import functools
+import http.client
+import http.server
+import importlib.machinery as m
+import importlib.util as u
+import threading
+
+loader = m.SourceFileLoader("dashboard", "factory/bin/dashboard")
+dashboard = u.module_from_spec(u.spec_from_loader("dashboard", loader))
+loader.exec_module(dashboard)
+handler = functools.partial(dashboard.Handler, directory=str(dashboard.FACTORY))
+with http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler) as server:
+    worker = threading.Thread(target=server.serve_forever)
+    worker.start()
+    try:
+        for name, expected in [("checks.md", 403), ("review-code.md", 404)]:
+            with_request = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            try:
+                with_request.request("GET", f"/jobs/001-a/round-1/{name}")
+                response = with_request.getresponse()
+                assert response.status == expected, (name, response.status, expected)
+            finally:
+                with_request.close()
+    finally:
+        server.shutdown()
+        worker.join()
+EOF
+}
+
+t_report_keeps_snapshots() {
+  rpt_setup rptkeep; rpt_job 001-a; rpt_job 002-b
+  printf 'VERDICT: PASS\n\nnot UTF-8: \xff\n' > factory/jobs/001-a/round-1/review-code.md
+  rpt >/dev/null || return 1
+  local state="$H/.cache/factory/report-state.json"
+  check "the hash is of the raw bytes" "$(python3 - "$state" <<'EOF'
+import hashlib, json, sys
+s = json.load(open(sys.argv[1])); mine = next(r for h in s.values() if isinstance(h, dict) for r in h.values() if isinstance(r, dict) and "001-a" in r)
+raw = open("factory/jobs/001-a/round-1/review-code.md", "rb").read()
+print(mine["001-a"]["round-1/review-code.md"] == hashlib.sha1(raw).hexdigest(),
+      mine["001-a"]["job.json"] == hashlib.sha1(open("factory/jobs/001-a/job.json", "rb").read()).hexdigest())
+EOF
+)" "True True" &&
+  check "the text goes as UTF-8 with U+FFFD" "$(hub 'ascii(b[0]["repos"][0]["jobs"][0]["files"]["round-1/review-code.md"])')" "not UTF-8: \\ufffd" || return 1
+  local old; old=$(sha1sum factory/jobs/001-a/round-1/review-code.md | cut -d' ' -f1)
+  echo '[1, 2]' > factory/jobs/001-a/job.json; echo changed > factory/jobs/001-a/round-1/review-code.md; chmod 000 factory/jobs/002-b/job.json
+  rpt >/dev/null; chmod 644 factory/jobs/002-b/job.json
+  check "non-object and unreadable job.json: kept, nothing sent" "$(hub 'b[1]["repos"][0]["job_ids"], b[1]["repos"][0]["jobs"]')" "['001-a', '002-b'] []" &&
+  check "and the state keeps the old snapshot" "$(python3 -c "
+import json; s = json.load(open('$state')); print([r['001-a']['round-1/review-code.md'] == '$old' for h in s.values() if isinstance(h, dict) for r in h.values() if isinstance(r, dict) and '001-a' in r])")" "[True]"
+}
+
+# ---- Ticket effects: the tracker seam --------------------------------------
+
+jobpy() {  # jobpy <python>: run it with factory/bin/job loaded as `j` (its tracker as config.json picks it)
+  python3 -c 'import importlib.machinery as m, importlib.util as u
+l = m.SourceFileLoader("j", "factory/bin/job"); j = u.module_from_spec(u.spec_from_loader("j", l)); l.exec_module(j)
+'"$1"
+}
+
+no_gh() {  # no_gh <name>: a `gh` on PATH that logs to gh.log and fails, so a test sees any call
+  local dir="$TMP_ROOT/$1"
+  printf '#!/usr/bin/env bash\necho "$*" >> "$(dirname "$0")/gh.log"; exit 1\n' > "$dir/bin/gh"; chmod +x "$dir/bin/gh"
+  export PATH="$dir/bin:$PATH" GH_LOG="$dir/bin/gh.log"
+}
+
+# A lifecycle in memory: MemoryTickets replaces the tracker for the effects `advance` requests.
+MEM='j.TICKETS = j.MemoryTickets()
+def step(id, stage):
+    job = j.load(id)
+    try:
+        j.save(j.advance(job, stage)); print("moved", stage)
+    except j.Refused as e:
+        print("refused", e)
+def report():
+    print("effects", j.TICKETS.effects)
+    for k, t in j.TICKETS.tickets.items():
+        print("ticket", k, t["state"], t["status"], t.get("why"), "|", " | ".join(c.split(chr(10))[0] for c in t["comments"]))
+'
+
+t_lifecycle_ticket_effects_in_memory() {
+  new_repo memfx; no_gh memfx; ticket 01 One; commit_all
+  local id; id=$(to_build 01 low none); build_commit "$id" y.txt y; to_review "$id"; review "$id" 1 code PASS
+  J advance "$id" approve >/dev/null; printf 'ESCALATE\n\n## Summary\n- look\n\n## Why\nx\n' > "factory/jobs/$id/decision.md"
+  local before; before=$(cat .scratch/f/issues/01-t.md)
+  local out; out=$(jobpy "$MEM
+step('$id', 'needs-human')
+step('$id', 'merged')  # the branch isn't in master yet: the Progression check fails
+report()" 2>&1)
+  check "waits on a human" "$out" "moved needs-human" &&
+  check "an unmerged branch is refused" "$out" "refused master doesn't contain factory/$id" &&
+  check "no done effect before the merge" "$out" "effects [('comment', 'f/01'), ('wait', 'f/01', 'human')]" &&
+  check "the reason is commented" "$out" "ticket f/01 OPEN needs_human None | ### Factory: needs a human" || return 1
+  git merge -q --no-ff -m "merge $id" "factory/$id"  # the merge workflow merged it
+  out=$(jobpy "$MEM
+step('$id', 'merged')
+report()" 2>&1)
+  check "merged" "$out" "moved merged" &&
+  check "one done effect, from the wait" "$out" "effects [('done', 'f/01', 'human')]" &&
+  check "closed with the merge summary" "$out" "ticket f/01 CLOSED done 01: One (factory job $id) | ### Factory: merged" &&
+  check "the ticket file is the adapter's, untouched" "$(cat .scratch/f/issues/01-t.md)" "$before" &&
+  check "no gh" "[$(cat "$GH_LOG" 2>/dev/null)]" "[]"
+}
+
+t_gh_lifecycle_done_in_memory() {
+  new_gh_repo ghmemfx; gh_issue 1 One
+  local id; id=$(gh_to_approve 1) || return 1
+  : > "$GH_LOG"
+  local out; out=$(jobpy "$MEM
+step('$id', 'merged')" 2>&1)
+  check "an open PR fails the Progression check" "$out" "refused the PR isn't merged" || return 1
+  gh_pr_set 'pr["state"] = "MERGED"'  # merged by hand on GitHub
+  out=$(jobpy "$MEM
+step('$id', 'merged')
+report()" 2>&1)
+  check "the same done effect" "$out" "effects [('done', '1', None)]" &&
+  check "with the summary" "$out" "ticket 1 CLOSED done One (factory job $id) | ### Factory: merged" &&
+  check "PR state from gh, no ticket writes" "[$(grep -E '^issue (edit|close|comment)' "$GH_LOG")]" "[]" &&
+  check "the issue stays as the fake has it" "$(python3 -c "import json; print(json.load(open('$GH/issue-1.json'))['state'])")" "OPEN"
+}
+
+t_lifecycle_protected_by_hand_in_memory() {
+  new_repo memhand; no_gh memhand; ticket 01 One; commit_all
+  local id; id=$(J create f/01) || return 1
+  protected_intake "$id" factory/checks.sh
+  local out; out=$(jobpy "$MEM
+step('$id', 'needs-human')
+j.cmd_reject(j.load('$id'), 'Made by hand in abc123.')
+report()" 2>&1)
+  check "waits on a human" "$out" "moved needs-human" &&
+  check "done, not rejected" "$out" "effects [('comment', 'f/01'), ('wait', 'f/01', 'human'), ('done', 'f/01', 'human')]" &&
+  check "made by hand" "$out" "ticket f/01 CLOSED done 01: One (made by hand, factory job $id) | ### Factory: needs a human | ### Factory: closed, a human made this change" &&
+  check "no gh" "[$(cat "$GH_LOG" 2>/dev/null)]" "[]"
+}
+
+t_gh_ticket_effects() {
+  new_gh_repo ghfx; local n
+  for n in 1 2 3 4 5; do gh_issue $n "Issue $n"; gh_issue_set $n 'i["labels"].append({"name": "ui"})'; done
+  labels() { python3 -c "import json; i=json.load(open('$GH/issue-$1.json')); print(i['state'], sorted(l['name'] for l in i['labels']))"; }
+  local out; out=$(jobpy 'T = j.TICKETS; print(type(T).__name__)
+T.wait(1); T.comment(1, "### Factory: needs a human\n\nwhy")
+T.resume(1); T.wait(2, on="info")
+T.done(3, "### Factory: merged\n\nok", waited="human", why="x")
+T.done(3, "### Factory: merged\n\nagain")
+T.reject(4, "### Factory: rejected\n\nno", waited="human"); T.comment(5, "just a note")' 2>&1)
+  check "GitHub adapter" "$out" "GitHubTickets" &&
+  check "waiting, then back in the queue, ui kept" "$(labels 1)" "OPEN ['ready-for-agent', 'ui']" &&
+  check "waiting on a human: label swap" "$(cat "$GH_LOG")" "issue edit 1 --add-label ready-for-human --remove-label ready-for-agent" &&
+  check "factory comment format" "$(cat "$GH_LOG")" "issue comment 1 --body <!-- factory -->
+### Factory: needs a human" &&
+  check "waiting for info" "$(labels 2)" "OPEN ['needs-info', 'ui']" &&
+  check "done: queue and waiting labels off, closed" "$(labels 3)" "CLOSED ['ui']" &&
+  check "done removes both" "$(cat "$GH_LOG")" "issue edit 3 --remove-label ready-for-agent,ready-for-human" &&
+  check "an already-closed issue: one close" "$(grep -c '^issue close 3' "$GH_LOG")" "1" &&
+  check "rejected: wontfix, ui kept" "$(labels 4)" "OPEN ['ui', 'wontfix']" &&
+  check "rejection comment" "$(cat "$GH_LOG")" "issue comment 4 --body <!-- factory -->
+### Factory: rejected" &&
+  check "comment only: labels intact" "$(labels 5)" "OPEN ['ready-for-agent', 'ui']" &&
+  check "comment only: no edit" "[$(grep -c '^issue edit 5' "$GH_LOG")]" "[0]" || return 1
+  touch "$GH/close-fail"; gh_issue 6 Six
+  out=$(jobpy 'j.TICKETS.done(6, "### Factory: merged")' 2>&1)
+  check "a refused close warns" "$out" "couldn't close issue #6" &&
+  check "and the comment is still posted" "$(cat "$GH_LOG")" "issue comment 6"
+}
+
+t_local_ticket_effects() {
+  new_repo localfx; local n
+  for n in 01 02 03 04 05; do ticket $n "T$n" '**Labels:** factory, ui'; done; commit_all
+  local out; out=$(jobpy 'T = j.TICKETS; print(type(T).__name__)
+T.wait("f/01"); T.comment("f/01", "### Factory: needs a human\n\nwhy")
+T.wait("f/02", on="info")
+T.done("f/03", "### Factory: merged\n\nok", waited="human", why="T03 (factory job 003-t)")
+T.reject("f/04", "### Factory: rejected\n\nno", waited="human"); T.comment("f/05", "just a note")' 2>&1)
+  check "local adapter" "$out" "LocalTickets" &&
+  check "waiting on a human" "$(status_of 01)" "ready-for-human" &&
+  check "Labels kept" "$(cat .scratch/f/issues/01-t.md)" "**Labels:** factory, ui" &&
+  check "factory comment block" "$(cat .scratch/f/issues/01-t.md)" "## Comments
+
+<!-- factory -->
+### factory, " &&
+  check "comment closes" "$(cat .scratch/f/issues/01-t.md)" "why
+<!-- /factory -->" &&
+  check "waiting for info" "$(status_of 02)" "needs-info" &&
+  check "done" "$(status_of 03)" "done" &&
+  check "done comment" "$(cat .scratch/f/issues/03-t.md)" "### Factory: merged" &&
+  check "done commits the ticket" "$(git log -1 --format=%B -- .scratch/f/issues/03-t.md)" "chore(factory): close f/03
+
+T03 (factory job 003-t)" &&
+  check "rejected" "$(status_of 04)" "wontfix" &&
+  check "rejection comment" "$(cat .scratch/f/issues/04-t.md)" "### Factory: rejected" &&
+  check "comment only: Status intact" "$(status_of 05)" "ready-for-agent" &&
+  check "comment only: note" "$(cat .scratch/f/issues/05-t.md)" "just a note" &&
+  check "only done commits" "$(git status --short .scratch | sort | tr '\n' ' ')" " M .scratch/f/issues/01-t.md  M .scratch/f/issues/02-t.md  M .scratch/f/issues/04-t.md  M .scratch/f/issues/05-t.md" || return 1
+  set_config commit_tickets false; git commit -qam "the rest"
+  jobpy 'j.TICKETS.done("f/05", "### Factory: merged")' >/dev/null 2>&1
+  check "commit_tickets false: done, not committed" "$(status_of 05) $(git status --short .scratch)" "done  M .scratch/f/issues/05-t.md"
+}
+
+t_tracker_selection() {
+  new_repo tracksel; commit_all
+  local pick='print(j.TRACKER, type(j.TICKETS).__name__)'
+  check "explicit local" "$(jobpy "$pick")" "local LocalTickets" &&
+  check "a local ticket key" "$(jobpy 'print(j.issue_key(".scratch/f/issues/07-x.md"))')" "f/07" || return 1
+  set_config tracker '"github"'
+  check "explicit github" "$(jobpy "$pick")" "github GitHubTickets" &&
+  check "a GitHub issue number" "$(jobpy 'print(repr(j.issue_key("12")))')" "12" || return 1
+  mkdir -p docs/agents; echo "# Issue tracker: Local Markdown" > docs/agents/issue-tracker.md
+  check "explicit config beats the tracker doc" "$(jobpy "$pick")" "github GitHubTickets" || return 1
+  set_config tracker '"auto"'
+  check "the doc beats the origin" "$(git remote add origin https://github.com/o/r.git; jobpy "$pick")" "local LocalTickets" || return 1
+  echo "# Issue tracker: GitHub" > docs/agents/issue-tracker.md
+  check "doc says GitHub" "$(jobpy "$pick")" "github GitHubTickets" || return 1
+  rm docs/agents/issue-tracker.md
+  check "only a github origin" "$(jobpy "$pick")" "github GitHubTickets" || return 1
+  git remote set-url origin /elsewhere/r.git
+  check "a non-GitHub origin" "$(jobpy "$pick")" "local LocalTickets" || return 1
+  printf '| needs-triage | `triage` |\n| ready-for-human | `human` |\n' > docs/agents/triage-labels.md
+  check "triage-labels.md mapping" "$(jobpy 'print(j.LABELS["returned"], j.LABELS["needs_human"], j.TICKETS.labels["needs_human"])')" "triage human human"
+}
+
+t_gh_open_work() {
+  new_gh_repo ghopenwork; local n
+  for n in 1 2 3 4 5 6 7 8; do gh_issue $n "Issue $n" '**Branch:** feature/x'; done
+  gh_issue_set 2 'i["labels"] = [{"name": "needs-info"}]'
+  gh_issue_set 3 'i["labels"] = [{"name": "ready-for-human"}]'
+  gh_issue_set 4 'i["labels"] = [{"name": "needs-triage"}]'
+  gh_issue_set 5 'i["labels"] = [{"name": "ui"}]'  # none of the four
+  gh_issue_set 6 'i["state"] = "CLOSED"'
+  gh_issue_set 7 'i["body"] = "**Branch:** feature/y"'
+  gh_issue_set 8 'i["labels"] = [{"name": "wontfix"}]'
+  check "the four triage labels, this feature, open" "$(jobpy 'print(j.open_work_for("feature/x")[1])')" "['#1', '#2', '#3', '#4']"
+}
+
+t_local_open_work() {
+  new_repo localopenwork
+  ticket 01 One '**Branch:** feature/x'; ticket 02 Two '**Branch:** feature/x'; ticket 03 Three '**Branch:** feature/x'
+  ticket 04 Four '**Branch:** feature/y'; ticket 05 Five '**Branch:** feature/x'
+  sed -i 's/ready-for-agent/in-progress/' .scratch/f/issues/02-t.md  # outside the four statuses
+  sed -i 's/ready-for-agent/done/' .scratch/f/issues/03-t.md
+  sed -i 's/ready-for-agent/wontfix/' .scratch/f/issues/05-t.md
+  commit_all
+  check "every open ticket of the feature" "$(jobpy 'print(j.open_work_for("feature/x")[1])')" "['f/01 (ready-for-agent)', 'f/02 (in-progress)']"
 }
 
 # ---- runner ----------------------------------------------------------------
