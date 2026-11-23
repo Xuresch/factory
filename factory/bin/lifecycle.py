@@ -29,7 +29,9 @@ class Facts:
     problem: str | None = None
     protected: tuple = ()
     inline_spec: str | None = None
+    inline_spec_base: str | None = None
     intake_why: str | None = None
+    slices: list[dict] | None = None
     gate: dict | None = None
     head: str | None = None
     dirty: bool = False
@@ -158,7 +160,7 @@ def _progression(job, facts, target, max_rounds):
         if report == "ACCEPT":
             if not job.get("agents"):
                 return Decision("route", "route the job first: factory/bin/route " + job["id"])
-            accepted = (Effect("prepare_worktree"), Effect("post_intake", ("ACCEPT",)))
+            accepted = (Effect("prepare_worktree", (facts.inline_spec_base,)), Effect("post_intake", ("ACCEPT",)))
             if facts.inline_spec is None:
                 return _transition("spec", "intake accepted", *accepted)
             accepted += (Effect("write_inline_spec", (facts.inline_spec,)),)
@@ -184,8 +186,9 @@ def _progression(job, facts, target, max_rounds):
         if facts.protected:
             return _transition("needs-human", f'every path spec.md names is protected ({", ".join(facts.protected)})',
                                Effect("stop_protected", (facts.protected, None)))
+        effects = (Effect("set_slices", (facts.slices,)),) if facts.slices is not None else ()
         return _transition("build", "spec.md names paths outside protected_paths (or none)",
-                           Effect("set_slices"), Effect("next_round"))
+                           *effects, Effect("next_round"))
     if stage == "build":
         if report == "STATUS: READY":
             if facts.dirty:
@@ -217,7 +220,9 @@ def _progression(job, facts, target, max_rounds):
                                Effect("record_merge_failure", (reason,)))
         if facts.merge_outcome in {"recoverable", "escalate"}:
             return _transition("needs-human", reason, Effect("escalate", (reason,)))
-        if report == "ESCALATE":
+        approved = job.get("approved") or {}
+        human_approved = facts.approval and approved.get("by") == "human" and approved.get("round") == job["round"]
+        if report == "ESCALATE" and not human_approved:
             return _transition("needs-human", "the operator escalated the merge")
         if target is None:
             return Decision("run-merge", "continue the merge")

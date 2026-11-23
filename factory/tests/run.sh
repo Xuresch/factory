@@ -3514,6 +3514,77 @@ t_lifecycle_advises_the_inline_spec_destination() {
   done
 }
 
+t_lifecycle_inline_spec_uses_current_remote_base() {
+  new_gh_repo inlinebase; gh_issue 1 One
+  local id base advice; id=$(J create 1) || return 1
+  intake "$id" low none
+  sed -i '/^## Scope/{n;s|.*|Change `factory/bin/guard`.|;}' "factory/jobs/$id/intake.md"
+  printf '\n## Acceptance criteria\n1. It works.\n' >> "factory/jobs/$id/intake.md"
+  factory/bin/route "$id" >/dev/null || return 1
+  base=$("$GH/land" factory/bin/guard new) || return 1
+  [[ "$(git rev-parse origin/master)" != "$base" ]] || return 1
+  advice=$(J next "$id")
+  J advance "$id" spec >/dev/null || return 1
+  check "advanced from the same base used for the decision" "$(field "$id" "d['fork_point']")" "$base" &&
+  check "the new protected path prevents a build round" "$(field "$id" "d['stage'], d['round']")" "('needs-human', 0)" &&
+  check "advice recognizes the new protected path" "$advice" "advance: factory/bin/job advance $id needs-human"
+}
+
+t_lifecycle_gate_prepares_merge_lease_for_external_push() {
+  new_gh_repo externalpush; gh_issue 1 One
+  local id branch clone; id=$(J create 1) || return 1
+  branch="factory/$id"; clone="$GH/../builder"
+  intake "$id" low none; factory/bin/route "$id" >/dev/null && J advance "$id" spec >/dev/null || return 1
+  echo '# Spec' > "factory/jobs/$id/spec.md"; J advance "$id" build >/dev/null || return 1
+  build_commit "$id" y.txt y || return 1
+  git clone -q . "$clone" &&
+  git -C "$clone" push -q "$GH/../origin.git" "refs/remotes/origin/$branch:refs/heads/$branch" || return 1
+  ! git show-ref --verify --quiet "refs/remotes/origin/$branch" || return 1
+  gh pr create --draft --base master --head "$branch" --title "feat: t" --body b >/dev/null || return 1
+  to_review "$id" || return 1
+  review "$id" 1 code PASS; J advance "$id" approve >/dev/null || return 1
+  printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"
+  "$GH/land" other.txt other >/dev/null || return 1
+  check "the merge can push the synced head" "$(J merge "$id" 2>&1)" "merged PR #7" &&
+  check "merge persisted" "$(field "$id" "d['stage']")" "merged"
+}
+
+t_lifecycle_resumes_human_approved_merge() {
+  new_gh_repo resumeapproved; gh_issue 1 One
+  local id base out; id=$(gh_to_approve 1) || return 1
+  J advance "$id" approve >/dev/null || return 1
+  printf 'ESCALATE\n\n## Why\nPlease check.\n' > "factory/jobs/$id/decision.md"
+  J advance "$id" needs-human >/dev/null || return 1
+  base=$(git rev-parse origin/master)
+  git -C "$GH/../origin.git" update-ref -d refs/heads/master || return 1
+  out=$(J approve "$id" 2>&1)
+  check "merge interrupted by failed base fetch" "$out" "origin/master doesn't exist" &&
+  check "human approval and merging persisted" "$(field "$id" "d['stage'], d['approved']['by']")" "('merging', 'human')" || return 1
+  git -C "$GH/../origin.git" update-ref refs/heads/master "$base" || return 1
+  check "resume the approved merge" "$(J next "$id")" "run: factory/bin/job merge $id" || return 1
+  if J advance "$id" needs-human >/dev/null 2>&1; then
+    echo "    FAIL: the old escalation could be reapplied"
+    return 1
+  fi
+  check "merge completes" "$(J merge "$id")" "merged PR #7"
+}
+
+t_lifecycle_advice_validates_slices() {
+  new_repo sliceadvice; ticket 01 One; commit_all
+  local id; id=$(J create f/01) || return 1
+  intake "$id" low none
+  sed -i 's/SPLIT: no/SPLIT: yes/' "factory/jobs/$id/intake.md"
+  factory/bin/route "$id" >/dev/null && J advance "$id" spec >/dev/null || return 1
+  echo '# Spec' > "factory/jobs/$id/spec.md"
+  check "advance rejects a split without slices" "$(J advance "$id" build 2>&1)" 'has no `## Slices` section' &&
+  check "advice sees the same missing section" "$(J next "$id")" 'has no `## Slices` section' &&
+  check "no build round opened" "$(field "$id" "d['stage'], d['round']")" "('spec', 0)" || return 1
+  printf '\n## Slices\n### Slice 1: A\n**Owns:** a/\n**Needs:** none\n\n### Slice 2: B\n**Owns:** b/\n**Needs:** 1\n' >> "factory/jobs/$id/spec.md"
+  check "advice allows a valid split" "$(J next "$id")" "advance: factory/bin/job advance $id build" &&
+  J advance "$id" build >/dev/null &&
+  check "the validated slices are saved" "$(J slices "$id")" "slice 2 pending: B"
+}
+
 # ---- runner ----------------------------------------------------------------
 
 all_tests=$(declare -F | awk '{print $3}' | grep '^t_')

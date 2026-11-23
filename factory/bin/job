@@ -1949,8 +1949,17 @@ def observe_transition(job, target=None, *, reading=None):
         if decision == "ACCEPT" and job.get("agents"):
             inline_spec = render_inline_spec(job, path, h)
             if inline_spec is not None:
-                protected = only_protected(paths_in_spec(inline_spec, inline_spec_path_kind(job)))
-                return facts(report=decision, inline_spec=inline_spec, protected=protected,
+                root = Path(job["worktree"])
+                base = None
+                if root.exists():  # a rewind keeps the existing worktree
+                    path_kind = lambda path: disk_path_kind(root / path)
+                else:
+                    if GITHUB:
+                        fetch_base(jbase(job))
+                    base = run(["git", "rev-parse", jref(job)]).stdout.strip()
+                    path_kind = tree_path_kind(base)
+                protected = only_protected(paths_in_spec(inline_spec, path_kind))
+                return facts(report=decision, inline_spec=inline_spec, inline_spec_base=base, protected=protected,
                              intake_why=section(path, "Why"))
         return facts(report=decision)
     if stage == "needs-info":
@@ -1959,9 +1968,18 @@ def observe_transition(job, target=None, *, reading=None):
         problem = slot_problem(job["id"]) if replied or target == "intake" else None
         return facts(replied=replied, problem=problem)
     if stage == "spec":
-        if not (d / "spec.md").exists():
+        spec = d / "spec.md"
+        if not spec.exists():
             return facts(problem="spec.md doesn't exist")
-        return facts(protected=tuple(protected_only(job)))
+        protected = protected_only(job)
+        if protected:
+            return facts(protected=protected)
+        intake = d / "intake.md"
+        split = header(intake).get("SPLIT") == "yes" if intake.exists() else (job.get("intake") or {}).get("split")
+        try:
+            return facts(slices=parse_slices(spec) if split else None)
+        except Refused as e:
+            return facts(problem=str(e))
     if stage == "build":
         path = d / "build.md"
         status = first_line(path)
@@ -1980,7 +1998,7 @@ def observe_transition(job, target=None, *, reading=None):
                     return facts(report=status, dirty=True)
                 require(int(git(job, "rev-list", "--count", f"{job['base_ref']}..HEAD").stdout) > 0,
                         f"{job['branch']} has no commits on top of {job['base_ref']}")
-                pr = observe_build_pr(job) if GITHUB else None
+                pr = observe_build_pr(job, refresh_tracking=target == "gate") if GITHUB else None
             except Refused as e:
                 return facts(problem=str(e))
             return facts(report=status, builder_answers=answers, pull_request=pr)
@@ -2004,7 +2022,8 @@ def observe_transition(job, target=None, *, reading=None):
                          head=git(job, "rev-parse", "HEAD").stdout.strip())
         return facts(report=line)
     if stage == "merging":
-        return facts(report=first_line(d / "decision.md"))
+        return facts(report=first_line(d / "decision.md"),
+                     approval=newer_report(d / "approval.md", d / "decision.md"))
     if stage == "needs-human":
         feedback = sorted(d.glob("feedback-*.md"))
         return facts(approval=newer_report(d / "approval.md", d / "decision.md"),
@@ -2049,13 +2068,13 @@ def stop_protected_intake(job, files):
     create_follow_ups(job)
 
 
-def prepare_worktree(job):
-    if GITHUB:
+def prepare_worktree(job, base):
+    if GITHUB and base is None:
         fetch_base(jbase(job))
     if not Path(job["worktree"]).exists():  # a rewound job keeps its worktree
         Path(job["worktree"]).parent.mkdir(parents=True, exist_ok=True)
-        run(["git", "worktree", "add", "-b", job["branch"], job["worktree"], jref(job)])
-        job["fork_point"] = run(["git", "rev-parse", jref(job)]).stdout.strip()
+        run(["git", "worktree", "add", "-b", job["branch"], job["worktree"], base or jref(job)])
+        job["fork_point"] = git(job, "rev-parse", "HEAD").stdout.strip()
         setup_worktree(job["worktree"], job_dir(job["id"]) / "worktree-setup.log")
 
 
@@ -2094,9 +2113,8 @@ def reopen_intake(job):
     TICKETS.resume(job["issue"], waited="info")
 
 
-def set_slices(job):
-    if (job["intake"] or {}).get("split"):
-        job["slices"] = parse_slices(job_dir(job["id"]) / "spec.md")
+def set_slices(job, slices):
+    job["slices"] = slices
 
 
 def observe_builder_answers(job, path):
@@ -2110,11 +2128,16 @@ def observe_builder_answers(job, path):
     return validated_builder_answers(job)
 
 
-def observe_build_pr(job):
+def observe_build_pr(job, *, refresh_tracking):
     branch = job["branch"]
     head = git(job, "rev-parse", "HEAD").stdout.strip()
     remote = git(job, "ls-remote", "--refs", "origin", f"refs/heads/{branch}").stdout.partition("\t")[0]
     require(head == remote, f"{branch} isn't pushed: local {head[:7]}, origin {remote[:7] or 'missing'}")
+    if refresh_tracking:
+        # The merge push's lease uses this ref. Check again in case the remote moved after ls-remote.
+        git(job, "fetch", "origin", branch)
+        remote = git(job, "rev-parse", f"refs/remotes/origin/{branch}").stdout.strip()
+        require(head == remote, f"{branch} isn't pushed: local {head[:7]}, origin {remote[:7]}")
     if not job["pr"]:
         prs = gh_json("pr", "list", "--head", branch, "--state", "open", "--json", "number,url")
         require(len(prs) == 1, f"expected one open PR from {branch}, found {len(prs)}")
@@ -4727,12 +4750,8 @@ def disk_path_kind(path):
     return None
 
 
-def inline_spec_path_kind(job):
-    root = Path(job["worktree"])
-    if root.exists():  # a rewind keeps the existing worktree
-        return lambda path: disk_path_kind(root / path)
-    # A new worktree starts at the job's base, which can differ from this checkout.
-    entries = run(["git", "ls-tree", "-rtz", "--full-tree", jref(job)]).stdout
+def tree_path_kind(commit):
+    entries = run(["git", "ls-tree", "-rtz", "--full-tree", commit]).stdout
     kinds = {}
     for entry in entries.split("\0"):
         if entry:
