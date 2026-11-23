@@ -192,14 +192,14 @@ function dashboard(files) {
     const body = files[url]
     if (body === undefined) return { ok: false, status: 404, text: async () => 'not found', json: async () => null }
     const text = typeof body === 'function' ? await body() : body
-    return { ok: true, status: 200, text: async () => text, json: async () => JSON.parse(text) }
+    return new Response(text)
   }
   const document = { getElementById: el, activeElement: null, body: { classList: { add() {}, remove() {} } },
     documentElement: { classList: { add() {}, remove() {} }, clientWidth: 1200 }, head: { append() {} },
     createElement: () => ({}), addEventListener(type, listener) { if (type === 'click') clickListeners.push(listener) }, querySelector: () => null }
   const ctx = { document, fetch: fetchFake, location: { hash: '', search: '', pathname: '/dashboard.html', href: 'http://x/dashboard.html', port: '' },
     history: { replaceState() {}, state: null }, innerWidth: 1200, innerHeight: 800, addEventListener() {},
-    setInterval: (callback) => { pollTick = callback; return 0 }, clearTimeout() {}, setTimeout: () => 0, console, URL, URLSearchParams, Date, Math, JSON, Promise }
+    setInterval: (callback) => { pollTick = callback; return 0 }, clearTimeout() {}, setTimeout: () => 0, console, URL, URLSearchParams, Date, Math, JSON, Promise, TextDecoder }
   ctx.self = ctx
   ctx.window = ctx
   vm.createContext(ctx)
