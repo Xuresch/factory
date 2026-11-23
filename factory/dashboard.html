@@ -988,8 +988,7 @@ function costTable(job) {
 
 const WAIT = new Set(['needs-human', 'paused', 'needs-info'])
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`
-// $12.34 below $100, $1,349 above: cents stop mattering.
-const money = (n) => { n = Number(n || 0); return n >= 100 ? `$${Math.round(n).toLocaleString('en-US')}` : `$${n.toFixed(2)}` }
+const money = CostAggregation.formatMoney
 const bar = (share, agent) => `<span class="bar" style="--w:${share}%${agent ? `;--c:var(--${agentKey(agent)})` : ''}"></span>${share}%`
 
 const TERMINAL_STAGES = new Set(['merged', 'rejected'])
@@ -1881,32 +1880,21 @@ function dirLabel(cwd) {
   return { machine: m ? m[1] : '', short: `${segs.length > 2 ? '…/' : '/'}${segs.slice(-2).join('/')}` }
 }
 
-function planPage() {
-  if (plan.err === 'old-server') {
-    return `<h2>Subscription</h2><p class="note">The server behind this page doesn't serve this view yet: it was started
-      before the dashboard got it, or it isn't <code>factory/bin/dashboard</code>. Stop it (Ctrl+C) and start it again:</p>
-      <pre><code>factory/bin/dashboard ${esc(location.port || '8000')}</code></pre>
-      <p class="note">Board and Costs work either way; reload this page after the restart.</p>`
+function planMonthLabels(date, timeZone) {
+  return {
+    label: date.toLocaleDateString([], { month: 'short', year: 'numeric', timeZone }),
+    short: date.toLocaleDateString([], { month: 'short', timeZone }),
   }
-  if (plan.err === 'missing') {
-    return `<h2>Subscription</h2><p class="note">Compare what the factory would have cost on the API with what you pay.
-      Create <code>${esc(plan.data.config)}</code> and list your plans and every repo the factory runs in, for example:</p>
-      <pre><code>${esc(JSON.stringify({ subscriptions: [{ name: 'Claude Max 5x', agent: 'claude', usd_per_month: 100 },
-        { name: 'ChatGPT Pro', agent: 'codex', usd_per_month: 200 }], projects: ['~/code/app', '~/code/api'] }, null, 2))}</code></pre>`
-  }
-  if (plan.err) return `<p class="note">Can't load the subscription data: ${esc(plan.err)}</p>`
-  if (!plan.data) return '<p class="note">Loading…</p>'
-  const { subscriptions: subs, projects } = plan.data
-  const outside = plan.data.outside || { status: 'off' }
-  const outMonths = outside.status === 'ready' ? outside.months : {}
-  const all = projects.flatMap((p) => p.jobs.map((j) => ({ ...j, project: p.name }))).filter((j) => j.started)
+}
+
+// Adapt the standalone Python document to the Plans renderer.
+function standalonePlanMonths({ subscriptions: subs, projects }, outside, now = new Date()) {
+  const outMonths = outside.status === 'ready' ? outside.months || {} : {}
+  const all = projects.flatMap((p) => p.jobs).filter((j) => j.started)
   const firstOut = Object.keys(outMonths).sort()[0]
-  if (!all.length && !firstOut) {
-    return `<p class="note">No jobs yet in the listed repos${outside.status === 'scanning' ? '; still reading the sessions outside the factory…' : '.'}</p>`
-  }
+  if (!all.length && !firstOut) return { now, allMonths: [], pace: null }
 
   // Months from the first job or session to now; this month's fee counts pro rata.
-  const now = new Date()
   const starts = all.map((j) => Date.parse(j.started))
   if (firstOut) starts.push(new Date(+firstOut.slice(0, 4), +firstOut.slice(5) - 1, 1).getTime())
   const first = new Date(Math.min(...starts))
@@ -1917,7 +1905,7 @@ function planPage() {
     const key = monthOf(d)
     const jobs = all.filter((j) => monthOf(new Date(j.started)) === key)
     const monthlyFee = Object.fromEntries(AGENTS.map((a) => [a, subs.filter((s) => s.agent === a && (!s.since || s.since <= key)).reduce((t, s) => t + Number(s.usd_per_month || 0), 0)]))
-    const row = { key, start: d.getTime(), end: end.getTime(), label: d.toLocaleDateString([], { month: 'short', year: 'numeric' }), short: d.toLocaleDateString([], { month: 'short' }), share, jobs: jobs.length, jl: jobs, api: {}, fac: {}, out: {}, fee: {}, monthlyFee }
+    const row = { key, start: d.getTime(), end: end.getTime(), ...planMonthLabels(d), share, jobs: jobs.length, jl: jobs, api: {}, fac: {}, out: {}, fee: {} }
     for (const a of AGENTS) {
       row.fac[a] = jobs.reduce((s, j) => s + agentCost(j, a), 0)
       row.out[a] = Number((outMonths[key] || {})[a] || 0)
@@ -1926,22 +1914,13 @@ function planPage() {
     }
     row.apiT = row.api.claude + row.api.codex
     row.feeT = row.fee.claude + row.fee.codex
+    row.fullFee = monthlyFee.claude + monthlyFee.codex
     row.facT = row.fac.claude + row.fac.codex
     row.outT = row.out.claude + row.out.codex
     allMonths.push(row)
   }
-  // The shared time range picks the months shown; this month is always in.
-  const span = RANGES[ui.range], cut = span ? Date.now() - span * 864e5 : 0
-  const months = allMonths.filter((m) => m.end > cut)
-  const sum = (f) => months.reduce((s, m) => s + f(m), 0)
-  const api = Object.fromEntries(AGENTS.map((a) => [a, sum((m) => m.api[a])]))
-  const fee = Object.fromEntries(AGENTS.map((a) => [a, sum((m) => m.fee[a])]))
-  const apiT = api.claude + api.codex, feeT = fee.claude + fee.codex
-  const facT = sum((m) => m.facT), outT = sum((m) => m.outT)
-  const cur = months[months.length - 1]
-  const prev = allMonths[allMonths.length - 2]
-  const times = (x, y) => (y ? `×${(x / y).toFixed(1)}` : '–')
-  const saved = (x, y) => `<span class="${x - y >= 0 ? 'sav' : ''}">${x - y >= 0 ? '' : '−'}${money(Math.abs(x - y))}</span>`
+  const cur = allMonths.at(-1)
+  if (!cur) return { now, allMonths, pace: null }
 
   // "On pace for": this month so far, plus the remaining days at the mean of the last 7 days for factory jobs
   // and at the month's own daily mean for the sessions outside (they are only known per month). Hidden before day 3.
@@ -1957,10 +1936,63 @@ function planPage() {
     }
     pace.T = pace.claude + pace.codex
   }
+  return { now, allMonths, pace }
+}
+
+// Hub comparison rows already carry the UTC totals, Agent splits, Plan fees and pace.
+function hubPlanMonths({ now, current_month: currentMonth, months }) {
+  const allMonths = Object.keys(months).sort().map((key) => {
+    const row = months[key]
+    const start = new Date(`${key}-01T00:00:00Z`)
+    const end = new Date(start).setUTCMonth(start.getUTCMonth() + 1)
+    return {
+      key, end, ...planMonthLabels(start, 'UTC'), share: row.elapsed_share, jobs: row.jobs,
+      api: row.by_agent, apiT: row.api_equivalent_usd, fac: row.factory, facT: row.factory_usd,
+      out: row.outside, outT: row.outside_usd, fee: row.plan_fee_elapsed_by_agent,
+      feeT: row.plan_fee_elapsed_usd, fullFee: row.plan_fee_full_usd,
+    }
+  })
+  const pace = months[currentMonth]?.monthly_pace_usd
+  return { now: new Date(now), allMonths, pace: pace == null ? null : { T: pace } }
+}
+
+function planPage() {
+  if (plan.err === 'old-server') {
+    return `<h2>Subscription</h2><p class="note">The server behind this page doesn't serve this view yet: it was started
+      before the dashboard got it, or it isn't <code>factory/bin/dashboard</code>. Stop it (Ctrl+C) and start it again:</p>
+      <pre><code>factory/bin/dashboard ${esc(location.port || '8000')}</code></pre>
+      <p class="note">Board and Costs work either way; reload this page after the restart.</p>`
+  }
+  if (plan.err === 'missing') {
+    return `<h2>Subscription</h2><p class="note">Compare what the factory would have cost on the API with what you pay.
+      Create <code>${esc(plan.data.config)}</code> and list your plans and every repo the factory runs in, for example:</p>
+      <pre><code>${esc(JSON.stringify({ subscriptions: [{ name: 'Claude Max 5x', agent: 'claude', usd_per_month: 100 },
+        { name: 'ChatGPT Pro', agent: 'codex', usd_per_month: 200 }], projects: ['~/code/app', '~/code/api'] }, null, 2))}</code></pre>`
+  }
+  if (plan.err) return `<p class="note">Can't load the subscription data: ${esc(plan.err)}</p>`
+  if (!plan.data) return '<p class="note">Loading…</p>'
+  const { subscriptions: subs, projects, comparison } = plan.data
+  const outside = plan.data.outside || { status: 'off' }
+  const { now, allMonths, pace } = comparison ? hubPlanMonths(comparison) : standalonePlanMonths(plan.data, outside)
+  if (!allMonths.length) {
+    return `<p class="note">No jobs yet in the listed repos${outside.status === 'scanning' ? '; still reading the sessions outside the factory…' : '.'}</p>`
+  }
+
+  // The shared time range picks the months shown; this month is always in.
+  const span = RANGES[ui.range]
+  const months = span ? allMonths.filter((m) => m.end > now - span * 864e5) : allMonths
+  const sum = (f) => months.reduce((s, m) => s + f(m), 0)
+  const agents = comparison && months.some((m) => m.api.other || m.fee.other) ? SPLIT_AGENTS : AGENTS
+  const apiT = sum((m) => m.apiT), feeT = sum((m) => m.feeT)
+  const facT = sum((m) => m.facT), outT = sum((m) => m.outT)
+  const cur = months[months.length - 1]
+  const prev = allMonths[allMonths.length - 2]
+  const times = (x, y) => (y ? `×${(x / y).toFixed(1)}` : '–')
+  const saved = (x, y) => `<span class="${x - y >= 0 ? 'sav' : ''}">${x - y >= 0 ? '' : '−'}${money(Math.abs(x - y))}</span>`
+
   // Only compare with a month the factory already ran in; before that the month's
   // record is partial (Claude Code deletes transcripts after 30 days).
   const paceVsPrev = pace && prev && prev.apiT && prev.facT > 0 ? Math.round(100 * (pace.T / prev.apiT - 1)) : null
-  const monthFee = cur.monthlyFee.claude + cur.monthlyFee.codex
 
   // The hero: what was saved against what was paid.
   const outLine = outside.status === 'ready' ? `Outside the factory <b>${money(outT)}</b> (${pct(outT, apiT)}% of the API-equivalent) · factory jobs <b>${money(facT)}</b>`
@@ -1969,9 +2001,10 @@ function planPage() {
   const hero = `<section class="hero" aria-label="Saved against paid">
     <div class="hk">${cur.share < 1 ? 'Saved this month so far' : 'Saved this month'}</div>
     <div class="hv">${saved(cur.apiT, cur.feeT)}<small>${times(cur.apiT, cur.feeT)} paid back</small></div>
-    <div class="hs"><b>${money(cur.apiT)}</b> API-equivalent for <b>${money(cur.feeT)}</b> in fees${cur.share < 1 ? ` (${Math.round(cur.share * 100)}% of the month)` : ''}</div>
-    ${pace ? `<div class="hs">On pace for <b>${money(pace.T)}</b> this month${paceVsPrev !== null ? ` · ${deltaHtml(paceVsPrev)} vs ${esc(prev.short)}` : ''}</div>`
-      : prev ? `<div class="hs">${prev.short}: <b>${money(prev.apiT)}</b> API-equivalent</div>` : ''}
+    <div class="hs"><b>${money(cur.apiT)}</b> API-equivalent</div>
+    <div class="hs">Full Plan fee <b>${money(cur.fullFee)}</b> · Elapsed Plan fee <b>${money(cur.feeT)}</b>${cur.share < 1 ? ` (${Math.round(cur.share * 100)}% of the month)` : ''}</div>
+    ${pace ? `<div class="hs">Monthly pace <b>${money(pace.T)}</b>${paceVsPrev !== null ? ` · ${deltaHtml(paceVsPrev)} vs ${esc(prev.short)}` : ''}</div>` : ''}
+    ${prev ? `<div class="hs">${esc(prev.short)} API-equivalent <b>${money(prev.apiT)}</b></div>` : ''}
     <div class="hs">Since ${esc(months[0].label)}: saved ${saved(apiT, feeT)} · ${money(apiT)} for ${money(feeT)} · ${times(apiT, feeT)}</div>
     <div class="hs">${outLine}</div></section>`
 
@@ -1991,9 +2024,9 @@ function planPage() {
       <div class="bl-axis"><span style="left:0">$0</span><span style="left:50%">${axisFmt(mid)}</span><span style="left:100%">${axisFmt(max)}</span></div>
       <div class="bl-sub">${f ? `fee marker ${money(f)} · ` : ''}factory ${money(cur.fac[a])} · outside ${money(cur.out[a])}</div></div>`
   }
-  const bullets = `<section class="bullets" aria-label="Value per provider"><h3>${esc(cur.label)}${cur.share < 1 ? ' so far' : ''}, by provider</h3>
-    ${AGENTS.map(bullet).join('')}
-    <div class="legend"><span>${sw('claude')}${sw('codex')}in factory jobs</span><span>${sw('claude', 'out')}${sw('codex', 'out')}outside the factory</span><span><i class="sw fee" style="border-top-style:solid"></i>fee (bands: under 1x, 1x to 3x, over 3x)</span></div></section>`
+  const bullets = `<section class="bullets" aria-label="Value by agent"><h3>${esc(cur.label)}${cur.share < 1 ? ' so far' : ''}, by agent</h3>
+    ${agents.map(bullet).join('')}
+    <div class="legend"><span>${agents.map((a) => sw(a)).join('')}in factory jobs</span><span>${sw('claude', 'out')}${sw('codex', 'out')}outside the factory</span><span><i class="sw fee" style="border-top-style:solid"></i>fee (bands: under 1x, 1x to 3x, over 3x)</span></div></section>`
 
   // One column per month, split by agent; the factory part solid, the part outside tinted with a stroke in the agent colour.
   // The fee is a dashed line across the month's column: above it is money saved. This month gets a hatched "on pace" cap.
@@ -2003,54 +2036,56 @@ function planPage() {
   let slot = (W - 48 - right) / n
   const labelEach = slot >= 170
   if (!labelEach) { right = avail <= 640 ? 76 : 100; W = Math.min(avail, Math.max(360, 48 + n * 130 + right)); slot = (W - 48 - right) / n }
-  const items = months.map((m, i) => {
+  const items = months.map((m) => {
     const isCur = m === cur
     const segs = []
-    for (const a of AGENTS) {
+    for (const a of agents) {
       if (m.fac[a] > 0) segs.push({ v: m.fac[a], key: a, part: 'in factory jobs', fill: `var(--${a})` })
       if (m.out[a] > 0) segs.push({ v: m.out[a], key: a, part: 'outside the factory', fill: `var(--${a}-soft)`, stroke: `var(--${a})` })
     }
     const ghost = isCur && pace && pace.T > m.apiT ? pace.T : 0
     const tip = `${m.label}${m.share < 1 ? ' (so far)' : ''} · ${plural(m.jobs, 'factory job')}\n${money(m.apiT)} API-equivalent\n`
-      + AGENTS.map((a) => `{${a}} ${a.padEnd(7)}${money(m.api[a]).padStart(9)}  factory ${money(m.fac[a])} · outside ${money(m.out[a])} · fee ${money(m.fee[a])}`).join('\n')
+      + agents.map((a) => `{${a}} ${a.padEnd(7)}${money(m.api[a]).padStart(9)}  factory ${money(m.fac[a])} · outside ${money(m.out[a])} · fee ${money(m.fee[a])}`).join('\n')
       + `\n${m.apiT >= m.feeT ? 'saved' : 'short by'} ${money(Math.abs(m.apiT - m.feeT))} · ${times(m.apiT, m.feeT)}`
-      + (ghost ? `\non pace for ${money(pace.T)} (claude ${money(pace.claude)} · codex ${money(pace.codex)})` : '')
+      + (ghost ? `\nMonthly pace ${money(pace.T)}${comparison ? '' : ` (claude ${money(pace.claude)} · codex ${money(pace.codex)})`}` : '')
     const showNote = labelEach || isCur
     const mark = m.feeT > 0 ? { v: m.feeT, label: labelEach || isCur ? ['break-even', money(m.feeT)] : null } : null
-    return { label: m.short + (new Date(m.start).getFullYear() !== now.getFullYear() ? ` ${new Date(m.start).getFullYear()}` : ''), segs, total: m.apiT, ghost, tip, mark,
+    return { label: m.short + (m.key.slice(0, 4) !== cur.key.slice(0, 4) ? ` ${m.key.slice(0, 4)}` : ''), segs, total: m.apiT, ghost, tip, mark,
       note: showNote && m.apiT > m.feeT ? `saved ${money(m.apiT - m.feeT)}` : '', noteCls: 'sav' }
   })
   const chartSvg = barChart({ W, H: 270, items, title: 'Per month, API-equivalent against fees', maxBar: 64, right,
     desc: `${n} months. ${months.map((m) => `${m.label}: ${money(m.apiT)} API-equivalent against ${money(m.feeT)} in fees`).join('; ')}.` })
   const legend = `<div class="legend"><span>${sw('claude')}claude in factory jobs</span><span>${sw('claude', 'out')}claude outside the factory</span>
     <span>${sw('codex')}codex in factory jobs</span><span>${sw('codex', 'out')}codex outside the factory</span>
-    <span><i class="sw fee"></i>subscription fees: the break-even</span>${pace ? '<span><i class="sw hatch"></i>on pace for this month</span>' : ''}</div>`
+    ${agents.includes('other') ? `<span>${sw('other')}other in factory jobs</span>` : ''}
+    <span><i class="sw fee"></i>elapsed Plan fee</span>${pace ? '<span><i class="sw hatch"></i>on pace for this month</span>' : ''}</div>`
   const aside = `<aside><p><b>Above the dashed line is money saved.</b> Each column is what that month's work would have cost on the API: the factory's jobs, plus every other Claude Code and Codex session on this machine.</p>
     <p>${subsLine(subs)}</p></aside>`
   const chart = `<h2>Per month</h2><p class="sub">API-equivalent per month against the subscription fee that month.</p>${legend}
     <div class="chart-row"><div>${chartSvg}</div>${avail - W >= 260 ? aside : ''}</div>`
 
-  const monthRows = [...months].reverse().map((m) => `<tr><td>${esc(m.label)}${m.share < 1 ? ' <span class="note">so far</span>' : ''}</td>
+  const monthRows = months.slice().reverse().map((m) => `<tr><td>${esc(m.label)}${m.share < 1 ? ' <span class="note">so far</span>' : ''}</td>
     <td class="n">${m.jobs}</td><td class="n">${money(m.facT)}</td><td class="n">${money(m.outT)}</td>
-    ${AGENTS.map((a) => `<td class="n">${money(m.api[a])}</td><td class="n">${money(m.fee[a])}</td>`).join('')}
+    ${agents.map((a) => `<td class="n">${money(m.api[a])}</td><td class="n">${money(m.fee[a])}</td>`).join('')}
     <td class="n">${saved(m.apiT, m.feeT)}</td><td class="n">${times(m.apiT, m.feeT)}</td></tr>`).join('')
   const monthTable = `<h2>Months</h2><table class="costs"><thead><tr><th>month</th><th class="n">jobs</th>
     <th class="n">factory</th><th class="n">outside</th>
-    <th class="n">claude API</th><th class="n">claude fee</th><th class="n">codex API</th><th class="n">codex fee</th>
+    ${agents.map((a) => `<th class="n">${a} API</th><th class="n">${a} fee</th>`).join('')}
     <th class="n">saved</th><th class="n">value</th></tr></thead><tbody>${monthRows}</tbody>
-    <tfoot><tr><td>total</td><td class="n">${sum((m) => m.jobs)}</td><td class="n">${money(facT)}</td><td class="n">${money(outT)}</td>${AGENTS.map((a) => `<td class="n">${money(api[a])}</td><td class="n">${money(fee[a])}</td>`).join('')}
+    <tfoot><tr><td>total</td><td class="n">${sum((m) => m.jobs)}</td><td class="n">${money(facT)}</td><td class="n">${money(outT)}</td>${agents.map((a) => `<td class="n">${money(sum((m) => m.api[a]))}</td><td class="n">${money(sum((m) => m.fee[a]))}</td>`).join('')}
     <td class="n">${saved(apiT, feeT)}</td><td class="n">${times(apiT, feeT)}</td></tr></tfoot></table>`
 
+  const projectAgents = comparison && projects.some((p) => p.jobs.some((j) => j.cost_by_agent.other)) ? SPLIT_AGENTS : AGENTS
   const projRows = projects.map((p) => {
-    const c = p.jobs.reduce((s, j) => s + agentCost(j, 'claude'), 0), x = p.jobs.reduce((s, j) => s + agentCost(j, 'codex'), 0)
-    return { p, c, x, t: c + x }
+    const split = projectAgents.map((a) => p.jobs.reduce((s, j) => s + (comparison ? j.cost_by_agent[a] : agentCost(j, a)), 0))
+    return { p, split, t: split.reduce((s, v) => s + v, 0) }
   }).sort((a, b) => b.t - a.t)
   const projTotal = projRows.reduce((s, r) => s + r.t, 0)
-  const projBody = projRows.map(({ p, c, x, t }) => `<tr><td>${esc(p.name)}${p.missing ? ' <span class="note">not found</span>' : ''}</td>
-    <td class="n">${p.jobs.length}</td><td class="n">${money(c)}</td><td class="n">${money(x)}</td><td class="n">${money(t)}</td>
+  const projBody = projRows.map(({ p, split, t }) => `<tr><td>${esc(p.name)}${p.missing ? ' <span class="note">not found</span>' : ''}</td>
+    <td class="n">${p.jobs.length}</td>${split.map((v) => `<td class="n">${money(v)}</td>`).join('')}<td class="n">${money(t)}</td>
     <td class="n"><span class="bar" style="--w:${pct(t, projRows[0]?.t || 1)}%"></span>${pct(t, projTotal)}%</td></tr>`).join('')
-  const projTable = `<h2>Repos</h2><table class="costs"><thead><tr><th>repo</th><th class="n">jobs</th><th class="n">claude</th>
-    <th class="n">codex</th><th class="n">API-equivalent</th><th class="n">share</th></tr></thead><tbody>${projBody}</tbody></table>`
+  const projTable = `<h2>Repos</h2><table class="costs"><thead><tr><th>repo</th><th class="n">jobs</th>
+    ${projectAgents.map((a) => `<th class="n">${a}</th>`).join('')}<th class="n">API-equivalent</th><th class="n">share</th></tr></thead><tbody>${projBody}</tbody></table>`
 
   // Where the work outside the factory happened: the session's directory (last two segments; the full path is the tooltip).
   const dirs = outside.by_cwd || []
@@ -2084,9 +2119,8 @@ function planPage() {
       factory/config.json prices. Outside the factory: every other Claude Code transcript and Codex session on this
       machine, at this repo's prices; orchestrating sessions count there too. Claude Code deletes transcripts after
       30 days unless <code>cleanupPeriodDays</code> says otherwise, so older months lack that part.${unpricedNote}
-      This month's fees count pro rata. "On pace" adds the rest of the month at the mean of the last seven days (factory jobs)
-      and at the month's daily mean (outside sessions); it is a projection, not a forecast, and shows from day 3.
-      Monthly fee now: ${money(monthFee)}.</p></div>`
+      The elapsed Plan fee is prorated for the current month. Monthly pace adds the time remaining at the daily mean of
+      the last seven days of factory jobs within the month and the daily mean of Outside usage for the month so far.</p></div>`
 }
 const subsLine = (subs) => subs.map((s) => `${esc(s.name || s.agent)} ${money(s.usd_per_month)}/month${s.since ? ` since ${esc(s.since)}` : ''}`).join(' · ') || 'none listed'
 

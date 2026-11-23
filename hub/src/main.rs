@@ -37,6 +37,9 @@ mod overview;
 mod project;
 mod sse;
 mod store;
+#[cfg(test)]
+mod subscription_tests;
+mod subscriptions;
 mod tree;
 mod util;
 

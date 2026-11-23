@@ -174,13 +174,15 @@ fn subscription_statements(machine_id: i64, subs: &Value) -> Vec<Statement> {
     for (n, sub) in subs.as_array().into_iter().flatten().enumerate() {
         let Some(sub) = sub.as_object() else { continue };
         out.push((
-            "INSERT INTO subscriptions (machine_id, seq, name, agent, usd_per_month) VALUES (?,?,?,?,?)",
+            "INSERT INTO subscriptions (machine_id, seq, name, agent, usd_per_month, since) VALUES (?,?,?,?,?,?)",
             vec![
                 int(machine_id),
                 int(n as i64),
                 text(sub.get("name").and_then(Value::as_str).unwrap_or("")),
                 opt(sub.get("agent").and_then(Value::as_str)),
                 real(crate::util::number(sub.get("usd_per_month"))),
+                opt(sub.get("since").and_then(Value::as_str)
+                    .filter(|key| crate::subscriptions::month_start(key).is_some())),
             ],
         ));
     }

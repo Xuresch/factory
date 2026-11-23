@@ -112,17 +112,8 @@ pub fn all_served_ids(keys: &[(&str, &str, &str)]) -> Vec<String> {
     out
 }
 
-/// What `bin/dashboard` answers for `/_subscriptions.json`: a hash key for a subscription.
-fn subscription_key(sub: &Value) -> String {
-    format!(
-        "{}\0{}",
-        sub.get("name").unwrap_or(&Value::Null),
-        sub.get("agent").unwrap_or(&Value::Null)
-    )
-}
-
 /// Merge every machine's `outside` (bin/dashboard summarize()) into one.
-fn merge_outside(outsides: &[(String, Value)]) -> Value {
+fn merge_outside(outsides: &[(String, Value)], months: &BTreeMap<String, Value>) -> Value {
     let ready: Vec<_> = outsides
         .iter()
         .filter(|(_, o)| o.get("status").and_then(Value::as_str) == Some("ready"))
@@ -130,25 +121,10 @@ fn merge_outside(outsides: &[(String, Value)]) -> Value {
     if ready.is_empty() {
         return json!({"status": "scanning"});
     }
-    let mut months: Map<String, Value> = Map::new();
     let mut unpriced: Map<String, Value> = Map::new();
     let mut by_cwd: Vec<Value> = Vec::new();
     let mut sessions = crate::util::Num::Int(0);
     for (machine, o) in ready {
-        for (m, agents) in o
-            .get("months")
-            .and_then(Value::as_object)
-            .into_iter()
-            .flatten()
-        {
-            let row = months
-                .entry(m.clone())
-                .or_insert_with(|| json!({"claude": 0.0, "codex": 0.0}));
-            for (agent, v) in agents.as_object().into_iter().flatten() {
-                let sum = number(row.get(agent)) + number(Some(v));
-                row[agent.as_str()] = crate::util::float(sum);
-            }
-        }
         for (m, models) in o
             .get("unpriced")
             .and_then(Value::as_object)
@@ -293,30 +269,19 @@ impl Hub {
 
     /// What bin/dashboard's `/_subscriptions.json` answers, over every repo and machine.
     pub async fn subscriptions(&self) -> Result<Value, Error> {
+        self.subscriptions_at(crate::util::now_epoch()).await
+    }
+
+    pub(crate) async fn subscriptions_at(&self, now: i64) -> Result<Value, Error> {
+        let _snapshot = self.ingest_lock.lock().await;
         let machines = self
             .store
-            .query("SELECT id, name FROM machines ORDER BY name", vec![])
+            .query("SELECT 1 FROM machines LIMIT 1", vec![])
             .await?;
         if machines.is_empty() {
             return Ok(json!({"configured": false, "config": "factory hub"}));
         }
-        let mut subs = Vec::new();
-        let mut seen = HashSet::new();
-        for row in self
-            .store
-            .query(
-                "SELECT s.name AS name, s.agent AS agent, s.usd_per_month AS usd FROM subscriptions s \
-                 JOIN machines m ON m.id=s.machine_id ORDER BY m.name, s.seq",
-                vec![],
-            )
-            .await?
-        {
-            let sub = json!({"name": row["name"], "agent": row["agent"],
-                             "usd_per_month": crate::util::float(store::get_f64(&row, "usd"))});
-            if seen.insert(subscription_key(&sub)) {
-                subs.push(sub);
-            }
-        }
+        let comparison = crate::subscriptions::read(&self.store, now).await?;
         let outsides: Vec<(String, Value)> = self
             .store
             .query(
@@ -337,16 +302,16 @@ impl Hub {
             .store
             .query(
                 "SELECT r.slug AS repo, j.job_key AS id, j.stage AS stage, j.started AS started, \
-                 j.ended AS ended, j.cost_usd AS cost_usd, j.cost_claude AS claude, j.cost_codex AS codex \
+                 j.ended AS ended, j.cost_usd AS cost_usd, j.cost_claude AS claude, j.cost_codex AS codex, j.cost_other AS other \
                  FROM jobs j JOIN checkouts c ON c.id=j.checkout_id JOIN repos r ON r.id=c.repo_id \
                  ORDER BY r.slug, c.machine_id, j.job_key",
                 vec![],
             )
             .await?
         {
-            // both agents, zeroes too: an empty split would read as a total-only job (all claude)
+            // Include zeroes so a projected split never reads as a total-only job.
             let mut by_agent = Map::new();
-            for agent in ["claude", "codex"] {
+            for agent in ["claude", "codex", "other"] {
                 by_agent.insert(
                     agent.to_owned(),
                     crate::util::float(store::get_f64(&row, agent)),
@@ -364,8 +329,11 @@ impl Hub {
             .into_iter()
             .map(|(name, jobs)| json!({"name": name, "jobs": jobs, "missing": false}))
             .collect();
-        Ok(json!({"subscriptions": subs, "config": "factory hub",
-                  "outside": merge_outside(&outsides), "projects": projects}))
+        Ok(json!({
+            "subscriptions": comparison.plans, "config": "factory hub", "projects": projects,
+            "outside": merge_outside(&outsides, &comparison.outside_months),
+            "comparison": comparison.plans_comparison(),
+        }))
     }
 
     /// The answer for a path below `/r/<repo>/` or `/all/` (repo None).

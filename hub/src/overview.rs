@@ -2,15 +2,12 @@
 //! recent stage changes and this month's cost. Counts and sums come from the
 //! projected columns (hub/src/project.rs), not from the documents.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 
 use crate::store::{get, get_f64, get_int, get_or_empty, text, Error, Row};
-use crate::util::{
-    civil_from_days, date_from_days, days_from_civil, float, iso_from_epoch, now_epoch, now_iso,
-    quote, round4, SECONDS_PER_DAY,
-};
+use crate::util::{date_from_days, iso_from_epoch, now_epoch, quote, round4, SECONDS_PER_DAY};
 use crate::Hub;
 
 const WEEK: i64 = 7 * SECONDS_PER_DAY;
@@ -53,15 +50,6 @@ fn daily_json(days: &[String], daily: &Daily) -> Vec<Value> {
         .collect()
 }
 
-/// `YYYY-MM` of the month before `year-month`.
-fn prev_month(year: i64, month: i64) -> String {
-    if month == 1 {
-        format!("{:04}-12", year - 1)
-    } else {
-        format!("{year:04}-{:02}", month - 1)
-    }
-}
-
 #[derive(Default)]
 struct RepoMeta {
     url: Option<String>,
@@ -72,20 +60,16 @@ struct RepoMeta {
 }
 
 impl Hub {
-    #[allow(clippy::too_many_lines)]
     pub async fn overview(&self) -> Result<Value, Error> {
-        let now = now_iso();
-        let now_secs = now_epoch();
-        let month: String = now.chars().take(7).collect();
+        self.overview_at(now_epoch()).await
+    }
+
+    #[allow(clippy::too_many_lines)]
+    pub(crate) async fn overview_at(&self, now_secs: i64) -> Result<Value, Error> {
+        let now = iso_from_epoch(now_secs);
+        let month = &now[..7];
         let today = now_secs.div_euclid(SECONDS_PER_DAY);
         let days: Vec<String> = (0..14).rev().map(|n| date_from_days(today - n)).collect();
-        let (year, mon, day_of_month) = civil_from_days(today);
-        let prev = prev_month(year, mon);
-        let days_in_month = if mon == 12 {
-            days_from_civil(year + 1, 1, 1)
-        } else {
-            days_from_civil(year, mon + 1, 1)
-        } - days_from_civil(year, mon, 1);
 
         let machines = self
             .store
@@ -184,28 +168,21 @@ impl Hub {
             );
         }
         let mut this_month: HashMap<String, (f64, [f64; 3])> = HashMap::new();
-        let mut month_factory = [[0.0; 4]; 2]; // [usd, claude, codex, other] this month, last month
         for row in self
             .store
             .query(
                 &format!(
-                    "SELECT r.slug AS repo, j.started_month AS month, {SUMS} {JOBS} \
-                     WHERE j.started_month IN (?, ?) GROUP BY r.slug, j.started_month"
+                    "SELECT r.slug AS repo, {SUMS} {JOBS} \
+                     WHERE j.started_month = ? GROUP BY r.slug"
                 ),
-                vec![text(&month), text(&prev)],
+                vec![text(month)],
             )
             .await?
         {
-            let usd = get_f64(&row, "usd");
-            let parts = split(&row);
-            let which = usize::from(get_or_empty(&row, "month") != month);
-            month_factory[which][0] += usd;
-            for (t, p) in month_factory[which][1..].iter_mut().zip(parts) {
-                *t += p;
-            }
-            if which == 0 {
-                this_month.insert(get_or_empty(&row, "repo").to_owned(), (usd, parts));
-            }
+            this_month.insert(
+                get_or_empty(&row, "repo").to_owned(),
+                (get_f64(&row, "usd"), split(&row)),
+            );
         }
         let mut daily: HashMap<String, Daily> = HashMap::new();
         let mut all_daily: Daily = vec![(0.0, 0, [0.0; 3]); days.len()];
@@ -297,62 +274,6 @@ impl Hub {
             .and_then(|r| get_int(r, "n"))
             .unwrap_or(0);
 
-        // outside usage of ready scans, this month and last
-        let mut outside = [[0.0; 2]; 2]; // [claude, codex] this month, last month
-        let mut outside_total = [0.0; 2];
-        let mut by_agent = Map::new();
-        for (agent, usd) in [
-            ("claude", month_factory[0][1]),
-            ("codex", month_factory[0][2]),
-        ] {
-            if usd != 0.0 {
-                by_agent.insert(agent.to_owned(), float(usd));
-            }
-        }
-        for row in self
-            .store
-            .query(
-                "SELECT o.month AS month, o.agent AS agent, SUM(o.cost_usd) AS usd FROM outside_months o \
-                 JOIN outside_scans s ON s.machine_id=o.machine_id WHERE s.status='ready' \
-                 AND o.month IN (?, ?) GROUP BY o.month, o.agent",
-                vec![text(&month), text(&prev)],
-            )
-            .await?
-        {
-            let which = usize::from(get_or_empty(&row, "month") != month);
-            let agent = get_or_empty(&row, "agent");
-            let usd = get_f64(&row, "usd");
-            outside_total[which] += usd;
-            match agent {
-                "claude" => outside[which][0] += usd,
-                "codex" => outside[which][1] += usd,
-                _ => {}
-            }
-            if which == 0 {
-                let sum = by_agent.get(agent).and_then(Value::as_f64).unwrap_or(0.0) + usd;
-                by_agent.insert(agent.to_owned(), float(sum));
-            }
-        }
-        for v in by_agent.values_mut() {
-            *v = float(round4(v.as_f64().unwrap_or(0.0)));
-        }
-        let mut seen = HashSet::new();
-        let mut subscriptions_usd = 0.0;
-        for row in self
-            .store
-            .query(
-                "SELECT s.name AS name, s.agent AS agent, s.usd_per_month AS usd FROM subscriptions s \
-                 JOIN machines m ON m.id=s.machine_id ORDER BY m.name, s.seq",
-                vec![],
-            )
-            .await?
-        {
-            let key = (get_or_empty(&row, "name").to_owned(), get(&row, "agent").map(str::to_owned));
-            if seen.insert(key) {
-                subscriptions_usd += get_f64(&row, "usd");
-            }
-        }
-
         let events: Vec<Value> = self
             .store
             .query(
@@ -372,20 +293,14 @@ impl Hub {
             .collect();
 
         let total_daily = daily_json(&days, &all_daily);
-        let [f_now, f_prev] = month_factory;
+        let comparison = {
+            let _snapshot = self.ingest_lock.lock().await;
+            crate::subscriptions::read(&self.store, now_secs).await?
+        };
         Ok(json!({
             "now": now, "machines": machines, "repos": repos, "live": live, "needs_you": attn,
             "recent": done, "events": events, "merged_week": merged_week, "daily": total_daily,
-            "month": {"month": month,
-                      "api_equivalent_usd": round4(f_now[0] + outside_total[0]),
-                      "subscriptions_usd": float(subscriptions_usd), "by_agent": by_agent,
-                      "factory": split_json([f_now[1], f_now[2], f_now[3]]),
-                      "outside": json!({"claude": round4(outside[0][0]), "codex": round4(outside[0][1])}),
-                      "days_elapsed": day_of_month, "days_in_month": days_in_month,
-                      "prev": {"month": prev,
-                               "api_equivalent_usd": round4(f_prev[0] + outside_total[1]),
-                               "factory": split_json([f_prev[1], f_prev[2], f_prev[3]]),
-                               "outside": json!({"claude": round4(outside[1][0]),
-                                                 "codex": round4(outside[1][1])})}}}))
+            "month": comparison.overview_month(),
+        }))
     }
 }
