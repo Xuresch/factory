@@ -119,6 +119,7 @@ factory/
   bin/report                  pushes this machine's jobs to the hub (optional)
   bin/session_usage.py        reads and prices Claude Code and Codex sessions for job, dashboard, report
   dashboard.html              the board
+  job-summary.js              one job summary and Agent split for the board and the hub
 hub/                          the hub: one web app for every factory on every machine
 examples/jobs/                finished jobs from a real run
 INSTALL.md                    instructions for the installing agent

@@ -51,7 +51,8 @@ REPO = Path(__file__).resolve().parents[2]
 FACTORY = REPO / "factory"
 SCRATCH = REPO / ".scratch"
 SUBSCRIPTIONS = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "factory" / "subscriptions.json"
-JOB_KEYS = ("id", "stage", "started", "ended", "cost_usd", "cost_by_agent")
+# cost_by_agent and the priced rows: the page resolves the Agent split from them (factory/job-summary.js)
+JOB_KEYS = ("id", "stage", "started", "ended", "cost_usd", "cost_by_agent", "cost_breakdown")
 CACHE = session_usage.cache_path()
 RESCAN_SECONDS = 300
 

@@ -13,7 +13,7 @@ use serde_json::{Map, Value};
 use crate::store::{int, opt, real, text, Param, Statement};
 use crate::util::parse_iso;
 
-pub const PROJECTION_VERSION: i64 = 2;
+pub const PROJECTION_VERSION: i64 = 3;
 
 pub const LIVE: [&str; 7] = [
     "intake", "spec", "build", "gate", "review", "approve", "merging",
@@ -172,7 +172,7 @@ pub struct Projection {
 }
 
 /// The projected columns of `jobs`, after id, checkout_id, job_key, doc, doc_hash.
-pub const JOB_COLUMNS: [&str; 52] = [
+pub const JOB_COLUMNS: [&str; 53] = [
     "projection_version",
     "title",
     "stage",
@@ -211,6 +211,7 @@ pub const JOB_COLUMNS: [&str; 52] = [
     "cost_claude",
     "cost_codex",
     "cost_other",
+    "cost_split",
     "input_tokens",
     "cached_tokens",
     "output_tokens",
@@ -406,6 +407,8 @@ pub fn project(doc: &Value, lines: &HashMap<String, String>, seen: &Seen<'_>) ->
     let (claude, codex) = (agent_cost("claude"), agent_cost("codex"));
     let rest = cost_usd - claude - codex;
     let other = if rest > 0.005 { rest } else { 0.0 };
+    // the split as recorded, so a page can tell a recorded zero from a missing split
+    let cost_split = obj(g("cost_by_agent")).map(|m| Value::Object(m.clone()).to_string());
 
     // rounds: gate verdict, diff size, continues
     let round = i(g("round"));
@@ -685,6 +688,7 @@ pub fn project(doc: &Value, lines: &HashMap<String, String>, seen: &Seen<'_>) ->
         real(claude),
         real(codex),
         real(other),
+        opt(cost_split.as_deref()),
         int(tokens_in),
         int(tokens_cached),
         int(tokens_out),
@@ -986,6 +990,23 @@ mod tests {
         assert_eq!(rows(&p, INS_SURFACE).len(), 2);
         assert_eq!(rows(&p, INS_APPROVAL).len(), 2);
         assert_eq!(rows(&p, INS_FINDING)[1][2], text("ui"));
+    }
+
+    #[test]
+    fn cost_split_keeps_what_was_recorded() {
+        let split = |doc: serde_json::Value| {
+            col(&project(&doc, &HashMap::new(), &seen()), "cost_split").clone()
+        };
+        assert_eq!(
+            split(json!({"cost_usd": 3.0, "cost_by_agent": {"claude": 0, "codex": 0}})),
+            text(r#"{"claude":0,"codex":0}"#)
+        );
+        assert_eq!(
+            split(json!({"cost_usd": 3.0, "cost_by_agent": {}})),
+            text("{}")
+        );
+        assert_eq!(split(json!({"cost_usd": 12.0})), Param::Null);
+        assert_eq!(split(json!({"cost_by_agent": "x"})), Param::Null);
     }
 
     #[test]
