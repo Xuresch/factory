@@ -734,10 +734,16 @@ def running(jobs):
     return [j for j in jobs if j["stage"] not in TERMINAL | WAITING]
 
 
-def require_slot(job_id):
+def slot_problem(job_id):
     busy = [j["id"] for j in running(all_jobs()) if j["id"] != job_id]
-    require(len(busy) < CONCURRENCY,
-            f"concurrency {CONCURRENCY} reached; running: {', '.join(busy)}")
+    if len(busy) >= CONCURRENCY:
+        return f"concurrency {CONCURRENCY} reached; running: {', '.join(busy)}"
+    return None
+
+
+def require_slot(job_id):
+    problem = slot_problem(job_id)
+    require(problem is None, problem)
 
 
 def resolve(arg):
@@ -975,21 +981,25 @@ def raise_risk(intake):
             intake["risk"] = risk = floor
 
 
+def read_intake(h):
+    intake = {
+        "decision": h.get("DECISION"),
+        "rescoped": h.get("RESCOPED") == "yes",
+        "risk": h.get("RISK"),
+        "surfaces": [s.strip() for s in h.get("SURFACES", "").split(",")
+                     if s.strip() and s.strip() != "none"],
+        "size": h.get("SIZE"),
+        "split": h.get("SPLIT") == "yes",
+    }
+    raise_risk(intake)
+    return intake
+
+
 def sync(job):
     d = job_dir(job["id"])
     intake = d / "intake.md"
     if intake.exists():
-        h = header(intake)
-        job["intake"] = {
-            "decision": h.get("DECISION"),
-            "rescoped": h.get("RESCOPED") == "yes",
-            "risk": h.get("RISK"),
-            "surfaces": [s.strip() for s in h.get("SURFACES", "").split(",")
-                         if s.strip() and s.strip() != "none"],
-            "size": h.get("SIZE"),
-            "split": h.get("SPLIT") == "yes",
-        }
-        raise_risk(job["intake"])
+        job["intake"] = read_intake(header(intake))
     if job["round"]:
         rd = round_dir(job)
         gate = jobfiles.verdict("checks", rd / "checks.md")
@@ -1033,8 +1043,11 @@ def is_protected(path):
 def protected_only(job):
     """The repo paths spec.md names when there is at least one and every one is
     protected: work no builder may do. [] otherwise, so a mixed spec builds."""
-    paths = spec_paths(job)
-    return paths if paths and all(is_protected(p) for p in paths) else []
+    return only_protected(spec_paths(job))
+
+
+def only_protected(paths):
+    return tuple(paths) if all(is_protected(p) for p in paths) else ()
 
 
 def protected_listed(path):
@@ -1922,7 +1935,8 @@ def observe_transition(job, target=None, *, reading=None):
             return facts(rejection=rejection)
     if stage == "intake":
         path = d / "intake.md"
-        decision = header(path).get("DECISION") if path.exists() else None
+        h = header(path) if path.exists() else {}
+        decision = h.get("DECISION")
         if decision == "PROTECTED":
             listed = protected_listed(path)
             loose = [f for f in listed if not is_protected(f)]
@@ -1932,10 +1946,18 @@ def observe_transition(job, target=None, *, reading=None):
                 return facts(problem=f"intake.md says PROTECTED, but {', '.join(loose)} doesn't match config.json "
                                      f"protected_paths: the factory can build it, so ACCEPT")
             return facts(report=decision, protected=tuple(listed))
+        if decision == "ACCEPT" and job.get("agents"):
+            inline_spec = render_inline_spec(job, path, h)
+            if inline_spec is not None:
+                protected = only_protected(paths_in_spec(inline_spec, inline_spec_path_kind(job)))
+                return facts(report=decision, inline_spec=inline_spec, protected=protected,
+                             intake_why=section(path, "Why"))
         return facts(report=decision)
     if stage == "needs-info":
         # An operator may also explicitly send intake back to work.
-        return facts(replied=target is None and replied_since_question(fetch_issue(job["issue"])))
+        replied = target is None and replied_since_question(fetch_issue(job["issue"]))
+        problem = slot_problem(job["id"]) if replied or target == "intake" else None
+        return facts(replied=replied, problem=problem)
     if stage == "spec":
         if not (d / "spec.md").exists():
             return facts(problem="spec.md doesn't exist")
@@ -1954,12 +1976,14 @@ def observe_transition(job, target=None, *, reading=None):
             try:
                 answers = observe_builder_answers(job, path)
                 dirty = bool(git(job, "status", "--porcelain").stdout.strip())
-                if not dirty:
-                    require(int(git(job, "rev-list", "--count", f"{job['base_ref']}..HEAD").stdout) > 0,
-                            f"{job['branch']} has no commits on top of {job['base_ref']}")
+                if dirty:
+                    return facts(report=status, dirty=True)
+                require(int(git(job, "rev-list", "--count", f"{job['base_ref']}..HEAD").stdout) > 0,
+                        f"{job['branch']} has no commits on top of {job['base_ref']}")
+                pr = observe_build_pr(job) if GITHUB else None
             except Refused as e:
                 return facts(problem=str(e))
-            return facts(report=status, dirty=dirty, builder_answers=answers)
+            return facts(report=status, builder_answers=answers, pull_request=pr)
         return facts(report=status)
     if stage == "gate":
         gate = jobfiles.checks(round_dir(job) / "checks.md")
@@ -1979,6 +2003,8 @@ def observe_transition(job, target=None, *, reading=None):
             return facts(report=line, dirty=bool(git(job, "status", "--porcelain").stdout.strip()),
                          head=git(job, "rev-parse", "HEAD").stdout.strip())
         return facts(report=line)
+    if stage == "merging":
+        return facts(report=first_line(d / "decision.md"))
     if stage == "needs-human":
         feedback = sorted(d.glob("feedback-*.md"))
         return facts(approval=newer_report(d / "approval.md", d / "decision.md"),
@@ -2033,28 +2059,22 @@ def prepare_worktree(job):
         setup_worktree(job["worktree"], job_dir(job["id"]) / "worktree-setup.log")
 
 
-def post_intake(job, stage):
+def post_intake(job, decision):
     i = job["intake"]
-    title = f"### Factory intake: {i['decision']}"
-    if stage == "spec":
+    title = f"### Factory intake: {decision}"
+    if decision == "ACCEPT":
         title += f" (risk {i['risk']}, surfaces: {', '.join(i['surfaces']) or 'none'})"
         if i.get("risk_raised"):
             print(f"{job['id']}: risk raised {i['risk_raised']}")
     body = (job_dir(job["id"]) / "intake.md").read_text().partition("\n\n")[2].strip()
     TICKETS.comment(job["issue"], f"{title}\n\n{body}")
-    if stage != "spec":  # an accepted job files them when it merges
+    if decision != "ACCEPT":  # an accepted job files them when it merges
         create_follow_ups(job)
 
 
-def maybe_skip_spec(job):
-    if spec_from_intake(job):
-        files = protected_only(job)
-        if files:
-            stop_protected(job, files, section(job_dir(job["id"]) / "intake.md", "Why"))
-            request_human(job)
-            return "needs-human"
-        next_round(job)
-        return "build"
+def write_inline_spec(job, text):
+    (job_dir(job["id"]) / "spec.md").write_text(text)
+    job["spec_skipped"] = True
 
 
 def wait_for_info(job):
@@ -2066,7 +2086,6 @@ def return_ticket(job):
 
 
 def reopen_intake(job):
-    require_slot(job["id"])
     d = job_dir(job["id"])
     k = len(list(d.glob("intake-*.md"))) + 1
     (d / "intake.md").rename(d / f"intake-{k}.md")
@@ -2091,18 +2110,20 @@ def observe_builder_answers(job, path):
     return validated_builder_answers(job)
 
 
-def prepare_build_gate(job, answers):
-    # Refresh the remote branch only on application. Advice uses local facts.
-    if GITHUB:
-        git(job, "fetch", "origin", job["branch"], check=False)
-        head = git(job, "rev-parse", "HEAD").stdout.strip()
-        res = git(job, "rev-parse", f"origin/{job['branch']}", check=False)
-        remote = res.stdout.strip() if res.returncode == 0 else ""
-        require(head == remote, f"{job['branch']} isn't pushed: local {head[:7]}, origin {remote[:7] or 'missing'}")
-        if not job["pr"]:
-            prs = gh_json("pr", "list", "--head", job["branch"], "--state", "open", "--json", "number,url")
-            require(len(prs) == 1, f"expected one open PR from {job['branch']}, found {len(prs)}")
-            job["pr"], job["pr_url"] = prs[0]["number"], prs[0]["url"]
+def observe_build_pr(job):
+    branch = job["branch"]
+    head = git(job, "rev-parse", "HEAD").stdout.strip()
+    remote = git(job, "ls-remote", "--refs", "origin", f"refs/heads/{branch}").stdout.partition("\t")[0]
+    require(head == remote, f"{branch} isn't pushed: local {head[:7]}, origin {remote[:7] or 'missing'}")
+    if not job["pr"]:
+        prs = gh_json("pr", "list", "--head", branch, "--state", "open", "--json", "number,url")
+        require(len(prs) == 1, f"expected one open PR from {branch}, found {len(prs)}")
+        return prs[0]
+
+
+def record_build_gate(job, answers, pr):
+    if pr is not None:
+        job["pr"], job["pr_url"] = pr["number"], pr["url"]
     if answers:
         job.setdefault("answers", {})[str(job["round"])] = answers
 
@@ -2178,13 +2199,13 @@ def record_merge_failure(job, why):
 
 
 def apply_effects(job, decision):
-    """Execute the ordered effects. Intake may write the spec itself before finishing."""
+    """Execute the ordered effects for the chosen destination."""
     effects = {
         "close_merged": close_merged, "reject": reject_transition, "cleanup": cleanup_transition,
         "stop_protected": stop_protected, "stop_protected_intake": stop_protected_intake,
-        "prepare_worktree": prepare_worktree, "post_intake": post_intake, "maybe_skip_spec": maybe_skip_spec,
+        "prepare_worktree": prepare_worktree, "post_intake": post_intake, "write_inline_spec": write_inline_spec,
         "wait_for_info": wait_for_info, "return_ticket": return_ticket, "reopen_intake": reopen_intake,
-        "set_slices": set_slices, "next_round": next_round, "prepare_build_gate": prepare_build_gate,
+        "set_slices": set_slices, "next_round": next_round, "record_build_gate": record_build_gate,
         "escalate_build": escalate_build, "open_review": open_review, "escalate": escalate,
         "open_approval": open_approval, "escalate_disputes": escalate_disputes, "maybe_fall_back": maybe_fall_back,
         "remember_reviewed": remember_reviewed, "update_pr_review": update_pr_review,
@@ -2192,13 +2213,10 @@ def apply_effects(job, decision):
         "record_merge_failure": record_merge_failure, "request_human": request_human,
         "record_review_verdicts": record_review_verdicts, "sync_with_base": sync_with_base,
     }
-    stage = decision.stage
     for effect in decision.effects:
         if effect.name == "finish":
-            return finish_transition(job, stage)
-        destination = effects[effect.name](job, *effect.args)
-        if effect.name == "maybe_skip_spec" and destination:
-            stage = destination
+            return finish_transition(job, decision.stage)
+        effects[effect.name](job, *effect.args)
 
 
 def apply_transition(job, decision):
@@ -2828,32 +2846,29 @@ def announce_idle(busy_now, jobs):
         notify("Factory: run finished", text, "default", None, ["checkered_flag"])
 
 
-def spec_from_intake(job):
-    """For a small, low-risk job intake writes the acceptance criteria itself and
-    the spec writer is skipped (config.json `skip_spec_when`). Writes spec.md from
-    intake.md and returns True, or returns False and the spec writer runs."""
+def render_inline_spec(job, path, h):
+    """The spec intake can supply under `skip_spec_when`, or None."""
     rule = CONFIG.get("skip_spec_when")
-    i = job.get("intake") or {}
-    if not rule or i.get("split") or "spec" in (job.get("holds") or []):
-        return False
+    if not rule or "spec" in (job.get("holds") or []):
+        return None
+    i = read_intake(h)
+    if i["split"]:
+        return None
     if i.get("size") not in rule.get("size", []) or i.get("risk") not in rule.get("risk", []):
-        return False
-    if (i.get("risk") in CONFIG.get("hold", {}).get("after_spec_risk", [])):
-        return False
-    d = job_dir(job["id"])
-    criteria = section(d / "intake.md", "Acceptance criteria")
-    scope = section(d / "intake.md", "Scope")
+        return None
+    if i.get("risk") in CONFIG.get("hold", {}).get("after_spec_risk", []):
+        return None
+    criteria = section(path, "Acceptance criteria")
+    scope = section(path, "Scope")
     if not criteria or not scope:
-        return False
-    title = header(d / "intake.md").get("TITLE") or job["title"]
-    (d / "spec.md").write_text(
+        return None
+    title = h.get("TITLE") or job["title"]
+    return (
         f"# {title}\n\n> Issue {job['issue']}: {job['title']}\n\n"
         f"> Small, low-risk job: written from intake.md, no spec writer.\n\n"
         f"## Summary\n- Built from intake's scope and acceptance criteria.\n\n"
         f"## Requirements\n{scope}\n\n## Acceptance criteria\n{criteria}\n\n"
         f"## Out of scope\nAnything not in the requirements above.\n")
-    job["spec_skipped"] = True
-    return True
 
 
 def spec_title(job):
@@ -4670,7 +4685,7 @@ def role_port(job, role):
 OVERLAP_STAGES = {"build", "gate", "review", "approve", "merging"}
 
 
-def repo_path(token, root):
+def repo_path(token, path_kind):
     """A spec token as a repo-relative path (a directory ends in /), or None.
     Counts: a file or directory that exists under root, or a new file the spec
     plans, a path with a directory and an extension. A top-level directory
@@ -4683,10 +4698,10 @@ def repo_path(token, root):
     is_dir, t = t.endswith("/"), t.rstrip("/")
     if t in {"", "."}:
         return None
-    on_disk = root / t
-    if is_dir or on_disk.is_dir():
+    kind = "tree" if is_dir else path_kind(t)
+    if kind == "tree":
         return t + "/" if "/" in t else None
-    if on_disk.is_file():
+    if kind == "blob":
         return t
     if "/" in t and re.search(r"\.[A-Za-z]\w*$", t.rsplit("/", 1)[1]):
         return t
@@ -4700,12 +4715,38 @@ def spec_paths(job):
     f = job_dir(job["id"]) / "spec.md"
     if not f.exists():
         return []
-    text = re.sub(r"^## Out of scope[ \t]*\n.*?(?=^## |\Z)", "", f.read_text(), flags=re.M | re.S)
     root = Path(job["worktree"]) if Path(job["worktree"]).exists() else REPO
+    return paths_in_spec(f.read_text(), lambda path: disk_path_kind(root / path))
+
+
+def disk_path_kind(path):
+    if path.is_dir():
+        return "tree"
+    if path.is_file():
+        return "blob"
+    return None
+
+
+def inline_spec_path_kind(job):
+    root = Path(job["worktree"])
+    if root.exists():  # a rewind keeps the existing worktree
+        return lambda path: disk_path_kind(root / path)
+    # A new worktree starts at the job's base, which can differ from this checkout.
+    entries = run(["git", "ls-tree", "-rtz", "--full-tree", jref(job)]).stdout
+    kinds = {}
+    for entry in entries.split("\0"):
+        if entry:
+            metadata, _, path = entry.partition("\t")
+            kinds[path] = metadata.split()[1]
+    return kinds.get
+
+
+def paths_in_spec(text, path_kind):
+    text = re.sub(r"^## Out of scope[ \t]*\n.*?(?=^## |\Z)", "", text, flags=re.M | re.S)
     found = []
     for ticked, bare in re.findall(r"`([^`\n]+)`|(\S+)", text):
         for token in ticked.split() if ticked else [bare]:
-            p = repo_path(token, root)
+            p = repo_path(token, path_kind)
             if p and p not in found:
                 found.append(p)
     return found
@@ -5045,6 +5086,8 @@ def decision_step(job, decision, role=None):
         return ("advance", f"{JOB} advance {i} {decision.stage}")
     if decision.action == "route":
         return ("run", f"factory/bin/route {i}")
+    if decision.action == "run-merge":
+        return ("run", f"{JOB} merge {i}")
     if decision.action == "rerun-gate":
         return ("run", f"factory/bin/gate {i}")
     if decision.action == "continue":
@@ -5162,7 +5205,7 @@ def next_merging(job, since):
     w = merge_waiting(job)
     if w:
         return [("wait", f"job merge (pid {w['pid']}) waiting for CI on PR #{job['pr']} since {clock(entry_time({'at': w['since']}))}")]
-    return [("run", f"{JOB} merge {job['id']}")]
+    return [decision_step(job, transition_decision(job))]
 
 
 NEXT = {"intake": next_intake, "spec": next_spec, "build": next_build, "gate": next_gate,
@@ -5269,6 +5312,7 @@ def main(argv):
             cmd_create(args[0])
         elif cmd == "advance" and len(args) == 2:
             job = sync(resolve(args[0]))
+            old = job["stage"]
             if args[1] == "approve":
                 decision = transition_decision(job, "approve")
                 require(decision.action == "advance", decision.reason)
@@ -5289,7 +5333,7 @@ def main(argv):
             if args[1] == "approve" and job.get("approve_carried") == job["round"]:
                 print(f"{job['id']}: approval carried from round {job['merge_only']['from']} (merge-only round, "
                       f"decision.md says APPROVE); don't start the approver: `job merge {job['id']}`")
-            if args[1] == "spec" and job["stage"] == "build":
+            if old == "intake" and job["stage"] == "build" and job.get("spec_skipped"):
                 print(f"{job['id']}: spec skipped (small, low risk): spec.md is intake's scope and criteria; "
                       f"start the builder: `job start {job['id']} builder`")
             switched = (job.get("builder_log") or [{}])[-1]

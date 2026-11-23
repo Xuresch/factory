@@ -10,7 +10,7 @@ REJECTABLE = {"spec", "build", "gate", "review", "approve"}
 REWINDABLE = REJECTABLE | {"paused", "needs-human"}
 
 TRANSITIONS = {
-    "intake": {"needs-info", "rejected", "spec", "needs-human"},
+    "intake": {"needs-info", "rejected", "spec", "build", "needs-human"},
     "needs-info": {"intake", "rejected"},
     "spec": {"build", "rejected", "needs-human"},
     "build": {"gate", "needs-human", "rejected"},
@@ -28,10 +28,13 @@ class Facts:
     report: str | None = None
     problem: str | None = None
     protected: tuple = ()
+    inline_spec: str | None = None
+    intake_why: str | None = None
     gate: dict | None = None
     head: str | None = None
     dirty: bool = False
     builder_answers: dict | None = None
+    pull_request: dict | None = None
     reviews: dict = field(default_factory=dict)
     review_problems: dict = field(default_factory=dict)
     disputes: tuple = ()
@@ -57,6 +60,7 @@ class Decision:
     reason: str
     stage: str | None = None
     effects: tuple[Effect, ...] = ()
+    legacy_target: str | None = None
 
 
 def rounds_left(job):
@@ -67,12 +71,12 @@ def _round_reason(job):
     return f'round {job["round"]} of {job["round_limit"]}'
 
 
-def _transition(stage, reason, *effects):
+def _transition(stage, reason, *effects, legacy_target=None):
     if stage == "needs-human":
         effects += (Effect("request_human"),)
     if stage in TERMINAL:
         effects += (Effect("cleanup"),)
-    return Decision("advance", reason, stage, effects + (Effect("finish"),))
+    return Decision("advance", reason, stage, effects + (Effect("finish"),), legacy_target)
 
 
 def _rewind(job, target, max_rounds):
@@ -154,13 +158,19 @@ def _progression(job, facts, target, max_rounds):
         if report == "ACCEPT":
             if not job.get("agents"):
                 return Decision("route", "route the job first: factory/bin/route " + job["id"])
-            return _transition("spec", "intake accepted", Effect("prepare_worktree"), Effect("post_intake", ("spec",)),
-                               Effect("maybe_skip_spec"))
+            accepted = (Effect("prepare_worktree"), Effect("post_intake", ("ACCEPT",)))
+            if facts.inline_spec is None:
+                return _transition("spec", "intake accepted", *accepted)
+            accepted += (Effect("write_inline_spec", (facts.inline_spec,)),)
+            if facts.protected:
+                return _transition("needs-human", "intake's spec names only protected paths", *accepted,
+                                   Effect("stop_protected", (facts.protected, facts.intake_why)), legacy_target="spec")
+            return _transition("build", "intake supplied the spec", *accepted, Effect("next_round"), legacy_target="spec")
         if report == "NEEDS-INFO":
-            return _transition("needs-info", "intake needs information", Effect("post_intake", ("needs-info",)),
+            return _transition("needs-info", "intake needs information", Effect("post_intake", ("NEEDS-INFO",)),
                                Effect("wait_for_info"))
         if report == "REJECT":
-            return _transition("rejected", "intake rejected", Effect("post_intake", ("rejected",)), Effect("return_ticket"))
+            return _transition("rejected", "intake rejected", Effect("post_intake", ("REJECT",)), Effect("return_ticket"))
         if report == "PROTECTED":
             return _transition("needs-human", "intake listed only protected files",
                                Effect("stop_protected_intake", (facts.protected,)))
@@ -180,7 +190,8 @@ def _progression(job, facts, target, max_rounds):
         if report == "STATUS: READY":
             if facts.dirty:
                 return Decision("refuse", "the worktree has uncommitted changes")
-            return _transition("gate", "the build is ready", Effect("prepare_build_gate", (facts.builder_answers,)))
+            return _transition("gate", "the build is ready",
+                               Effect("record_build_gate", (facts.builder_answers, facts.pull_request)))
         if report == "STATUS: PARTIAL" and facts.continues_left:
             return Decision("continue", "the builder has continues left in this round")
         if report in {"STATUS: BLOCKED", "STATUS: PARTIAL"}:
@@ -206,6 +217,10 @@ def _progression(job, facts, target, max_rounds):
                                Effect("record_merge_failure", (reason,)))
         if facts.merge_outcome in {"recoverable", "escalate"}:
             return _transition("needs-human", reason, Effect("escalate", (reason,)))
+        if report == "ESCALATE":
+            return _transition("needs-human", "the operator escalated the merge")
+        if target is None:
+            return Decision("run-merge", "continue the merge")
         return Decision("refuse", reason)
     if stage == "needs-human":
         if target == "merging":
@@ -238,7 +253,7 @@ def decide(job, facts=None, *, target=None, intent="advance", max_rounds=0):
     if facts.merge_outcome is not None and old != "merging":
         return Decision("refuse", f'{job["id"]} is in {old}, not merging')
     decision = _progression(job, facts, target, max_rounds)
-    if target is None or decision.stage == target:
+    if target is None or target in (decision.stage, decision.legacy_target):
         return decision
     reason = decision.reason
     if old == "spec" and decision.stage == "build":

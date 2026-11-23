@@ -3449,6 +3449,69 @@ t_lifecycle_sets_up_worktree_before_ticket_comment() {
   check "stage persisted" "$(field "$id" "d['stage']")" "spec"
 }
 
+t_lifecycle_operator_escalates_from_merging() {
+  new_repo manualescalation; ticket 01 One; commit_all
+  local id; id=$(to_build 01 low none); build_commit "$id" y.txt y; to_review "$id"
+  review "$id" 1 code PASS; J advance "$id" approve >/dev/null || return 1
+  printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"
+  J advance "$id" merging >/dev/null || return 1
+  printf 'ESCALATE\n\n## Why\nWait for the operator.\n' > "factory/jobs/$id/decision.md"
+  check "escalation is available from merging" "$(J advance "$id" needs-human)" "needs-human (round 1)" &&
+  check "keeps the operator's reason" "$(cat .scratch/f/issues/01-t.md)" "Wait for the operator." &&
+  check "ticket waits for a human" "$(status_of 01)" "ready-for-human" &&
+  check "job accepts feedback" "$(echo 'Try again.' | J feedback "$id")" "round 2" &&
+  check "feedback reopened build" "$(field "$id" "d['stage']")" "build"
+}
+
+t_lifecycle_advice_checks_pushed_head_and_pr() {
+  new_gh_repo nextpushed; gh_issue 1 One
+  local id; id=$(J create 1) || return 1
+  intake "$id" low none; factory/bin/route "$id" >/dev/null && J advance "$id" spec >/dev/null || return 1
+  echo '# Spec' > "factory/jobs/$id/spec.md"; J advance "$id" build >/dev/null || return 1
+  build_commit "$id" y.txt y; ready "$id"
+  check "explicit advance refuses an unpushed branch" "$(J advance "$id" gate 2>&1)" "isn't pushed" &&
+  check "advice sees the unpushed branch" "$(J next "$id")" "isn't pushed" || return 1
+  git -C ".worktrees/$id" push -q origin "factory/$id" || return 1
+  check "advice also requires the PR" "$(J next "$id")" "expected one open PR" || return 1
+  gh pr create --draft --base master --head "factory/$id" --title "feat: t" --body b >/dev/null
+  check "advice allows gate after push and PR" "$(J next "$id")" "advance: factory/bin/job advance $id gate" &&
+  J advance "$id" gate >/dev/null &&
+  check "the advised move records the PR" "$(field "$id" "d['stage'], d['pr']")" "('gate', 7)"
+}
+
+t_lifecycle_advice_checks_intake_slot() {
+  new_repo nextintake; ticket 01 One; ticket 02 Two; set_config concurrency 1; commit_all
+  local id other; id=$(J create f/01) || return 1
+  needs_info "$id"; echo 'The start page.' | J reply f/01 >/dev/null || return 1
+  other=$(J create f/02) || return 1
+  check "explicit advance refuses with no slot" "$(J advance "$id" intake 2>&1)" "concurrency 1 reached; running: $other" &&
+  check "advice sees the same job holding the slot" "$(J next "$id")" "concurrency 1 reached; running: $other" &&
+  check "refusal kept needs-info" "$(status_of 01)" "needs-info" || return 1
+  echo 'Cancel this.' | J reject "$other" >/dev/null || return 1
+  check "intake is advised once a slot opens" "$(J next "$id")" "advance: factory/bin/job advance $id intake" &&
+  J advance "$id" intake >/dev/null &&
+  check "stage persisted" "$(field "$id" "d['stage']")" "intake"
+}
+
+t_lifecycle_advises_the_inline_spec_destination() {
+  new_repo nextskipspec; ticket 01 One; ticket 02 Two; commit_all
+  local n id file stage round
+  for n in 01 02; do
+    id=$(J create "f/$n") || return 1
+    if [[ "$n" == 01 ]]; then file=x.txt; stage=build; round=1
+    else file=factory/checks.sh; stage=needs-human; round=0; fi
+    intake "$id" low none
+    sed -i "/^## Scope/{n;s|.*|Change \`$file\`.|;}" "factory/jobs/$id/intake.md"
+    printf '\n## Acceptance criteria\n1. It works.\n' >> "factory/jobs/$id/intake.md"
+    factory/bin/route "$id" >/dev/null || return 1
+    check "inline spec advice" "$(J next "$id")" "advance: factory/bin/job advance $id $stage" &&
+    [[ ! -e "factory/jobs/$id/spec.md" && ! -e ".worktrees/$id" ]] &&
+    J advance "$id" "$stage" >/dev/null &&
+    check "inline spec was written on application" "$(cat "factory/jobs/$id/spec.md")" "Change \`$file\`." &&
+    check "advised stage and round persisted" "$(field "$id" "d['stage'], d['round']")" "('$stage', $round)" || return 1
+  done
+}
+
 # ---- runner ----------------------------------------------------------------
 
 all_tests=$(declare -F | awk '{print $3}' | grep '^t_')
