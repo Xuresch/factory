@@ -77,8 +77,10 @@ factory/tests/run.sh
 factory/tests/test_lifecycle.py
 factory/tests/job_summary.test.js
 factory/tests/job_summary_fixtures.json
+factory/tests/cost-aggregation.test.js
 factory/dashboard.html
 factory/job-summary.js
+factory/cost-aggregation.js
 ```
 
 ```bash

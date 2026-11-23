@@ -384,7 +384,9 @@
 
 <script src="/static/nav.js"></script>
 <script src="/all/job-summary.js"></script>
+<script src="/all/cost-aggregation.js"></script>
 <script>
+const { AGENTS, displayAmount, splitDisplay, sourceSplitDisplay } = CostAggregation
 const LIVE = new Set(['intake', 'spec', 'build', 'gate', 'review', 'approve', 'merging'])
 const ATTN = new Set(['needs-human', 'paused', 'needs-info'])
 const TRACK = [['intake', 'intake'], ['spec', 'spec'], ['build', 'build'], ['gate', 'gate'], ['review', 'review'], ['approve', 'approve'], ['merging', 'merge']]
@@ -483,26 +485,29 @@ const T = (iso, k = 'ago', cls = '') => `<span ${cls ? `class="${cls}" data-c="$
 // One micro-bar next to every cost: claude | codex | other. The amount stays in text; the bar
 // has a text equivalent ("claude $213 · codex $69") for screen readers and a tooltip with shares.
 
-const AG = [['claude', 'c'], ['codex', 'x'], ['other', 'o']]
 const agentCls = (a) => (a === 'claude' ? 'c' : a === 'codex' ? 'x' : 'o')
 const sw = (a, extra = '') => `<span class="sw ${agentCls(a)}${extra}" aria-hidden="true"></span>`
 // A repo or day without a split is all "other" (the hub does the same).
 const byOf = (by, total) => (by && Object.keys(by).length ? by : { other: Number(total) || 0 })
 // A job's Agent split, the same as the dashboard's (factory/job-summary.js).
 const jobSplit = (j) => JobSummary.fromHub(j).split
-function splitText(by, pct) {
-  const sum = AG.reduce((s, [a]) => s + (Number(by[a]) || 0), 0)
-  return AG.filter(([a]) => Number(by[a]) >= 0.005)
-    .map(([a]) => `${a} ${money(by[a])}${pct ? ` (${Math.round(Number(by[a]) / sum * 100)}%)` : ''}`).join(' · ') || 'no cost'
+function splitText(display, shares) {
+  return display.agents.map(({ agent, amount, percent }) =>
+    `${agent} ${money(displayAmount(amount))}${shares ? ` (${percent}%)` : ''}`).join(' · ') || 'no visible agent costs'
 }
-// by: {claude, codex, other}. `parts` lets the spend tile draw factory and outside as separate segments.
-function split(by, size = '', parts) {
-  const segs = parts || AG.map(([a, k]) => ({ k, v: Number(by[a]) || 0 }))
-  const body = segs.filter((p) => p.v > 0.004).map((p) => `<i class="${p.k}${p.out ? ' out' : ''}" style="flex:${p.v} 1 0"></i>`).join('')
-  const label = splitText(by)
-  return `<span class="split ${size}" role="img" aria-label="${esc(label)}" title="${esc(splitText(by, true))}">${body}</span>`
+function renderSplit(display, size = '') {
+  const body = display.segments.map(({ agent, amount, source }) =>
+    `<i class="${agentCls(agent)}${source === 'outside' ? ' out' : ''}" style="flex:${amount} 1 0"></i>`).join('')
+  return `<span class="split ${size}" role="img" aria-label="${esc(splitText(display))}" title="${esc(splitText(display, true))}">${body}</span>`
 }
-const legend = (by) => `<span class="lg">${AG.filter(([a]) => Number(by[a]) >= 0.005).map(([a]) => `<span>${sw(a)}${a} ${money(by[a])}</span>`).join('')}</span>`
+const split = (by, size) => renderSplit(splitDisplay(by), size)
+const legend = (display) => `<span class="lg">${display.agents.map(({ agent, amount }) =>
+  `<span>${sw(agent)}${agent} ${money(displayAmount(amount))}</span>`).join('')}</span>`
+function monthlySplit(month, total) {
+  return month.factory || month.outside
+    ? sourceSplitDisplay(month.factory, month.outside)
+    : splitDisplay(byOf(month.by_agent, total))
+}
 
 // ---- Pieces --------------------------------------------------------------
 
@@ -600,7 +605,8 @@ function liveRow(e) {
 // ---- Sparkline: 14 stacked columns (claude bottom, codex on top) on one scale for every card ----
 const dayName = (d) => new Date(`${d}T12:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 const dayBy = (x) => byOf(x.by_agent, x.cost_usd)
-const dayRead = (x) => `${dayName(x.day)}: ${money(x.cost_usd)}${Number(x.cost_usd) > 0 ? ` (${splitText(dayBy(x))})` : ''}, ${plural(Number(x.jobs) || 0, 'job')}`
+const daySplit = (x) => splitDisplay(dayBy(x))
+const dayRead = (x, display) => `${dayName(x.day)}: ${money(x.cost_usd)}${Number(x.cost_usd) > 0 ? ` (${splitText(display)})` : ''}, ${plural(Number(x.jobs) || 0, 'job')}`
 function spark(daily, max) {
   const d = daily || []
   const n = Math.max(d.length, 1), w = 168, h = 44, gp = 3, bw = (w - gp * (n - 1)) / n, top = h - 3
@@ -608,15 +614,14 @@ function spark(daily, max) {
   const bars = d.map((x, i) => {
     const v = Number(x.cost_usd) || 0
     const X = i * (bw + gp)
-    const r = dayRead(x)
+    const display = daySplit(x)
+    const r = dayRead(x, display)
     let out = ''
     if (v > 0) {
-      const by = dayBy(x)
       const full = Math.max(3, (v / max) * (top - 2))
       let y = top
-      for (const [a, k] of AG) {
-        const part = Number(by[a]) || 0
-        if (part <= 0) continue
+      for (const { agent, amount: part } of display.segments) {
+        const k = agentCls(agent)
         const hh = Math.max(1, part / v * full)
         out += `<rect class="seg-${k}" x="${X.toFixed(1)}" y="${(y - hh).toFixed(1)}" width="${bw.toFixed(1)}" height="${hh.toFixed(1)}"${full > 16 ? ' stroke="var(--card)" stroke-width="1"' : ''}/>`
         y -= hh
@@ -637,7 +642,7 @@ function repoCard(r, max) {
   const [o, ...n] = String(r.repo).split('/')
   const name = n.length ? `<span class="dim">${esc(o)}/</span>${esc(n.join('/'))}` : esc(o)
   const stat = (k, v, label) => (v || k === 'tot' ? `<span class="${k}"><b>${esc(v || 0)}</b> ${label}</span>` : '')
-  const mby = byOf(r.cost_month_by_agent, r.cost_month)
+  const display = splitDisplay(byOf(r.cost_month_by_agent, r.cost_month))
   const fresh = st
     ? `<div class="stalebox">${pinIcon}<span>Stale: ${esc(st.who)} silent for ${gap(st.age)}</span></div>`
     : `<div class="fresh ${freshClass(r.last_seen)}"><span class="fdot"></span><span class="ft">${T(r.last_seen, 'rep')}</span></div>`
@@ -647,7 +652,7 @@ function repoCard(r, max) {
     ${fresh}
     <div class="counts">${stat('run', c.running, 'running')}${stat('att', c.needs_you, 'needs you')}${stat('mrg', c.merged, 'merged')}${stat('tot', c.total, 'jobs')}</div>
     <div class="rbottom"><div class="cost"><b>${money(r.cost_month)}</b>this month</div>${spark(r.daily, max)}</div>
-    ${split(mby, 'full')}${legend(mby)}
+    ${renderSplit(display, 'full')}${legend(display)}
   </article>`
 }
 
@@ -677,12 +682,14 @@ function trend(daily, W, title, sub) {
   const grid = lines.map((v) => `<line class="grid" x1="${P.l}" x2="${W - P.r}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}"/><text x="${P.l - 8}" y="${(Y(v) + 4).toFixed(1)}" text-anchor="end">${tick$(v)}</text>`).join('')
   const every = Math.ceil(n / (W < 500 ? 4 : 7))
   const maxI = totals.indexOf(Math.max(...totals))
+  const splits = daily.map(daySplit)
   const cols = daily.map((x, i) => {
     const cx = P.l + slot * i + slot / 2, X = cx - bw / 2
-    const by = dayBy(x), v = totals[i]
+    const display = splits[i], v = totals[i]
     let y = P.t + ph, segs = ''
-    const parts = AG.map(([a, k]) => [k, Number(by[a]) || 0]).filter(([, p]) => p > 0.004)
-    parts.forEach(([k, p], si) => {
+    const parts = display.segments
+    parts.forEach(({ agent, amount: p }, si) => {
+      const k = agentCls(agent)
       const full = p / ymax * ph
       const last = si === parts.length - 1
       const hh = Math.max(1, full - (last ? 0 : 2))   // 2 px of surface between stacked segments
@@ -694,11 +701,11 @@ function trend(daily, W, title, sub) {
     if (!parts.length) segs = `<rect x="${X.toFixed(1)}" y="${P.t + ph - 1}" width="${bw.toFixed(1)}" height="1" fill="var(--faint)"/>`
     const lab = (n - 1 - i) % every === 0
     const direct = v > 0 && (i === maxI || i === n - 1) ? `<text class="${i === n - 1 ? 'on' : ''}" x="${cx.toFixed(1)}" y="${(Y(v) - 5).toFixed(1)}" text-anchor="middle">${money(v)}</text>` : ''
-    return `<g class="cb" tabindex="0" role="img" data-i="${i}" aria-label="${esc(dayRead(x))}"><rect class="hit" x="${(P.l + slot * i).toFixed(1)}" y="${P.t}" width="${slot.toFixed(1)}" height="${ph}"/>${segs}${direct}`
+    return `<g class="cb" tabindex="0" role="img" data-i="${i}" aria-label="${esc(dayRead(x, display))}"><rect class="hit" x="${(P.l + slot * i).toFixed(1)}" y="${P.t}" width="${slot.toFixed(1)}" height="${ph}"/>${segs}${direct}`
       + `${lab ? `<text class="${i === n - 1 ? 'on' : ''}" x="${cx.toFixed(1)}" y="${H - 5}" text-anchor="middle">${esc(dayName(x.day))}</text>` : ''}</g>`
   }).join('')
-  const any = (k) => daily.some((x) => Number(dayBy(x)[k]) > 0.004)
-  const lg = `<div class="lg">${AG.filter(([a]) => any(a)).map(([a]) => `<span>${sw(a)}${a}</span>`).join('')}</div>`
+  const visible = new Set(splits.flatMap((display) => display.agents.map(({ agent }) => agent)))
+  const lg = `<div class="lg">${AGENTS.filter((agent) => visible.has(agent)).map((agent) => `<span>${sw(agent)}${agent}</span>`).join('')}</div>`
   const tot = totals.reduce((s, v) => s + v, 0)
   const table = `<details><summary>Table of all ${n} days</summary><table><thead><tr><th>Day</th><th>claude</th><th>codex</th><th>other</th><th>total</th><th>jobs</th></tr></thead><tbody>${daily.map((x) => {
     const b = dayBy(x)
@@ -814,10 +821,7 @@ function render() {
   // Spend tile: factory and outside, per agent, on pace, against last month and against what you pay.
   const fac = m.factory || {}, out = m.outside || {}
   const haveSplit = m.factory || m.outside
-  const mby = haveSplit ? { claude: (fac.claude || 0) + (out.claude || 0), codex: (fac.codex || 0) + (out.codex || 0), other: (fac.other || 0) + (out.other || 0) } : byOf(m.by_agent, api)
-  const parts = haveSplit
-    ? [{ k: 'c', v: fac.claude }, { k: 'c', v: out.claude, out: 1 }, { k: 'x', v: fac.codex }, { k: 'x', v: out.codex, out: 1 }, { k: 'o', v: fac.other }, { k: 'o', v: out.other, out: 1 }]
-    : undefined
+  const display = monthlySplit(m, api)
   const facT = sum(fac), outT = sum(out)
   const el = Number(m.days_elapsed) || 0, dim = Number(m.days_in_month) || 0
   const pace = el >= 3 && dim ? api / el * dim : 0
@@ -837,8 +841,8 @@ function render() {
     ? `<span class="lg"><span><span class="sw o" aria-hidden="true"></span>factory ${money(facT)}</span><span><span class="sw o out" aria-hidden="true"></span>outside ${money(outT)}</span></span>` : ''
   const spend = `<div class="tile spend"><div class="k">Spend in ${esc(m.month ? monthName(m.month) : 'this month')}, API-equivalent</div>
       <div class="v">${money(api)}${delta}</div>
-      ${split(mby, 'tall full', parts)}
-      ${legend(mby)}${fo}
+      ${renderSplit(display, 'tall full')}
+      ${legend(display)}${fo}
       <div class="pace">${pace ? `on pace for <b>${money(pace)}</b> · ` : ''}${subs > 0 ? `vs <b>${money(subs)}</b> subscriptions · ${(api / subs).toFixed(1)}×` : 'no subscriptions listed'}</div></div>`
 
   const oldestWait = needs ? [...d.needs_you].sort((a, b) => t(lastAt(a.job)) - t(lastAt(b.job)))[0] : null
@@ -986,9 +990,10 @@ document.body.append(tip)
 function showTip(g, x, y) {
   const d = chartData[Number(g.dataset.i)]
   if (!d) return
-  const by = dayBy(d), tot = Number(d.cost_usd) || 0
+  const tot = Number(d.cost_usd) || 0
   tip.innerHTML = `<div class="th"><span>${esc(dayName(d.day))}</span><span>${money(tot)}</span></div>`
-    + AG.filter(([a]) => Number(by[a]) >= 0.005).map(([a]) => `<div class="tr">${sw(a)}${a}<b>${money(by[a])} · ${Math.round(by[a] / tot * 100)}%</b></div>`).join('')
+    + daySplit(d).agents.map(({ agent, amount, percent }) =>
+      `<div class="tr">${sw(agent)}${agent}<b>${money(displayAmount(amount))} · ${percent}%</b></div>`).join('')
     + `<div class="tr">${plural(Number(d.jobs) || 0, 'job')}</div>`
   tip.hidden = false
   const r = tip.getBoundingClientRect()

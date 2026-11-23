@@ -63,6 +63,7 @@ class HubCase(unittest.TestCase):
         tmp = Path(self.tmp.name)
         (tmp / "dashboard.html").write_text("<title>dash</title>")
         (tmp / "job-summary.js").write_text("// summary")
+        (tmp / "cost-aggregation.js").write_text("// costs")
         (tmp / "static").mkdir()
         (tmp / "static" / "index.html").write_text("<h1>overview</h1>")
         (tmp / "static" / "app.js").write_text("1")
@@ -539,6 +540,19 @@ for (const d of input.docs) out.local[d.id] = J.fromLocal(d).split
 for (const [repo, jobs] of Object.entries(input.hub)) for (const j of jobs) out.hub[repo + ' ' + j.id] = J.fromHub(j, { repo }).split
 console.log(JSON.stringify(out))
 """
+
+
+class TestCostModule(HubCase):
+    def test_served_from_the_same_file_for_every_hub_view(self):
+        self.ok(push("m1", [repo("o/r", [entry("001")])]))
+        overview = (Path(__file__).resolve().parent / "static" / "index.html").read_text()
+        dashboard = (Path(__file__).resolve().parent.parent / "factory" / "dashboard.html").read_text()
+        self.assertIn('src="/all/cost-aggregation.js"', overview)
+        self.assertIn('src="cost-aggregation.js"', dashboard)
+        for path in ("/r/o/r/cost-aggregation.js", "/all/cost-aggregation.js"):
+            status, text, res = self.get(path)
+            self.assertEqual((status, text), (200, "// costs"), path)
+            self.assertIn("javascript", res.getheader("Content-Type"))
 
 
 class TestJobSummary(HubCase):
