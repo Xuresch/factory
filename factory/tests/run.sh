@@ -57,6 +57,7 @@ p = "factory/config.json"; c = json.load(open(p))
 c.setdefault("hold", {})["only_when_needed"] = False  # most tests want every high-risk spec held
 c.setdefault("labels", {})["factory"] = None  # an installation's opt-in label; the label tests set it
 c.update(base_branch="master", concurrency=3, notify="", tracker="local", merge_method="merge", worktree_root=None, worktree_setup="", replace_builder_after_partials=2,
+         codegraph="off",
          min_risk_for_surface={"security": "medium"},
          worktree_cache_dirs=["target/factory-jobs/{name}", "target/factory-jobs/{name}-native"])
 json.dump(c, open(p, "w"), indent=2)
@@ -1694,6 +1695,102 @@ EOF2
   check "teardown ran in the worktree before removal" "$(cat torn.txt)" ".worktrees/$id" &&
   check "teardown logged" "$(head -1 "factory/jobs/$id/worktree-teardown.log")" "worktree_teardown exit 0" &&
   check "worktree gone" "$(test -d ".worktrees/$id" && echo yes || echo no)" "no"
+}
+
+fake_codegraph() {
+  cat > "$(dirname "$CALLS")/codegraph" <<'EOF'
+#!/usr/bin/env bash
+printf 'codegraph %s in %s\n' "$*" "$PWD" >> "$CALLS"
+if [[ ${FAKE_CODEGRAPH_FAIL:-} == "$1" ]]; then
+  echo 'fake CodeGraph failure' >&2; exit 3
+fi
+case "$1" in
+  init) mkdir -p .codegraph; printf '%s\n' "$PWD" > .codegraph/codegraph.db
+        printf '*\n!.gitignore\n' > .codegraph/.gitignore ;;
+  sync) test -f .codegraph/codegraph.db && test -f .codegraph/.gitignore ;;
+  serve) trap 'if [[ -d "$4" ]]; then echo "stopped before removing $4" >> "$CALLS"; fi; exit 0' TERM
+         touch "$READY_FILE"
+         while :; do sleep 0.1; done ;;
+  *) exit 1 ;;
+esac
+EOF
+  chmod +x "$(dirname "$CALLS")/codegraph"
+  export PATH="$(dirname "$CALLS"):$PATH"
+  set_config codegraph '"auto"'
+}
+
+t_codegraph_job_lifecycle() {
+  new_repo cgjob; fake_codegraph; ticket 01 One; commit_all
+  local id worktree; id=$(J create f/01) || return 1
+  worktree="$PWD/.worktrees/$id"
+  J start "$id" intake >/dev/null || return 1
+  check "main initialized before intake dispatch" "$(tail -2 "$CALLS")" \
+    "codegraph init in $PWD"$'\n'"orchestration worker-start" || return 1
+  intake "$id" low none; factory/bin/route "$id" >/dev/null && J advance "$id" spec >/dev/null || return 1
+  check "seeded the job database" "[$(cat "$worktree/.codegraph/codegraph.db")]" "[$PWD]" &&
+  cmp "$worktree/.codegraph/.gitignore" .codegraph/.gitignore &&
+  check "new job checkout synced" "$(tail -1 "$CALLS")" "codegraph sync -q in $worktree" &&
+  check "index is ignored" "[$(git -C "$worktree" status --porcelain)]" "[]" || return 1
+  J start "$id" spec >/dev/null || return 1
+  check "spec syncs main and job checkouts before dispatch" "$(tail -3 "$CALLS")" \
+    "codegraph sync -q in $PWD"$'\n'"codegraph sync -q in $worktree"$'\n'"orchestration worker-start" || return 1
+  echo '# Spec' > "factory/jobs/$id/spec.md"; J advance "$id" build >/dev/null || return 1
+  FAKE_CODEGRAPH_FAIL=sync J start "$id" builder >/dev/null || return 1
+  check "builder dispatched after the sync failure" "$(tail -2 "$CALLS")" \
+    "codegraph sync -q in $worktree"$'\n'"orchestration worker-start" &&
+  check "failure logged" "$(cat "factory/jobs/$id/codegraph.log")" "exit 3" || return 1
+  build_commit "$id" y.txt y; to_review "$id" || return 1
+  review "$id" 1 code PASS; review "$id" 1 spec PASS
+  J advance "$id" approve >/dev/null || return 1
+  printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"
+  J merge "$id" >/dev/null || return 1
+  check "main synced after local merge" "$(tail -1 "$CALLS")" "codegraph sync -q in $PWD" &&
+  check "main initialized only once" "[$(grep -c '^codegraph init ' "$CALLS")]" "[1]"
+}
+
+t_codegraph_slice_lifecycle() {
+  new_repo cgslice; fake_codegraph; mkdir a b; touch a/.keep b/.keep; ticket 01 Sliced
+  set_config worktree_setup '"case \"$PWD\" in *-s1) ;; *) codegraph init ;; esac"'
+  commit_all
+  local id where other matching sibling; id=$(J create f/01) || return 1
+  intake "$id" low none; sed -i 's/SPLIT: no/SPLIT: yes/; s/SIZE: small/SIZE: large/' "factory/jobs/$id/intake.md"
+  factory/bin/route "$id" >/dev/null && J advance "$id" spec >/dev/null || return 1
+  check "keeps the index from the setup hook" "[$(cat ".worktrees/$id/.codegraph/codegraph.db")]" "[$PWD/.worktrees/$id]" || return 1
+  printf '# Spec\n\n## Slices\n### Slice 1: A\n**Owns:** a/\n**Needs:** none\n### Slice 2: B\n**Owns:** b/\n**Needs:** 1\n' > "factory/jobs/$id/spec.md"
+  J advance "$id" build >/dev/null && J slice-start "$id" 1 >/dev/null || return 1
+  where="$PWD/.worktrees/$id-s1"; other="$where-other"
+  check "seeded the slice database from main" "[$(cat "$where/.codegraph/codegraph.db")]" "[$PWD]" &&
+  check "new slice checkout synced" "$(tail -1 "$CALLS")" "codegraph sync -q in $where" || return 1
+  J start "$id" builder-s1 >/dev/null || return 1
+  check "slice sync before builder dispatch" "$(tail -2 "$CALLS")" \
+    "codegraph sync -q in $where"$'\n'"orchestration worker-start" || return 1
+
+  [[ -f /proc/self/cmdline ]] || return 0  # Process matching uses Linux /proc.
+  build_commit "$id-s1" a/change.txt slice
+  printf 'STATUS: READY\n\n## Self-review\nok\n' > "factory/jobs/$id/slice-1.md"
+  mkdir "$other"
+  READY_FILE="$TMP_ROOT/cgslice/matching" codegraph serve --mcp --path "$where" & matching=$!
+  READY_FILE="$TMP_ROOT/cgslice/sibling" codegraph serve --mcp --path "$other" & sibling=$!
+  trap "kill $matching $sibling 2>/dev/null; wait $matching $sibling 2>/dev/null" EXIT
+  local i
+  for i in {1..50}; do
+    [[ -f "$TMP_ROOT/cgslice/matching" && -f "$TMP_ROOT/cgslice/sibling" ]] && break
+    sleep 0.02
+  done
+  [[ -f "$TMP_ROOT/cgslice/matching" && -f "$TMP_ROOT/cgslice/sibling" ]] || return 1
+  J slice-done "$id" 1 >/dev/null || return 1
+  check "matching server stopped before removal" "$(cat "$CALLS")" "stopped before removing $where" &&
+  [[ ! -d "$where" ]] && kill -0 "$sibling" 2>/dev/null
+}
+
+t_codegraph_off() {
+  new_repo cgoff; fake_codegraph; set_config codegraph '"off"'; ticket 01 One; commit_all
+  local id; id=$(J create f/01) || return 1
+  J start "$id" intake >/dev/null || return 1
+  intake "$id" low none; factory/bin/route "$id" >/dev/null && J advance "$id" spec >/dev/null || return 1
+  J start "$id" spec >/dev/null || return 1
+  check "off makes no CodeGraph calls" "[$(grep -c '^codegraph ' "$CALLS")]" "[0]" &&
+  [[ ! -d .codegraph && ! -d ".worktrees/$id/.codegraph" ]]
 }
 
 t_gate_keeps_output_order() {

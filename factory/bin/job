@@ -114,6 +114,7 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True  # no __pycache__ in factory/bin of the repos the factory runs in
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import codegraph_tools  # noqa: E402
 import session_usage  # noqa: E402  (factory/bin/session_usage.py)
 import jobfiles  # noqa: E402  (factory/bin/jobfiles.py: how a job folder reads)
 import lifecycle  # noqa: E402
@@ -215,6 +216,15 @@ def worktree_base():
     return Path(os.path.expanduser(root)) / REPO.name if root else REPO / ".worktrees"
 
 
+def codegraph_cli():
+    return shutil.which("codegraph") if CONFIG.get("codegraph", "auto") == "auto" else None
+
+
+def refresh_codegraph(where, log, *, seed=False):
+    if cli := codegraph_cli():
+        codegraph_tools.refresh(cli, REPO / where, log, seed_from=REPO if seed else None)
+
+
 def setup_worktree(where, log):
     """Run config.json `worktree_setup` in a new job or slice worktree: what the
     project needs in a fresh checkout (env files, install, indexes). The factory
@@ -222,6 +232,7 @@ def setup_worktree(where, log):
     ORCA_ROOT_PATH is set so an Orca setup script works unchanged. A failing
     setup doesn't stop the job: the log says what broke and the gate shows it."""
     worktree_hook("worktree_setup", where, log)
+    refresh_codegraph(where, log.with_name("codegraph.log"), seed=True)
 
 
 def worktree_hook(key, where, log):
@@ -256,6 +267,8 @@ def remove_worktree(where, check=True, teardown=None):
     servers, containers, port forwards)."""
     if teardown and Path(where).exists():
         worktree_hook("worktree_teardown", where, teardown)
+        if codegraph_cli():
+            codegraph_tools.stop_servers((REPO / where).resolve(), teardown.with_name("codegraph.log"))
     run(["git", "worktree", "remove", "--force", str(where)], check=check)
     if Path(where).exists():  # the removal failed: the worktree may still build
         return
@@ -4158,6 +4171,8 @@ def cmd_merge(job):
     if GITHUB:  # GitHub may already have deleted the branch on merge.
         run(["git", "push", "origin", "--delete", job["branch"]], check=False)
     save(advance(sync(job), "merged"))
+    if not GITHUB:
+        refresh_codegraph(REPO, job_dir(job["id"]) / "codegraph.log")
     print(f"{job['id']}: merged " + (f"PR #{job['pr']}" if GITHUB else f"{job['branch']} into {jbase(job)}"))
     start_main_ci(job)
     why = retro_reason(job)
@@ -4882,6 +4897,11 @@ def cmd_start(job, role, extra):
     keep = role in CONFIG.get("keep_open_roles", ["builder"])
     if keep:
         cmd.insert(cmd.index("--json"), "--keep-open")
+    log = job_dir(job["id"]) / "codegraph.log"
+    if role in {"intake", "spec"}:
+        refresh_codegraph(REPO, log)
+    if where.startswith("path:"):
+        refresh_codegraph(where.removeprefix("path:"), log)
     res = subprocess.run(cmd, cwd=REPO, input=spec, capture_output=True, text=True)
     try:
         receipt = json.loads(res.stdout)

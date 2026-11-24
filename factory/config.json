@@ -228,6 +228,7 @@
     "builder"
   ],
   "worktree_root": null,
+  "codegraph": "auto",
   "worktree_cache_dirs": [],
   "stages_by_risk": {
     "spec": {
