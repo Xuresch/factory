@@ -2684,6 +2684,32 @@ PY
   check "own value kept" "$(python3 -c "import json; print(json.load(open('factory/config.json'))['labels']['queue'])")" "agent-go"
 }
 
+t_update_uses_template_copy_list() {
+  new_repo update-new
+  local source="$PWD@HEAD"
+  sed -i 's/"factory\/dashboard.html",/"factory\/dashboard.html", "factory\/new-module.js",/;
+          s/\["dashboard.html",/["dashboard.html", "new-module.js",/' factory/bin/update
+  printf 'export const addedByUpdate = true;\n' > factory/new-module.js
+  commit_all
+
+  new_repo update-old; commit_all
+  local dry out
+  dry=$(factory/bin/update "$source" --dry-run) || return 1
+  check "dry run leaves the installation clean" "[$(git status --porcelain)]" "[]" || return 1
+  printf 'local edit\n' > factory/new-module.js
+  if out=$(factory/bin/update "$source" 2>&1); then return 1; fi
+  check "refuses changes in the new copy list" "$out" "uncommitted changes in files this would replace: factory/new-module.js" || return 1
+  rm factory/new-module.js
+  git rev-parse HEAD > .git/MERGE_HEAD
+  if out=$(factory/bin/update "$source" --force 2>&1); then return 1; fi
+  check "force still refuses an in-progress merge" "$out" "a merge is in progress" || return 1
+  rm .git/MERGE_HEAD
+  out=$(factory/bin/update "$source") || return 1
+  check "first update copies the new file" "$out" "added factory/new-module.js" &&
+  check "installed content" "$(cat factory/new-module.js)" "export const addedByUpdate = true;" &&
+  check "dry run previews the new file" "$dry" "added factory/new-module.js"
+}
+
 # ---- findings: severities, stable ids, the builder's answers, disputes --------
 
 rv() {  # rv <job> <round> <lens> <PASS|CHANGES> <earlier findings lines> <findings lines>
