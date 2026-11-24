@@ -29,6 +29,15 @@ that, scoped so it can land as one small pull request.
    Scope under `Operator prerequisites:` with the doc it comes from. When the
    change can't be built safely without knowing whether one was done, ask it
    (NEEDS-INFO).
+   Find code with CodeGraph when the checkout has a `.codegraph/` directory
+   (the factory keeps its index current): the `codegraph_explore` MCP tool
+   when your session has it, else `codegraph explore "<symbols or question>"`
+   in the shell, with the same output: the relevant symbols' source and the
+   call paths between them. `codegraph callers <symbol>` and `codegraph impact
+   <symbol>` show who uses a symbol and what a change reaches. Use grep for
+   exact text: an error message, a fixture, a string a criterion says must not
+   appear. Without `.codegraph/`, use grep. Never run `codegraph init`, `index`
+   or `uninit`.
 
 4. The domain docs, when the repo has them (set up by `setup-matt-pocock-skills`):
    `docs/agents/domain.md` says where they live, usually `GLOSSARY.md` and

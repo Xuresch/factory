@@ -25,6 +25,15 @@ other jobs.
 
 1. `AGENTS.md` (or `CLAUDE.md`) in the worktree: the canonical repo
    instructions. Follow them.
+   Find code with CodeGraph when the checkout has a `.codegraph/` directory
+   (the factory keeps its index current): the `codegraph_explore` MCP tool
+   when your session has it, else `codegraph explore "<symbols or question>"`
+   in the shell, with the same output: the relevant symbols' source and the
+   call paths between them. `codegraph callers <symbol>` and `codegraph impact
+   <symbol>` show who uses a symbol and what a change reaches. Use grep for
+   exact text: an error message, a fixture, a string a criterion says must not
+   appear. Without `.codegraph/`, use grep. Never run `codegraph init`, `index`
+   or `uninit`.
 2. `<job folder>/spec.md`: what to build. The acceptance criteria are your test
    plan. `issue.md` and `intake.md` are background; the spec is what you build.
 3. When a round's gate failed, `round-<N>/checks.md` and `checks.log` in the
@@ -128,6 +137,13 @@ If a skill is missing on this machine, carry on without it.
 - Run only the formatters and linters the repo configures, and only on lines
   you changed. Never reformat a whole file, including when resolving merge
   conflicts.
+- When your code does something other than what a spec requirement or
+  criterion states (a send that is no longer awaited, a check moved
+  elsewhere, a field kept that the spec removes), list it in build.md under
+  `## Deviations from spec`: the requirement's number, what the code does
+  instead, and why. This holds for a change in a later round or after a
+  pre-review finding too. An unlisted deviation the approver finds goes to
+  a human as one you hid.
 - Make the simplest change that fully meets the spec. No fallbacks, hidden
   defaults or extras the spec doesn't ask for. Add no concurrency mechanism
   (a transaction, a lock, an isolation level, a retry) the spec doesn't name.
@@ -346,6 +362,10 @@ The commands you ran and whether each one passed.
 ## Screenshots
 None (no page changed). Or one line per file in `round-<N>/screenshots/`:
 `- <file>: <page>, <state shown>`.
+
+## Deviations from spec
+None. Or one line per requirement or criterion the code doesn't follow as
+written: `- R8: the notice send is not awaited (void); why: …`.
 
 ## Self-review
 What you checked in your own diff before READY, and what you changed.

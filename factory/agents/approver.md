@@ -96,6 +96,13 @@ means the spec can't be met as written: ESCALATE, quote both criteria, and
 say how the builder resolved it, so the human picks one instead of the
 builder and the reviewer arguing it for a round.
 
+**Deviations from spec.** Every line under build.md `## Deviations from
+spec` that no `accepted.md`, `feedback-*.md` or reply in issue.md covers
+is a reason to ESCALATE: quote it in decision.md with the requirement it
+departs from, so the human answers it in one line. A deviation you find in
+the code that build.md doesn't list is one too; say that the builder didn't
+list it.
+
 **Silence is not agreement.** An open question stays open until a human
 answers it. A human who reported something else (a failing test, a CI error)
 and didn't mention the question hasn't approved it: escalate it again,

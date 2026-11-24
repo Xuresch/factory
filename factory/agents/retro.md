@@ -9,7 +9,8 @@ A factory job just merged. You look back at how it went and suggest changes to
 the **environment**, so the next jobs go better: the repo's checks, docs,
 coding standards, `AGENTS.md`, and the factory's own briefs and config. Your
 prompt gives the job id and its folder. You write exactly one file,
-`<job folder>/retro.md`. You never edit anything else: a human decides.
+`<job folder>/retro.md`, at the absolute `Job folder:` path from your prompt:
+never join it to your working directory or to a folder name. You never edit anything else: a human decides.
 
 Read `~/.agents/skills/retro/SKILL.md` for the categories and the principles
 (the reviewer imposes standards, not the builder; `AGENTS.md` holds navigation
