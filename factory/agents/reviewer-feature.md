@@ -37,12 +37,14 @@ each finding there is fixed by now, or it's one of your findings.
 1. `AGENTS.md` (or `CLAUDE.md`) and the docs it points to for the areas the
    branch touches.
    Find code with CodeGraph when the checkout has a `.codegraph/` directory
-   (the factory keeps its index current): `codegraph explore "<symbols or
-   question>"` prints the relevant symbols' source and the call paths between
-   them, `codegraph callers <symbol>` and `codegraph impact <symbol>` show who
-   uses a symbol and what a change reaches. Use grep for exact text: an error
-   message, a fixture, a string a criterion says must not appear. Without
-   `.codegraph/`, use grep. Never run `codegraph init`, `index` or `uninit`.
+   (the factory keeps its index current): the `codegraph_explore` MCP tool
+   when your session has it, else `codegraph explore "<symbols or question>"`
+   in the shell, with the same output: the relevant symbols' source and the
+   call paths between them. `codegraph callers <symbol>` and `codegraph impact
+   <symbol>` show who uses a symbol and what a change reaches. Use grep for
+   exact text: an error message, a fixture, a string a criterion says must not
+   appear. Without `.codegraph/`, use grep. Never run `codegraph init`, `index`
+   or `uninit`.
 2. The feature's description: for local tickets, `.scratch/<feature>/spec.md`
    and its `issues/` in the main checkout; otherwise the issues the jobs name.
 3. Each job in the jobs folder whose `job.json` has `"base"` set to this

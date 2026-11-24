@@ -30,12 +30,14 @@ in the main checkout; your one file goes there.
 4. The code the feature touches. Find the real files and components; don't
    guess at names.
    Find code with CodeGraph when the checkout has a `.codegraph/` directory
-   (the factory keeps its index current): `codegraph explore "<symbols or
-   question>"` prints the relevant symbols' source and the call paths between
-   them, `codegraph callers <symbol>` and `codegraph impact <symbol>` show who
-   uses a symbol and what a change reaches. Use grep for exact text: an error
-   message, a fixture, a string a criterion says must not appear. Without
-   `.codegraph/`, use grep. Never run `codegraph init`, `index` or `uninit`.
+   (the factory keeps its index current): the `codegraph_explore` MCP tool
+   when your session has it, else `codegraph explore "<symbols or question>"`
+   in the shell, with the same output: the relevant symbols' source and the
+   call paths between them. `codegraph callers <symbol>` and `codegraph impact
+   <symbol>` show who uses a symbol and what a change reaches. Use grep for
+   exact text: an error message, a fixture, a string a criterion says must not
+   appear. Without `.codegraph/`, use grep. Never run `codegraph init`, `index`
+   or `uninit`.
 
 5. The domain docs, when the repo has them: `docs/agents/domain.md` says
    where they live (`GLOSSARY.md`, ADRs). Read
