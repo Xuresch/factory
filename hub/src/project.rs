@@ -13,7 +13,7 @@ use serde_json::{Map, Value};
 use crate::store::{int, opt, real, text, Param, Statement};
 use crate::util::parse_iso;
 
-pub const PROJECTION_VERSION: i64 = 4;
+pub const PROJECTION_VERSION: i64 = 5;
 
 pub const LIVE: [&str; 7] = [
     "intake", "spec", "build", "gate", "review", "approve", "merging",
@@ -180,7 +180,7 @@ pub struct Projection {
 }
 
 /// The projected columns of `jobs`, after id, checkout_id, job_key, doc, doc_hash.
-pub const JOB_COLUMNS: [&str; 53] = [
+pub const JOB_COLUMNS: [&str; 56] = [
     "projection_version",
     "title",
     "stage",
@@ -231,6 +231,9 @@ pub const JOB_COLUMNS: [&str; 53] = [
     "continues",
     "human_approvals",
     "review_problems",
+    "template_commit",
+    "template_date",
+    "template_source",
     "first_seen",
     "last_seen",
     "removed_at",
@@ -313,6 +316,7 @@ pub fn project(doc: &Value, lines: &HashMap<String, String>, seen: &Seen<'_>) ->
     let ended = s(g("ended")).map(str::to_owned);
     let intake = g("intake");
     let builder = g("agents").and_then(|a| a.get("builder"));
+    let version = |key| s(g("template_version").and_then(|v| v.get(key)));
     let mut children: Vec<(&'static str, Vec<Param>)> = Vec::new();
 
     // history → stages, waiting time
@@ -725,6 +729,9 @@ pub fn project(doc: &Value, lines: &HashMap<String, String>, seen: &Seen<'_>) ->
         int(continues_total),
         int(human),
         int(review_problems),
+        opt(version("commit")),
+        opt(version("date")),
+        opt(version("source")),
         text(seen.first_seen),
         text(seen.last_seen),
         opt(seen.removed_at),

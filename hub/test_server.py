@@ -491,6 +491,43 @@ class TestTree(HubCase):
 
 
 class TestReadApi(HubCase):
+    def test_job_template_version(self):
+        committed = "2026-11-19T12:00:00+02:00"
+        version = {"commit": "a" * 40, "date": committed, "source": "https://github.com/o/template"}
+        plain = {"commit": None, "date": "2026-11-19", "source": "/tmp/template"}
+        self.ok(push("m1", [repo("o/r", [
+            entry("001", template_version=version), entry("002"), entry("003", template_version=plain),
+        ])], full=True))
+        expected = {"001": ("a" * 40, committed), "002": (None, None), "003": (None, plain["date"])}
+        jobs = self.get_json("/api/repos/o/r/jobs")["jobs"]
+        self.assertEqual({j["id"]: (j["template_commit"], j["template_date"]) for j in jobs}, expected)
+        for key, want in expected.items():
+            detail = self.get_json(f"/api/repos/o/r/jobs/{key}")
+            self.assertEqual((detail["template_commit"], detail["template_date"]), want)
+        self.assertEqual(self.get_json("/r/o/r/jobs/001/job.json")["template_version"], version)
+
+    def test_migration_adds_template_version_to_existing_database(self):
+        self.ok(push("m1", [repo("o/r", [entry("001")])], full=True))
+        self.stop(self.proc)
+        path = Path(self.tmp.name) / "hub.db"
+        db = sqlite3.connect(path)
+        try:
+            with db:
+                # Restore the pre-migration schema while keeping a real job and its children.
+                db.execute("DELETE FROM schema_migrations WHERE version=4")
+                db.execute("UPDATE jobs SET projection_version=4")
+                for field in ("template_commit", "template_date", "template_source"):
+                    db.execute(f"ALTER TABLE jobs DROP COLUMN {field}")
+        finally:
+            db.close()
+        self.assertFalse(path.with_suffix(".db.bak-3").exists())
+        self.start()
+        self.assertTrue(path.with_suffix(".db.bak-3").is_file())
+        detail = self.get_json("/api/repos/o/r/jobs/001")
+        self.assertIsNone(detail["template_commit"])
+        self.assertIsNone(detail["template_date"])
+        self.assertEqual(detail["files"], ["spec.md"])
+
     def test_summaries_details_and_overview(self):
         e = entry("001", round=1, issue="12", round_limit=6,
                   files={"spec.md": "spec", "round-1/checks.md": "GATE: PASS\n",

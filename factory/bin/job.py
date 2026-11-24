@@ -3656,6 +3656,8 @@ def cmd_create(number):
         "holds": holds,
         "commit_format": "conventional",  # the gate checks commit subjects and the PR title
     }
+    if isinstance(version := CONFIG.get("template_version"), dict):
+        job["template_version"] = version
     write_issue_md(job)
     save(job)
     print(job_id)

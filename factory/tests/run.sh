@@ -60,6 +60,7 @@ import json
 p = "factory/config.json"; c = json.load(open(p))
 c.setdefault("hold", {})["only_when_needed"] = False  # most tests want every high-risk spec held
 c.setdefault("labels", {})["factory"] = None  # an installation's opt-in label; the label tests set it
+c.pop("template_version", None)  # a fresh installation has never run update
 c.update(base_branch="master", concurrency=3, notify="", tracker="local", merge_method="merge", worktree_root=None, worktree_setup="", replace_builder_after_partials=2,
          codegraph="off",
          min_risk_for_surface={"security": "medium"},
@@ -2903,6 +2904,57 @@ PY
   check "structure route added" "$(python3 -c "import json; print(json.load(open('factory/config.json'))['stages']['structure']['model'])")" "opus"
 }
 
+t_update_records_template_version() {
+  new_repo version-template; commit_all || return 1
+  local source="$PWD" first second
+
+  new_repo version-install
+  ticket 01 Before; ticket 02 After; commit_all || return 1
+  first=$(J create f/01) || return 1
+  factory/bin/update "$source" >/dev/null || return 1
+  second=$(J create f/02) || return 1
+  python3 - "$source" "$first" "$second" <<'PY' || return 1
+import json, subprocess, sys
+from pathlib import Path
+source, first, second = sys.argv[1:]
+sha, committed = subprocess.check_output(
+    ["git", "-C", source, "log", "-1", "--format=%H%n%cI"], text=True).splitlines()
+def read(path):
+    return json.loads(Path(path).read_text())
+version = read("factory/config.json")["template_version"]
+assert version == {"commit": sha, "date": committed, "source": source}, version
+assert "template_version" not in read(f"factory/jobs/{first}/job.json")
+assert read(f"factory/jobs/{second}/job.json")["template_version"] == version
+PY
+  commit_all || return 1
+  GIT_COMMITTER_DATE=2026-11-20T10:00:00+02:00 git -C "$source" commit -q --allow-empty -m newer || return 1
+  factory/bin/update "$source" --dry-run > "$TMP_ROOT/version-dry" || return 1
+  check "dry run previews the new version" "$(cat "$TMP_ROOT/version-dry")" "updated template_version" &&
+  check "dry run leaves the installation clean" "[$(git status --porcelain)]" "[]" || return 1
+  factory/bin/update "$source" >/dev/null || return 1
+  python3 - "$source" "$second" <<'PY' || return 1
+import json, subprocess, sys
+from pathlib import Path
+source, second = sys.argv[1:]
+sha, committed = subprocess.check_output(
+    ["git", "-C", source, "log", "-1", "--format=%H%n%cI"], text=True).splitlines()
+current = json.loads(Path("factory/config.json").read_text())["template_version"]
+assert current == {"commit": sha, "date": committed, "source": source}, current
+assert json.loads(Path(f"factory/jobs/{second}/job.json").read_text())["template_version"]["commit"] != sha
+PY
+  # The plain source is inside a Git checkout and even carries its own stale config.
+  local plain="$source/export"
+  mkdir "$plain" && cp -r "$source/factory" "$plain/" &&
+  cp factory/config.json "$plain/factory/config.json" || return 1
+  factory/bin/update "$plain" --force >/dev/null || return 1
+  python3 - "$plain" <<'PY'
+import datetime, json, sys
+from pathlib import Path
+version = json.loads(Path("factory/config.json").read_text())["template_version"]
+assert version == {"commit": None, "date": datetime.date.today().isoformat(), "source": sys.argv[1]}, version
+PY
+}
+
 t_update_uses_template_copy_list() {
   new_repo update-new
   local source="$PWD@HEAD"
@@ -2967,6 +3019,7 @@ t_update_from_738a009() {
     cmp "factory/bin/$name.py" "$template/factory/bin/$name.py" &&
     [[ -x "factory/bin/$name" ]] || return 1
   done
+  check "legacy handoff records the selected commit" "$(python3 -c "import json; print(json.load(open('factory/config.json'))['template_version']['commit'])")" "$(git -C "$template" rev-parse HEAD)" &&
   check "installed job launcher works" "$(J tracker)" "tracker local" &&
   check "installed updater launcher works" "$(factory/bin/update "$template@HEAD" --dry-run)" "already up to date"
 }
@@ -3171,9 +3224,18 @@ t_report_no_config() {
 
 t_report_push() {
   rpt_setup rptpush; rpt_job 001-a; rpt_job 002-b merged; mkdir -p factory/jobs/_features; echo '{}' > factory/jobs/_features/job.json
+  python3 - <<'PY'
+import json
+from pathlib import Path
+p = Path("factory/jobs/001-a/job.json")
+job = json.loads(p.read_text())
+job["template_version"] = {"commit": "a" * 40, "date": "2026-11-19T12:00:00Z", "source": "https://github.com/o/template"}
+p.write_text(json.dumps(job))
+PY
   local out; out=$(rpt 2>&1); check "first push exits 0 and says so" "[$?] $out" "[0] report: sent full: 1 repo(s), 2 job(s), 4 file(s)" &&
   check "full, with both jobs, their files and no logs" "$(hub 'b[0]["full"], b[0]["repos"][0]["job_ids"], sorted(b[0]["repos"][0]["jobs"][0]["files"])')" "True ['001-a', '002-b'] ['round-1/review-code.md', 'spec.md']" &&
   check "the first push carries the config" "$(hub '"prices_usd_per_mtok" in b[0]["repos"][0]["config"]')" "True" &&
+  check "each job's own version passes through" "$(hub '[j["job"].get("template_version") for j in b[0]["repos"][0]["jobs"]]')" "[{'commit': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'date': '2026-11-19T12:00:00Z', 'source': 'https://github.com/o/template'}, None]" &&
   check "machine, token" "$(hub 'b[0]["machine"]') $(head -1 "$H/auth.log")" "m1 Bearer tok" || return 1
   rpt >/dev/null; check "nothing changed: a push with no jobs" "$(hub '(len(b), b[1]["full"], b[1]["repos"][0]["jobs"], "config" in b[1]["repos"][0], b[1]["repos"][0]["job_ids"])')" "(2, False, [], False, ['001-a', '002-b'])" || return 1
   echo "changed" > factory/jobs/001-a/round-1/review-code.md

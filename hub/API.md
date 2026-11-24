@@ -23,6 +23,7 @@ moving from job.json to the API changes little.
   "issue": "198", "issue_url": "…", "pr": 234, "pr_url": "…",
   "base": "dev", "branch": "factory/002-…", "gate": "PASS", "spec_skipped": false,
   "started": "…", "ended": null, "last_activity": "…",
+  "template_commit": null, "template_date": null,
   "duration_s": 3600, "wait_s": 600, "work_s": 3000,
   "cost_usd": 9.29, "cost_by_agent": {"claude": 5.2, "codex": 4.0, "other": 0.09},
   "cost_split": {"claude": 5.2, "codex": 4.0},
@@ -45,6 +46,10 @@ moving from job.json to the API changes little.
   "removed": false
 }
 ```
+
+`template_commit` and `template_date` come from the installation version copied
+into the job at creation. Both are null for older jobs. A plain directory
+install has a null commit and an installation date.
 
 `cost_by_agent` is the projected Agent split used by the hub pages and totals.
 It uses a non-empty stored split, then priced rows, then the full total as `claude`
