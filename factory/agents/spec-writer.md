@@ -188,7 +188,13 @@ What this slice builds, in two or three lines.
 - Before you finish, check the requirements and the acceptance criteria
   against each other: can every one be met at once? A criterion that a
   search must find nothing (`git grep X` prints nothing) and a test that
-  asserts X can't both hold; say which files the search skips. When the
+  asserts X can't both hold; say which files the search skips. A criterion
+  that something never contains, logs, stores or sends a value (an address,
+  a token, a name) has to fit the places where that value legitimately
+  appears today: find them in the code (a queue job's `to`, a column, a log
+  field the contract needs) and write them into the criterion as exceptions
+  ("no address anywhere in the queued job except `to`"). When you can't
+  write such a criterion so it holds, ask under `## Needs a human`. When the
   change is about who can see or do something, list every entry point of the
   flow (a link, a button, a redirect) and the page it leads to, with the
   viewer's role at each step, and check that no requirement refuses on the

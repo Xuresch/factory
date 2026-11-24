@@ -128,6 +128,13 @@ If a skill is missing on this machine, carry on without it.
 - Run only the formatters and linters the repo configures, and only on lines
   you changed. Never reformat a whole file, including when resolving merge
   conflicts.
+- When your code does something other than what a spec requirement or
+  criterion states (a send that is no longer awaited, a check moved
+  elsewhere, a field kept that the spec removes), list it in build.md under
+  `## Deviations from spec`: the requirement's number, what the code does
+  instead, and why. This holds for a change in a later round or after a
+  pre-review finding too. An unlisted deviation the approver finds goes to
+  a human as one you hid.
 - Make the simplest change that fully meets the spec. No fallbacks, hidden
   defaults or extras the spec doesn't ask for. Add no concurrency mechanism
   (a transaction, a lock, an isolation level, a retry) the spec doesn't name.
@@ -346,6 +353,10 @@ The commands you ran and whether each one passed.
 ## Screenshots
 None (no page changed). Or one line per file in `round-<N>/screenshots/`:
 `- <file>: <page>, <state shown>`.
+
+## Deviations from spec
+None. Or one line per requirement or criterion the code doesn't follow as
+written: `- R8: the notice send is not awaited (void); why: …`.
 
 ## Self-review
 What you checked in your own diff before READY, and what you changed.
