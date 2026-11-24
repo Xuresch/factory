@@ -373,6 +373,14 @@ runs only after a job with friction (`retro_after_merge: "friction"`): in the
 demo runs, retros after clean jobs were a fifth of the Claude spend and found
 little.
 
+**Structure review.** After every `structure_review_every` job merges into
+`base_branch` (default `0`, off), `job merge` starts a read-only worker in the
+main checkout and continues. The reviewer reads the base commit, the recent
+jobs and the previous report, then writes refactor proposals to
+`factory/jobs/_structure/<date>.md`. It marks unresolved repeats as seen before.
+A human chooses which proposals become tickets. The worker uses Claude Opus
+by default, with routing under `stages.structure`.
+
 ## What changed from v1
 
 | v1 | v2 | Asked for by |

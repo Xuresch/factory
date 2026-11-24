@@ -18,7 +18,8 @@ Usage:
   job claim --status             who holds the claim, and whether that session still lives
   job claim --release [--force]  drop the claim when the run ends
   job next [<job>]               the exact next step for a job, from its state and files; without
-                                 <job>, one line per unfinished job. Run it after every wake-up
+                                 <job>, one line per unfinished job and the latest structure review.
+                                 Run it after every wake-up
   job tracker                    which issue tracker and labels this repo uses
   job create <issue>             new job for an open `ready-for-agent` issue; prints the job id
   job advance <job> <stage>      move a job to <stage>, or refuse. Entering build merges the base in
@@ -124,6 +125,7 @@ from lifecycle import REJECTABLE, TERMINAL, WAITING  # noqa: E402
 REPO = Path(__file__).resolve().parents[2]
 FACTORY = REPO / "factory"
 JOBS = FACTORY / "jobs"
+STRUCTURE_REVIEWS = JOBS / "_structure"
 BIN = FACTORY / "bin"
 CONFIG = json.loads((FACTORY / "config.json").read_text())
 BASE = CONFIG["base_branch"]
@@ -4103,6 +4105,76 @@ def retro_reason(job):
     return "; ".join(found) or "a clean job, look for what to keep"
 
 
+def structure_report_order(name):
+    date, sequence = name[:10], name[11:]
+    return date, int(sequence or 1)
+
+
+def structure_reports():
+    return [p for p in STRUCTURE_REVIEWS.glob("*.md")
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:-\d+)?", p.stem)]
+
+
+def latest_structure_review():
+    for path in sorted(structure_reports(), key=lambda p: structure_report_order(p.stem), reverse=True):
+        if first_line(path):
+            return path
+    return None
+
+
+def structure_review_interval(job):
+    return max(0, CONFIG.get("structure_review_every", 0)) if jbase(job) == BASE else 0
+
+
+def structure_review_due(job, diff):
+    """Count base merges across jobs. Keep the batch until Orca accepts a start."""
+    every = structure_review_interval(job)
+    if not every:
+        return
+    state_file = STRUCTURE_REVIEWS / "state.json"
+    try:
+        STRUCTURE_REVIEWS.mkdir(exist_ok=True)
+        with (STRUCTURE_REVIEWS / ".lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            state = json.loads(state_file.read_text()) if state_file.exists() else {"jobs": []}
+            jobs = state["jobs"]
+            diff = f"gh pr diff {job['pr']}" if GITHUB else diff
+            jobs.append({"id": job["id"], "diff": diff})
+
+            def save_state():
+                tmp = state_file.with_suffix(".tmp")
+                tmp.write_text(json.dumps(state, indent=2) + "\n")
+                tmp.replace(state_file)
+
+            save_state()
+            if len(jobs) < every:
+                return
+
+            previous = latest_structure_review()
+            date = now()[:10]
+            # Reserve a distinct filename even when today's earlier worker is still running.
+            reports = [p.stem for p in structure_reports()]
+            reports.append(state.get("last_output", ""))
+            sequence = 1 + max((structure_report_order(name)[1] for name in reports
+                                if name[:10] == date), default=0)
+            output = STRUCTURE_REVIEWS / (f"{date}.md" if sequence == 1 else f"{date}-{sequence:02}.md")
+            if GITHUB:
+                fetch_base(BASE)
+            tip = run(["git", "rev-parse", BASE_REF]).stdout.strip()
+            lines = [f"Review the whole repository at {BASE_REF} commit {tip}.", f"Write: {output}",
+                     f"Previous structure review: {previous or 'none'}",
+                     "Jobs merged since the previous structure review started:"]
+            for item in jobs:
+                spec = job_dir(item["id"]) / "spec.md"
+                lines.append(f"- {item['id']}: read {spec} and run `{item['diff']}`.")
+            cmd_start({**job, "structure_review": output.name}, "structure", "\n".join(lines))
+            state.update(jobs=[], last_output=output.stem)
+            save_state()
+    except (SystemExit, Refused, OSError, ValueError) as e:
+        reason = "" if isinstance(e, SystemExit) else f" ({e})"
+        print(f"{job['id']}: the structure review didn't start{reason}; the next base merge retries it")
+
+
 def cmd_merge(job):
     sync(job)
     if job["stage"] == "approve":
@@ -4114,9 +4186,14 @@ def cmd_merge(job):
         die(f"{job['id']}: another `job merge` (pid {w['pid']}) has been waiting for CI on "
             f"{w['head'][:7]} since {w['since']}; let it finish")
     if is_merged(job):
+        diff = ""
+        if not GITHUB and structure_review_interval(job):
+            tip = run(["git", "rev-parse", job["branch"]]).stdout.strip()
+            diff = f"git diff {job['fork_point']} {tip}"
         save(advance(sync(job), "merged"))
         print(f"{job['id']}: merged " + (f"PR #{job['pr']}" if GITHUB else f"{job['branch']} into {jbase(job)}"))
         start_main_ci(job)
+        structure_review_due(job, diff)
         return
 
     def finish_failure(outcome, why):
@@ -4132,6 +4209,7 @@ def cmd_merge(job):
     # The base can move between our sync and the merge (another PR landed):
     # GitHub then says "Base branch was modified". Sync, gate and merge again;
     # only a real conflict or a failing gate goes back to the builder.
+    diff = ""
     for attempt in range(1, MERGE_ATTEMPTS + 1):
         if GITHUB:
             fetch_base(jbase(job), job["worktree"])
@@ -4159,8 +4237,9 @@ def cmd_merge(job):
                     return finish_failure(blocked[0], blocked[1])
                 gh("pr", "merge", str(job["pr"]), f"--{CONFIG['merge_method']}")
             else:
-                merge_locally(job["branch"], jbase(job),
-                              f"{spec_title(job)}\n\nMerge {job['branch']} ({job['issue']})", job["id"])
+                diff = merge_locally(job["branch"], jbase(job),
+                                     f"{spec_title(job)}\n\nMerge {job['branch']} ({job['issue']})", job["id"],
+                                     record_diff=bool(structure_review_interval(job)))
             break
         except Refused as e:
             if base_moved(str(e)) and attempt < MERGE_ATTEMPTS:
@@ -4184,6 +4263,7 @@ def cmd_merge(job):
             print(f"{job['id']}: the retro didn't start; start it with `factory/bin/job start {job['id']} retro`")
     elif CONFIG.get("retro_after_merge"):
         print(f"{job['id']}: no retro: the job went through without friction")
+    structure_review_due(load(job["id"]), diff)
     feature_hint(job)
     mid_review_due(job)
 
@@ -4432,7 +4512,7 @@ def branch_worktree(branch):
     return None
 
 
-def merge_locally(source, target, message, tag):
+def merge_locally(source, target, message, tag, *, record_diff=False):
     """Merge <source> into <target> without a PR, after it was synced and gated.
 
     The target is often checked out in the main checkout, which belongs to the
@@ -4447,9 +4527,14 @@ def merge_locally(source, target, message, tag):
         run(["git", "worktree", "add", temp, target])
         where = temp
     try:
+        if record_diff:
+            before = run(["git", "rev-parse", "HEAD"], cwd=where).stdout.strip()
         run(["git", "merge", *flags, source], cwd=where)
         if CONFIG["merge_method"] == "squash":
             run(["git", "commit", "-m", message], cwd=where)
+        if record_diff:
+            after = run(["git", "rev-parse", "HEAD"], cwd=where).stdout.strip()
+            return f"git diff {before} {after}"
     finally:
         if temp:
             remove_worktree(temp, check=False)
@@ -4606,6 +4691,8 @@ def role_entry(job, role):
     if role in CONFIG["stages"]:
         risk = (job.get("intake") or {}).get("risk")
         return CONFIG.get("stages_by_risk", {}).get(role, {}).get(risk) or CONFIG["stages"][role]
+    if role == "structure":
+        return {"agent": "claude", "model": "opus", "effort": "high"}
     require(job["agents"], f"{job['id']} isn't routed yet")
     if role == "builder" or re.fullmatch(r"builder-s\d+", role):
         return job["agents"]["builder"]
@@ -4661,7 +4748,7 @@ def worker_place(job, role):
     if role.startswith("builder-s"):
         k = role.removeprefix("builder-s")
         return slice_worktree(job, k), slice_branch(job, k)
-    if role == "retro":
+    if role in {"retro", "structure"}:
         return str(REPO), jbase(job)
     return job["worktree"], job["branch"]
 
@@ -4844,7 +4931,9 @@ def cmd_start(job, role, extra):
     if job["stage"] == "review" and lens in (job.get("skipped_reviews") or {}):
         die(f"{role} is skipped in round {job['round']} ({job['skipped_reviews'][lens]}); "
             f"round-{job['round']}/review-{lens}.md carries its PASS")
-    agent_file = "spec-writer" if role == "spec" else "builder" if role.startswith("builder-s") else role
+    agent_file = {"spec": "spec-writer", "structure": "reviewer-structure"}.get(role, role)
+    if role.startswith("builder-s"):
+        agent_file = "builder"
     brief = FACTORY / "agents" / f"{agent_file}.md"
     where = "current" if role in {"intake", "retro"} else f"path:{worker_place(job, role)[0]}"
     port = role_port(job, role)
@@ -4900,7 +4989,7 @@ def cmd_start(job, role, extra):
     log = job_dir(job["id"]) / "codegraph.log"
     if role in {"intake", "spec"}:
         refresh_codegraph(REPO, log)
-    if where.startswith("path:"):
+    if where.startswith("path:") and role != "structure":
         refresh_codegraph(where.removeprefix("path:"), log)
     res = subprocess.run(cmd, cwd=REPO, input=spec, capture_output=True, text=True)
     try:
@@ -5290,6 +5379,10 @@ def cmd_next(args):
         job = resolve(args[0])
         for verb, what in steps_and_comments(job):
             print(f"{job['id']}: {verb}: {what}")
+        if name := job.get("structure_review"):
+            report = STRUCTURE_REVIEWS / name
+            if summary := first_line(report):
+                print(f"{job['id']}: tell: {summary} ({report.relative_to(REPO)})")
         return
     every = all_jobs()
     jobs = [j for j in every if j["stage"] not in TERMINAL]
@@ -5297,6 +5390,8 @@ def cmd_next(args):
         print(f"{j['id']}: " + "; ".join(f"{verb}: {what}" for verb, what in steps_and_comments(j)))
     for j, alert in main_ci_alerts(every):
         print(f"{j['id']}: tell: {alert}")
+    if report := latest_structure_review():
+        print(f"structure: tell: {first_line(report)} ({report.relative_to(REPO)})")
     if not jobs:
         print(f"no job in flight; `{JOB} queue` lists new work")
 

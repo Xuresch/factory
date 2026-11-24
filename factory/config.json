@@ -42,6 +42,11 @@
       "agent": "claude",
       "model": "sonnet",
       "effort": "medium"
+    },
+    "structure": {
+      "agent": "claude",
+      "model": "opus",
+      "effort": "high"
     }
   },
   "builder": {
@@ -224,6 +229,7 @@
   "retro_after_merge": "friction",
   "feature_review": true,
   "feature_review_every": 0,
+  "structure_review_every": 0,
   "keep_open_roles": [
     "builder"
   ],
