@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 import os
-import runpy
 from pathlib import Path
 
 if __name__ == "__main__":
     installed = Path(__file__).resolve().with_suffix(".py")
+    entry = installed
     if template := os.environ.get("FACTORY_UPDATE_TEMPLATE"):
         # A legacy updater executes this fetched launcher with the installation's
         # __file__. The implementation is still in the fetched checkout.
         entry = Path(template) / "factory" / "bin" / "update.py"
-        exec(compile(entry.read_bytes(), str(entry), "exec"),
-             {"__file__": str(installed), "__name__": "__main__"})
-    else:
-        runpy.run_path(str(installed), run_name="__main__")
+    __file__ = str(installed)
+    exec(compile(entry.read_bytes(), str(entry), "exec"))
