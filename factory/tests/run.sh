@@ -84,6 +84,18 @@ EOF
 
 J() { factory/bin/job "$@"; }
 
+t_job_launcher() {
+  new_repo 'launcher with spaces'; ticket 01 One; commit_all
+  local repo="$PWD" out status
+  cd "$TMP_ROOT" || return 1
+  out=$(printf '%s\n' 'The answer includes spaces and "quotes".' | "$repo/factory/bin/job" reply f/01) || return 1
+  check "forwards the arguments" "$out" "replied on f/01" &&
+  check "forwards stdin" "$(cat "$repo/.scratch/f/issues/01-t.md")" 'The answer includes spaces and "quotes".' || return 1
+  out=$("$repo/factory/bin/job" reply f/01 </dev/null 2>&1); status=$?
+  check "returns the Python command's failure status" "[$status]" "[1]" &&
+  check "passes through the error message" "$out" "no text on stdin"
+}
+
 intake() {  # intake <job> <risk> <surfaces> [extra header lines]
   printf 'DECISION: ACCEPT\nRISK: %s\nSURFACES: %s\nRESCOPED: no\nSIZE: small\nSPLIT: no\n%s\n## Summary\n- ok\n\n## Scope\nx\n\n## Follow-ups\nNone.\n' \
     "$2" "$3" "${4:-}" > "factory/jobs/$1/intake.md"
@@ -1817,7 +1829,7 @@ t_dashboard_subscriptions() {
   echo '{"checked":"abc"}' > factory/jobs/_features/f.json
   export XDG_CONFIG_HOME="$TMP_ROOT/dashsubs/config"
   local q='import importlib.machinery as m, importlib.util as u, json
-l = m.SourceFileLoader("d", "factory/bin/dashboard"); d = u.module_from_spec(u.spec_from_loader("d", l)); l.exec_module(d)
+l = m.SourceFileLoader("d", "factory/bin/dashboard.py"); d = u.module_from_spec(u.spec_from_loader("d", l)); l.exec_module(d)
 print(json.dumps(d.subscriptions()))'
   check "no config: nothing to serve" "$(python3 -c "$q")" "null" || return 1
   mkdir -p "$XDG_CONFIG_HOME/factory"
@@ -1863,7 +1875,7 @@ t_dashboard_outside() {
     printf "$tc" 2026-12-14T12:00:00Z 2000000 100000 2100000; } > "$cx/rollout-c1.jsonl"
   head -3 "$cx/rollout-c1.jsonl" > "$acct/rollout-c1.jsonl"
   local q='import importlib.machinery as m, importlib.util as u, json
-l = m.SourceFileLoader("d", "factory/bin/dashboard"); d = u.module_from_spec(u.spec_from_loader("d", l)); l.exec_module(d)
+l = m.SourceFileLoader("d", "factory/bin/dashboard.py"); d = u.module_from_spec(u.spec_from_loader("d", l)); l.exec_module(d)
 import os, pathlib
 r = d.Outside().scan(); before = d.CACHE.stat().st_mtime_ns; r2 = d.Outside().scan()
 untouched = d.CACHE.stat().st_mtime_ns == before
@@ -1890,7 +1902,7 @@ t_dashboard_outside_matches_report() {
     '{"type":"assistant","timestamp":"2026-11-14T12:00:00Z","message":{"id":"m1","model":"claude-opus-5-5","usage":{"input_tokens":1000000}}}' > "$h/.claude/projects/-x/s1.jsonl"
   local q='import importlib.machinery as m, importlib.util as u, json
 def load(n):
-    l = m.SourceFileLoader(n, "factory/bin/" + n); x = u.module_from_spec(u.spec_from_loader(n, l)); l.exec_module(x); return x
+    l = m.SourceFileLoader(n, "factory/bin/" + n + ".py"); x = u.module_from_spec(u.spec_from_loader(n, l)); l.exec_module(x); return x
 d, r = load("dashboard"), load("report")
 print(json.dumps({"same": d.Outside().scan() == r.scan_outside(), "months": r.scan_outside()["months"]}))'
   local out; out=$(env -u CODEX_HOME -u CLAUDE_CONFIG_DIR -u XDG_CACHE_HOME HOME="$h" python3 -c "$q")
@@ -2785,7 +2797,7 @@ t_update_uses_template_copy_list() {
   new_repo update-new
   local source="$PWD@HEAD"
   sed -i 's/"factory\/dashboard.html",/"factory\/dashboard.html", "factory\/new-module.js",/;
-          s/\["dashboard.html",/["dashboard.html", "new-module.js",/' factory/bin/update
+          s/\["dashboard.html",/["dashboard.html", "new-module.js",/' factory/bin/update.py
   printf 'export const addedByUpdate = true;\n' > factory/new-module.js
   commit_all
 
@@ -2805,6 +2817,31 @@ t_update_uses_template_copy_list() {
   check "first update copies the new file" "$out" "added factory/new-module.js" &&
   check "installed content" "$(cat factory/new-module.js)" "export const addedByUpdate = true;" &&
   check "dry run previews the new file" "$dry" "added factory/new-module.js"
+}
+
+t_update_from_extensionless_scripts() {
+  new_repo update-layout-new
+  local source="$PWD" name out
+  sed -i 's/\["dashboard.html",/["dashboard.html", "new-module.js",/' factory/bin/update.py
+  printf 'export const fromTemplate = true;\n' > factory/new-module.js
+  commit_all
+
+  new_repo update-layout-old
+  for name in job gate update route dashboard report; do
+    mv "factory/bin/$name.py" "factory/bin/$name"
+  done
+  # The previous updater handed off by compiling the extensionless template entry.
+  sed -i 's/"update.py"/"update"/' factory/bin/update
+  commit_all
+  out=$(factory/bin/update "$source") || return 1
+  check "legacy handed off to the new copy list" "$out" "added factory/new-module.js" || return 1
+  for name in job gate update route dashboard report; do
+    cmp "factory/bin/$name" "$source/factory/bin/$name" &&
+    cmp "factory/bin/$name.py" "$source/factory/bin/$name.py" &&
+    [[ -x "factory/bin/$name" ]] || return 1
+  done
+  check "installed job launcher works" "$(J tracker)" "tracker local" &&
+  check "installed updater launcher works" "$(factory/bin/update "$source" --dry-run)" "already up to date"
 }
 
 # ---- findings: severities, stable ids, the builder's answers, disputes --------
@@ -2980,7 +3017,7 @@ EOF
 
 rpt() {  # rpt <args>: run factory/bin/report with HOME in the temp dir
   env -u XDG_CONFIG_HOME -u XDG_CACHE_HOME -u FACTORY_HUB_URL -u FACTORY_HUB_TOKEN -u CLAUDE_CONFIG_DIR -u CODEX_HOME \
-    HOME="$H" python3 factory/bin/report "$@"
+    HOME="$H" factory/bin/report "$@"
 }
 
 rpt_job() {  # rpt_job <id> [stage]: a job folder with job.json, spec.md and round-1/review-code.md
@@ -3040,7 +3077,7 @@ t_report_identity() {
   rpt_setup rptid; rpt_job 001-a
   check "no origin: local/<dir>" "$(rpt --dry-run --no-outside | python3 -c 'import json,sys; r=json.load(sys.stdin)["repos"][0]; print(r["repo"], r["url"])')" "local/repo None" || return 1
   local cases='import importlib.machinery as m, importlib.util as u
-l = m.SourceFileLoader("r", "factory/bin/report"); r = u.module_from_spec(u.spec_from_loader("r", l)); l.exec_module(r)
+l = m.SourceFileLoader("r", "factory/bin/report.py"); r = u.module_from_spec(u.spec_from_loader("r", l)); l.exec_module(r)
 for s in ("git@github.com:Xuresch/factory.git", "https://github.com/Xuresch/factory", "https://github.com/Xuresch/factory.git/", "ssh://git@gitlab.example.com:2222/grp/sub/app.git"):
     print(r.parse_remote(s))'
   local out; out=$(python3 -c "$cases")
@@ -3098,7 +3135,7 @@ t_verdict_fixtures() {  # the shared fixtures: hub/src/project.rs and dashboard-
   local out; out=$(python3 - "$FIXTURES/verdicts/expected.json" <<'EOF'
 import importlib.machinery as m, importlib.util as u, json, sys
 from pathlib import Path
-l = m.SourceFileLoader("job", "factory/bin/job"); job = u.module_from_spec(u.spec_from_loader("job", l)); l.exec_module(job)
+l = m.SourceFileLoader("job", "factory/bin/job.py"); job = u.module_from_spec(u.spec_from_loader("job", l)); l.exec_module(job)
 import jobfiles
 want = json.load(open(sys.argv[1]))["verdicts"]
 d = Path("factory/jobs/900-verdicts")
@@ -3138,7 +3175,7 @@ t_spaced_changes_reads_the_same() {  # sync, the review table, the Progression c
   check "the dispute check sees it: a human decides" "$(J next "$id")" "advance: factory/bin/job advance $id needs-human" &&
   check "the review table says CHANGES" "$(python3 - "$id" <<'EOF'
 import importlib.machinery as m, importlib.util as u, sys
-l = m.SourceFileLoader("job", "factory/bin/job"); job = u.module_from_spec(u.spec_from_loader("job", l)); l.exec_module(job)
+l = m.SourceFileLoader("job", "factory/bin/job.py"); job = u.module_from_spec(u.spec_from_loader("job", l)); l.exec_module(job)
 print(job.review_table(job.load(sys.argv[1])))
 EOF
 )" "| code | CHANGES (1 should)"
@@ -3151,7 +3188,7 @@ import importlib.machinery as m, importlib.util as u
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
-l = m.SourceFileLoader("gate", "factory/bin/gate"); g = u.module_from_spec(u.spec_from_loader("gate", l)); l.exec_module(g)
+l = m.SourceFileLoader("gate", "factory/bin/gate.py"); g = u.module_from_spec(u.spec_from_loader("gate", l)); l.exec_module(g)
 f = Path("checks.md"); h = g.checks_hash()
 cases = {
     "passing": f"GATE: PASS\nCOMMIT: abc\nCHECKS_SH: {h}\n\n## Summary\n",
@@ -3273,7 +3310,7 @@ import importlib.machinery as m
 import importlib.util as u
 import threading
 
-loader = m.SourceFileLoader("dashboard", "factory/bin/dashboard")
+loader = m.SourceFileLoader("dashboard", "factory/bin/dashboard.py")
 dashboard = u.module_from_spec(u.spec_from_loader("dashboard", loader))
 loader.exec_module(dashboard)
 handler = functools.partial(dashboard.Handler, directory=str(dashboard.FACTORY))
@@ -3321,7 +3358,7 @@ import json; s = json.load(open('$state')); print([r['001-a']['round-1/review-co
 
 jobpy() {  # jobpy <python>: run it with factory/bin/job loaded as `j` (its tracker as config.json picks it)
   python3 -c 'import importlib.machinery as m, importlib.util as u
-l = m.SourceFileLoader("j", "factory/bin/job"); j = u.module_from_spec(u.spec_from_loader("j", l)); l.exec_module(j)
+l = m.SourceFileLoader("j", "factory/bin/job.py"); j = u.module_from_spec(u.spec_from_loader("j", l)); l.exec_module(j)
 '"$1"
 }
 
