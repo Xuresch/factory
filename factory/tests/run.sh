@@ -2819,6 +2819,22 @@ t_update_uses_template_copy_list() {
   check "dry run previews the new file" "$dry" "added factory/new-module.js"
 }
 
+t_update_installs_commonjs_in_esm_repo() {
+  new_repo update-esm
+  printf '{"type":"module"}\n' > package.json
+  commit_all
+
+  factory/bin/update "$FACTORY_SRC/.." >/dev/null || return 1
+  local status=0 out
+  node factory/tests/dashboard-verdicts.mjs || status=1
+  node --test factory/tests/job_summary.test.js factory/tests/cost-aggregation.test.js || status=1
+  [[ "$status" == 0 ]] || return "$status"
+  git diff --exit-code -- package.json && commit_all || return 1
+  printf '{"type":"module"}\n' > factory/package.json
+  if out=$(factory/bin/update "$FACTORY_SRC/.." 2>&1); then return 1; fi
+  check "refuses to overwrite local package changes" "$out" "uncommitted changes in files this would replace: factory/package.json"
+}
+
 t_update_from_738a009() {
   new_repo update-layout-new
   local template="$PWD" name out

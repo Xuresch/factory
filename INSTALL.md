@@ -81,6 +81,7 @@ factory/tests/cost-aggregation.test.js
 factory/dashboard.html
 factory/job-summary.js
 factory/cost-aggregation.js
+factory/package.json
 ```
 
 ```bash
