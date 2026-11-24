@@ -837,11 +837,25 @@ t_no_dependencies_no_pause() {
 
 t_codex_model_and_effort() {
   new_repo codexmodel; ticket 01 One; ticket 02 Two; commit_all
-  local id; id=$(to_build 01 low none)
-  check "low builds on terra low" "$(field "$id" "d['agents']['builder']")" "'effort': 'low'" &&
-  J start "$id" builder >/dev/null &&
-  check "model and effort reach Orca" "$(tail -1 "$CALLS")" "--agent codex --model gpt-6.1-terra --effort low" &&
-  check "preset" "$(J route-set "$id" builder=sol-high)" "codex/gpt-6.2-sol:high" &&
+  local expected id flags preset
+  expected=$(python3 - <<'PY'
+import json
+
+with open("factory/config.json") as file:
+    config = json.load(file)
+builder = config["builder"]
+entry = builder.get("by_risk", {}).get("low") or builder["default"]
+print(" ".join(f"--{key} {entry[key]}" for key in ("agent", "model", "effort") if entry.get(key)))
+preset = config["model_presets"]["sol-high"]
+print(preset["agent"] + (f"/{preset['model']}" if preset.get("model") else "")
+      + (f":{preset['effort']}" if preset.get("effort") else ""))
+PY
+  ) || return 1
+  preset=${expected#*$'\n'}
+  id=$(to_build 01 low none) && J start "$id" builder >/dev/null || return 1
+  flags=$(tail -1 "$CALLS" | sed -n 's/^orchestration worker-start \(.*\) --worktree .*/\1/p')
+  check "configured builder flags reach Orca" "[$flags]" "[${expected%%$'\n'*}]" &&
+  check "configured preset is selected" "$(J route-set "$id" builder=sol-high)" "builder=$preset;" &&
   check "explicit effort" "$(J route-set "$id" builder=codex/gpt-6.1-terra:medium)" "codex/gpt-6.1-terra:medium" &&
   check "bad entry" "$(J route-set "$id" builder=gpt 2>&1)" "terra-low"
 }
