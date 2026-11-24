@@ -40,6 +40,7 @@ mod store;
 #[cfg(test)]
 mod subscription_tests;
 mod subscriptions;
+mod template_versions;
 mod tree;
 mod util;
 
@@ -303,7 +304,16 @@ async fn get(hub: &Hub, raw: &str, query: &str, head: bool) -> Response {
         },
         "/api/stream" => stream(hub, head),
         "/api/costs" => api_costs(hub, query).await,
+        "/api/template-versions" => {
+            let repo = query_value(query, "repo");
+            match hub.template_versions(repo.as_deref()).await {
+                Ok(Some(v)) => reply_json(200, &v),
+                Ok(None) => reply_json(404, &json!({"error": "not found"})),
+                Err(e) => server_error(&e),
+            }
+        }
         "/" => static_file(hub, "index.html").await,
+        "/templates" => static_file(hub, "templates.html").await,
         "/all" | "/all/" => redirect("/all/dashboard.html"),
         _ => {
             if let Some(rest) = path.strip_prefix("/api/repos/") {

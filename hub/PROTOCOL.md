@@ -189,7 +189,8 @@ A released migration is never edited; a change is a new file.
 
 ## Read API
 
-The projected job list, detail, and cost endpoints are specified in [API.md](API.md). Overview job entries use the same summaries.
+The projected job list, detail, cost, and template comparison endpoints are
+specified in [API.md](API.md). Overview job entries use the same summaries.
 
 All JSON, `Cache-Control: no-store`.
 
