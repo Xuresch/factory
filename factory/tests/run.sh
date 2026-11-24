@@ -2819,9 +2819,9 @@ t_update_uses_template_copy_list() {
   check "dry run previews the new file" "$dry" "added factory/new-module.js"
 }
 
-t_update_from_extensionless_scripts() {
+t_update_from_738a009() {
   new_repo update-layout-new
-  local source="$PWD" name out
+  local template="$PWD" name out
   sed -i 's/\["dashboard.html",/["dashboard.html", "new-module.js",/' factory/bin/update.py
   printf 'export const fromTemplate = true;\n' > factory/new-module.js
   commit_all
@@ -2830,18 +2830,19 @@ t_update_from_extensionless_scripts() {
   for name in job gate update route dashboard report; do
     mv "factory/bin/$name.py" "factory/bin/$name"
   done
-  # The previous updater handed off by compiling the extensionless template entry.
-  sed -i 's/"update.py"/"update"/' factory/bin/update
+  # Exact bytes from git show 738a009:factory/bin/update, kept for installed suites without template history.
+  cp "$FACTORY_SRC/tests/fixtures/update-738a009.txt" factory/bin/update
   commit_all
-  out=$(factory/bin/update "$source") || return 1
+  [[ ! -e factory/bin/job.py && ! -e factory/bin/update.py ]] || return 1
+  out=$(factory/bin/update "$template@HEAD") || return 1
   check "legacy handed off to the new copy list" "$out" "added factory/new-module.js" || return 1
   for name in job gate update route dashboard report; do
-    cmp "factory/bin/$name" "$source/factory/bin/$name" &&
-    cmp "factory/bin/$name.py" "$source/factory/bin/$name.py" &&
+    cmp "factory/bin/$name" "$template/factory/bin/$name" &&
+    cmp "factory/bin/$name.py" "$template/factory/bin/$name.py" &&
     [[ -x "factory/bin/$name" ]] || return 1
   done
   check "installed job launcher works" "$(J tracker)" "tracker local" &&
-  check "installed updater launcher works" "$(factory/bin/update "$source" --dry-run)" "already up to date"
+  check "installed updater launcher works" "$(factory/bin/update "$template@HEAD" --dry-run)" "already up to date"
 }
 
 # ---- findings: severities, stable ids, the builder's answers, disputes --------
