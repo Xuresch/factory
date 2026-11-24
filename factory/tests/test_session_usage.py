@@ -213,7 +213,7 @@ class OutsideUsage(Base):
         self.fixture()
         mods = {}
         for name in ("dashboard", "report"):
-            loader = importlib.machinery.SourceFileLoader(f"t_{name}", str(BIN / name))
+            loader = importlib.machinery.SourceFileLoader(f"t_{name}", str(BIN / f"{name}.py"))
             mods[name] = importlib.util.module_from_spec(importlib.util.spec_from_loader(f"t_{name}", loader))
             loader.exec_module(mods[name])
         cfg = {**su.factory_config(), "prices_usd_per_mtok": PRICES}  # the repo's config, fixture prices

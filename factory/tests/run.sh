@@ -57,6 +57,7 @@ p = "factory/config.json"; c = json.load(open(p))
 c.setdefault("hold", {})["only_when_needed"] = False  # most tests want every high-risk spec held
 c.setdefault("labels", {})["factory"] = None  # an installation's opt-in label; the label tests set it
 c.update(base_branch="master", concurrency=3, notify="", tracker="local", merge_method="merge", worktree_root=None, worktree_setup="", replace_builder_after_partials=2,
+         codegraph="off",
          min_risk_for_surface={"security": "medium"},
          worktree_cache_dirs=["target/factory-jobs/{name}", "target/factory-jobs/{name}-native"])
 json.dump(c, open(p, "w"), indent=2)
@@ -82,6 +83,18 @@ EOF
 }
 
 J() { factory/bin/job "$@"; }
+
+t_job_launcher() {
+  new_repo 'launcher with spaces'; ticket 01 One; commit_all
+  local repo="$PWD" out status
+  cd "$TMP_ROOT" || return 1
+  out=$(printf '%s\n' 'The answer includes spaces and "quotes".' | "$repo/factory/bin/job" reply f/01) || return 1
+  check "forwards the arguments" "$out" "replied on f/01" &&
+  check "forwards stdin" "$(cat "$repo/.scratch/f/issues/01-t.md")" 'The answer includes spaces and "quotes".' || return 1
+  out=$("$repo/factory/bin/job" reply f/01 </dev/null 2>&1); status=$?
+  check "returns the Python command's failure status" "[$status]" "[1]" &&
+  check "passes through the error message" "$out" "no text on stdin"
+}
 
 intake() {  # intake <job> <risk> <surfaces> [extra header lines]
   printf 'DECISION: ACCEPT\nRISK: %s\nSURFACES: %s\nRESCOPED: no\nSIZE: small\nSPLIT: no\n%s\n## Summary\n- ok\n\n## Scope\nx\n\n## Follow-ups\nNone.\n' \
@@ -1696,6 +1709,102 @@ EOF2
   check "worktree gone" "$(test -d ".worktrees/$id" && echo yes || echo no)" "no"
 }
 
+fake_codegraph() {
+  cat > "$(dirname "$CALLS")/codegraph" <<'EOF'
+#!/usr/bin/env bash
+printf 'codegraph %s in %s\n' "$*" "$PWD" >> "$CALLS"
+if [[ ${FAKE_CODEGRAPH_FAIL:-} == "$1" ]]; then
+  echo 'fake CodeGraph failure' >&2; exit 3
+fi
+case "$1" in
+  init) mkdir -p .codegraph; printf '%s\n' "$PWD" > .codegraph/codegraph.db
+        printf '*\n!.gitignore\n' > .codegraph/.gitignore ;;
+  sync) test -f .codegraph/codegraph.db && test -f .codegraph/.gitignore ;;
+  serve) trap 'if [[ -d "$4" ]]; then echo "stopped before removing $4" >> "$CALLS"; fi; exit 0' TERM
+         touch "$READY_FILE"
+         while :; do sleep 0.1; done ;;
+  *) exit 1 ;;
+esac
+EOF
+  chmod +x "$(dirname "$CALLS")/codegraph"
+  export PATH="$(dirname "$CALLS"):$PATH"
+  set_config codegraph '"auto"'
+}
+
+t_codegraph_job_lifecycle() {
+  new_repo cgjob; fake_codegraph; ticket 01 One; commit_all
+  local id worktree; id=$(J create f/01) || return 1
+  worktree="$PWD/.worktrees/$id"
+  J start "$id" intake >/dev/null || return 1
+  check "main initialized before intake dispatch" "$(tail -2 "$CALLS")" \
+    "codegraph init in $PWD"$'\n'"orchestration worker-start" || return 1
+  intake "$id" low none; factory/bin/route "$id" >/dev/null && J advance "$id" spec >/dev/null || return 1
+  check "seeded the job database" "[$(cat "$worktree/.codegraph/codegraph.db")]" "[$PWD]" &&
+  cmp "$worktree/.codegraph/.gitignore" .codegraph/.gitignore &&
+  check "new job checkout synced" "$(tail -1 "$CALLS")" "codegraph sync -q in $worktree" &&
+  check "index is ignored" "[$(git -C "$worktree" status --porcelain)]" "[]" || return 1
+  J start "$id" spec >/dev/null || return 1
+  check "spec syncs main and job checkouts before dispatch" "$(tail -3 "$CALLS")" \
+    "codegraph sync -q in $PWD"$'\n'"codegraph sync -q in $worktree"$'\n'"orchestration worker-start" || return 1
+  echo '# Spec' > "factory/jobs/$id/spec.md"; J advance "$id" build >/dev/null || return 1
+  FAKE_CODEGRAPH_FAIL=sync J start "$id" builder >/dev/null || return 1
+  check "builder dispatched after the sync failure" "$(tail -2 "$CALLS")" \
+    "codegraph sync -q in $worktree"$'\n'"orchestration worker-start" &&
+  check "failure logged" "$(cat "factory/jobs/$id/codegraph.log")" "exit 3" || return 1
+  build_commit "$id" y.txt y; to_review "$id" || return 1
+  review "$id" 1 code PASS; review "$id" 1 spec PASS
+  J advance "$id" approve >/dev/null || return 1
+  printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"
+  J merge "$id" >/dev/null || return 1
+  check "main synced after local merge" "$(tail -1 "$CALLS")" "codegraph sync -q in $PWD" &&
+  check "main initialized only once" "[$(grep -c '^codegraph init ' "$CALLS")]" "[1]"
+}
+
+t_codegraph_slice_lifecycle() {
+  new_repo cgslice; fake_codegraph; mkdir a b; touch a/.keep b/.keep; ticket 01 Sliced
+  set_config worktree_setup '"case \"$PWD\" in *-s1) ;; *) codegraph init ;; esac"'
+  commit_all
+  local id where other matching sibling; id=$(J create f/01) || return 1
+  intake "$id" low none; sed -i 's/SPLIT: no/SPLIT: yes/; s/SIZE: small/SIZE: large/' "factory/jobs/$id/intake.md"
+  factory/bin/route "$id" >/dev/null && J advance "$id" spec >/dev/null || return 1
+  check "keeps the index from the setup hook" "[$(cat ".worktrees/$id/.codegraph/codegraph.db")]" "[$PWD/.worktrees/$id]" || return 1
+  printf '# Spec\n\n## Slices\n### Slice 1: A\n**Owns:** a/\n**Needs:** none\n### Slice 2: B\n**Owns:** b/\n**Needs:** 1\n' > "factory/jobs/$id/spec.md"
+  J advance "$id" build >/dev/null && J slice-start "$id" 1 >/dev/null || return 1
+  where="$PWD/.worktrees/$id-s1"; other="$where-other"
+  check "seeded the slice database from main" "[$(cat "$where/.codegraph/codegraph.db")]" "[$PWD]" &&
+  check "new slice checkout synced" "$(tail -1 "$CALLS")" "codegraph sync -q in $where" || return 1
+  J start "$id" builder-s1 >/dev/null || return 1
+  check "slice sync before builder dispatch" "$(tail -2 "$CALLS")" \
+    "codegraph sync -q in $where"$'\n'"orchestration worker-start" || return 1
+
+  [[ -f /proc/self/cmdline ]] || return 0  # Process matching uses Linux /proc.
+  build_commit "$id-s1" a/change.txt slice
+  printf 'STATUS: READY\n\n## Self-review\nok\n' > "factory/jobs/$id/slice-1.md"
+  mkdir "$other"
+  READY_FILE="$TMP_ROOT/cgslice/matching" codegraph serve --mcp --path "$where" & matching=$!
+  READY_FILE="$TMP_ROOT/cgslice/sibling" codegraph serve --mcp --path "$other" & sibling=$!
+  trap "kill $matching $sibling 2>/dev/null; wait $matching $sibling 2>/dev/null" EXIT
+  local i
+  for i in {1..50}; do
+    [[ -f "$TMP_ROOT/cgslice/matching" && -f "$TMP_ROOT/cgslice/sibling" ]] && break
+    sleep 0.02
+  done
+  [[ -f "$TMP_ROOT/cgslice/matching" && -f "$TMP_ROOT/cgslice/sibling" ]] || return 1
+  J slice-done "$id" 1 >/dev/null || return 1
+  check "matching server stopped before removal" "$(cat "$CALLS")" "stopped before removing $where" &&
+  [[ ! -d "$where" ]] && kill -0 "$sibling" 2>/dev/null
+}
+
+t_codegraph_off() {
+  new_repo cgoff; fake_codegraph; set_config codegraph '"off"'; ticket 01 One; commit_all
+  local id; id=$(J create f/01) || return 1
+  J start "$id" intake >/dev/null || return 1
+  intake "$id" low none; factory/bin/route "$id" >/dev/null && J advance "$id" spec >/dev/null || return 1
+  J start "$id" spec >/dev/null || return 1
+  check "off makes no CodeGraph calls" "[$(grep -c '^codegraph ' "$CALLS")]" "[0]" &&
+  [[ ! -d .codegraph && ! -d ".worktrees/$id/.codegraph" ]]
+}
+
 t_gate_keeps_output_order() {
   new_repo gateorder; ticket 01 One; commit_all
   local id; id=$(to_build 01 low none); build_commit "$id" y.txt y; ready "$id"; J advance "$id" gate >/dev/null
@@ -1720,7 +1829,7 @@ t_dashboard_subscriptions() {
   echo '{"checked":"abc"}' > factory/jobs/_features/f.json
   export XDG_CONFIG_HOME="$TMP_ROOT/dashsubs/config"
   local q='import importlib.machinery as m, importlib.util as u, json
-l = m.SourceFileLoader("d", "factory/bin/dashboard"); d = u.module_from_spec(u.spec_from_loader("d", l)); l.exec_module(d)
+l = m.SourceFileLoader("d", "factory/bin/dashboard.py"); d = u.module_from_spec(u.spec_from_loader("d", l)); l.exec_module(d)
 print(json.dumps(d.subscriptions()))'
   check "no config: nothing to serve" "$(python3 -c "$q")" "null" || return 1
   mkdir -p "$XDG_CONFIG_HOME/factory"
@@ -1766,7 +1875,7 @@ t_dashboard_outside() {
     printf "$tc" 2026-12-14T12:00:00Z 2000000 100000 2100000; } > "$cx/rollout-c1.jsonl"
   head -3 "$cx/rollout-c1.jsonl" > "$acct/rollout-c1.jsonl"
   local q='import importlib.machinery as m, importlib.util as u, json
-l = m.SourceFileLoader("d", "factory/bin/dashboard"); d = u.module_from_spec(u.spec_from_loader("d", l)); l.exec_module(d)
+l = m.SourceFileLoader("d", "factory/bin/dashboard.py"); d = u.module_from_spec(u.spec_from_loader("d", l)); l.exec_module(d)
 import os, pathlib
 r = d.Outside().scan(); before = d.CACHE.stat().st_mtime_ns; r2 = d.Outside().scan()
 untouched = d.CACHE.stat().st_mtime_ns == before
@@ -1793,7 +1902,7 @@ t_dashboard_outside_matches_report() {
     '{"type":"assistant","timestamp":"2026-11-14T12:00:00Z","message":{"id":"m1","model":"claude-opus-5-5","usage":{"input_tokens":1000000}}}' > "$h/.claude/projects/-x/s1.jsonl"
   local q='import importlib.machinery as m, importlib.util as u, json
 def load(n):
-    l = m.SourceFileLoader(n, "factory/bin/" + n); x = u.module_from_spec(u.spec_from_loader(n, l)); l.exec_module(x); return x
+    l = m.SourceFileLoader(n, "factory/bin/" + n + ".py"); x = u.module_from_spec(u.spec_from_loader(n, l)); l.exec_module(x); return x
 d, r = load("dashboard"), load("report")
 print(json.dumps({"same": d.Outside().scan() == r.scan_outside(), "months": r.scan_outside()["months"]}))'
   local out; out=$(env -u CODEX_HOME -u CLAUDE_CONFIG_DIR -u XDG_CACHE_HOME HOME="$h" python3 -c "$q")
@@ -2688,7 +2797,7 @@ t_update_uses_template_copy_list() {
   new_repo update-new
   local source="$PWD@HEAD"
   sed -i 's/"factory\/dashboard.html",/"factory\/dashboard.html", "factory\/new-module.js",/;
-          s/\["dashboard.html",/["dashboard.html", "new-module.js",/' factory/bin/update
+          s/\["dashboard.html",/["dashboard.html", "new-module.js",/' factory/bin/update.py
   printf 'export const addedByUpdate = true;\n' > factory/new-module.js
   commit_all
 
@@ -2708,6 +2817,32 @@ t_update_uses_template_copy_list() {
   check "first update copies the new file" "$out" "added factory/new-module.js" &&
   check "installed content" "$(cat factory/new-module.js)" "export const addedByUpdate = true;" &&
   check "dry run previews the new file" "$dry" "added factory/new-module.js"
+}
+
+t_update_from_738a009() {
+  new_repo update-layout-new
+  local template="$PWD" name out
+  sed -i 's/\["dashboard.html",/["dashboard.html", "new-module.js",/' factory/bin/update.py
+  printf 'export const fromTemplate = true;\n' > factory/new-module.js
+  commit_all
+
+  new_repo update-layout-old
+  for name in job gate update route dashboard report; do
+    mv "factory/bin/$name.py" "factory/bin/$name"
+  done
+  # Exact bytes from git show 738a009:factory/bin/update, kept for installed suites without template history.
+  cp "$FACTORY_SRC/tests/fixtures/update-738a009.txt" factory/bin/update
+  commit_all
+  [[ ! -e factory/bin/job.py && ! -e factory/bin/update.py ]] || return 1
+  out=$(factory/bin/update "$template@HEAD") || return 1
+  check "legacy handed off to the new copy list" "$out" "added factory/new-module.js" || return 1
+  for name in job gate update route dashboard report; do
+    cmp "factory/bin/$name" "$template/factory/bin/$name" &&
+    cmp "factory/bin/$name.py" "$template/factory/bin/$name.py" &&
+    [[ -x "factory/bin/$name" ]] || return 1
+  done
+  check "installed job launcher works" "$(J tracker)" "tracker local" &&
+  check "installed updater launcher works" "$(factory/bin/update "$template@HEAD" --dry-run)" "already up to date"
 }
 
 # ---- findings: severities, stable ids, the builder's answers, disputes --------
@@ -2883,7 +3018,7 @@ EOF
 
 rpt() {  # rpt <args>: run factory/bin/report with HOME in the temp dir
   env -u XDG_CONFIG_HOME -u XDG_CACHE_HOME -u FACTORY_HUB_URL -u FACTORY_HUB_TOKEN -u CLAUDE_CONFIG_DIR -u CODEX_HOME \
-    HOME="$H" python3 factory/bin/report "$@"
+    HOME="$H" factory/bin/report "$@"
 }
 
 rpt_job() {  # rpt_job <id> [stage]: a job folder with job.json, spec.md and round-1/review-code.md
@@ -2943,7 +3078,7 @@ t_report_identity() {
   rpt_setup rptid; rpt_job 001-a
   check "no origin: local/<dir>" "$(rpt --dry-run --no-outside | python3 -c 'import json,sys; r=json.load(sys.stdin)["repos"][0]; print(r["repo"], r["url"])')" "local/repo None" || return 1
   local cases='import importlib.machinery as m, importlib.util as u
-l = m.SourceFileLoader("r", "factory/bin/report"); r = u.module_from_spec(u.spec_from_loader("r", l)); l.exec_module(r)
+l = m.SourceFileLoader("r", "factory/bin/report.py"); r = u.module_from_spec(u.spec_from_loader("r", l)); l.exec_module(r)
 for s in ("git@github.com:Xuresch/factory.git", "https://github.com/Xuresch/factory", "https://github.com/Xuresch/factory.git/", "ssh://git@gitlab.example.com:2222/grp/sub/app.git"):
     print(r.parse_remote(s))'
   local out; out=$(python3 -c "$cases")
@@ -3001,7 +3136,7 @@ t_verdict_fixtures() {  # the shared fixtures: hub/src/project.rs and dashboard-
   local out; out=$(python3 - "$FIXTURES/verdicts/expected.json" <<'EOF'
 import importlib.machinery as m, importlib.util as u, json, sys
 from pathlib import Path
-l = m.SourceFileLoader("job", "factory/bin/job"); job = u.module_from_spec(u.spec_from_loader("job", l)); l.exec_module(job)
+l = m.SourceFileLoader("job", "factory/bin/job.py"); job = u.module_from_spec(u.spec_from_loader("job", l)); l.exec_module(job)
 import jobfiles
 want = json.load(open(sys.argv[1]))["verdicts"]
 d = Path("factory/jobs/900-verdicts")
@@ -3041,7 +3176,7 @@ t_spaced_changes_reads_the_same() {  # sync, the review table, the Progression c
   check "the dispute check sees it: a human decides" "$(J next "$id")" "advance: factory/bin/job advance $id needs-human" &&
   check "the review table says CHANGES" "$(python3 - "$id" <<'EOF'
 import importlib.machinery as m, importlib.util as u, sys
-l = m.SourceFileLoader("job", "factory/bin/job"); job = u.module_from_spec(u.spec_from_loader("job", l)); l.exec_module(job)
+l = m.SourceFileLoader("job", "factory/bin/job.py"); job = u.module_from_spec(u.spec_from_loader("job", l)); l.exec_module(job)
 print(job.review_table(job.load(sys.argv[1])))
 EOF
 )" "| code | CHANGES (1 should)"
@@ -3054,7 +3189,7 @@ import importlib.machinery as m, importlib.util as u
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
-l = m.SourceFileLoader("gate", "factory/bin/gate"); g = u.module_from_spec(u.spec_from_loader("gate", l)); l.exec_module(g)
+l = m.SourceFileLoader("gate", "factory/bin/gate.py"); g = u.module_from_spec(u.spec_from_loader("gate", l)); l.exec_module(g)
 f = Path("checks.md"); h = g.checks_hash()
 cases = {
     "passing": f"GATE: PASS\nCOMMIT: abc\nCHECKS_SH: {h}\n\n## Summary\n",
@@ -3176,7 +3311,7 @@ import importlib.machinery as m
 import importlib.util as u
 import threading
 
-loader = m.SourceFileLoader("dashboard", "factory/bin/dashboard")
+loader = m.SourceFileLoader("dashboard", "factory/bin/dashboard.py")
 dashboard = u.module_from_spec(u.spec_from_loader("dashboard", loader))
 loader.exec_module(dashboard)
 handler = functools.partial(dashboard.Handler, directory=str(dashboard.FACTORY))
@@ -3224,7 +3359,7 @@ import json; s = json.load(open('$state')); print([r['001-a']['round-1/review-co
 
 jobpy() {  # jobpy <python>: run it with factory/bin/job loaded as `j` (its tracker as config.json picks it)
   python3 -c 'import importlib.machinery as m, importlib.util as u
-l = m.SourceFileLoader("j", "factory/bin/job"); j = u.module_from_spec(u.spec_from_loader("j", l)); l.exec_module(j)
+l = m.SourceFileLoader("j", "factory/bin/job.py"); j = u.module_from_spec(u.spec_from_loader("j", l)); l.exec_module(j)
 '"$1"
 }
 

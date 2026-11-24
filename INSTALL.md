@@ -136,6 +136,9 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
 - `worktree_root`: leave it `null` (worktrees in `.worktrees/`), or set a path
   such as `~/.factory-worktrees` when a tool in the project scans the whole
   directory without reading `.gitignore` (see Stack notes).
+- `codegraph`: `"auto"` indexes the main checkout and job and slice worktrees
+  when `codegraph` is on `PATH`. Use `"off"` to disable it. The index stays
+  local, and failures go to `codegraph.log` in the job folder.
 - `worktree_cache_dirs`: build directories `env.sh` gives each worktree, as
   paths in the main checkout with `{name}` for the worktree's folder, such as
   `"target/factory-jobs/{name}"` for Rust. The factory deletes them with the
@@ -146,7 +149,8 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
   (`<orca> repo list --json`, `hookSettings.scripts.setup`) never runs for
   them: copy that script here. `ORCA_ROOT_PATH` and `FACTORY_MAIN_CHECKOUT`
   point at the main checkout. A failing setup is logged in the job folder
-  (`worktree-setup.log`) and doesn't stop the job.
+  (`worktree-setup.log`) and doesn't stop the job. This hook no longer needs
+  `codegraph init`. If the hook already created an index, the factory syncs it.
 - `worktree_teardown`: its counterpart, run in a job or slice worktree just
   before the factory removes it (the job merged or was rejected, a slice
   merged). Use it to stop what `worktree_setup` or the builder started and the

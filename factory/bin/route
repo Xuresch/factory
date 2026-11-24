@@ -1,62 +1,7 @@
 #!/usr/bin/env python3
-"""Map intake's risk and surfaces to the job's builder and reviewers.
-
-Usage: route <job-id>
-
-Reads `risk` and `surfaces` from intake.md (through job.json), looks them up in
-config.json's `routing` and `surface_reviewers` tables, picks the default
-builder from `builder`, and records the result in job.json with `job agents`,
-which applies `cross_review` (a lens listed there never runs on the same agent
-as the builder) and prints the final set.
-
-Each entry is {"agent": "claude" | "codex", "model": "<optional model id>"}.
-"""
-
-import json
-import subprocess
-import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import jobfiles  # noqa: E402  (factory/bin/jobfiles.py: how a job folder reads)
-
-FACTORY = Path(__file__).resolve().parents[1]
-CONFIG = json.loads((FACTORY / "config.json").read_text())
-
-
-def die(msg):
-    print(f"route: {msg}", file=sys.stderr)
-    sys.exit(1)
-
-
-def main(argv):
-    if len(argv) != 1:
-        die("usage: route <job-id>")
-    job_id = argv[0]
-    job_bin = str(FACTORY / "bin" / "job")
-    res = subprocess.run([job_bin, "sync", job_id], capture_output=True, text=True)
-    if res.returncode != 0:
-        die(res.stderr.strip())
-    job = jobfiles.load_job(FACTORY / "jobs", job_id)
-    intake = job["intake"] or die(f"{job_id} has no intake.md")
-    risk = CONFIG["routing"].get(intake["risk"]) or die(
-        f"risk {intake['risk']!r} isn't in config.json routing ({', '.join(CONFIG['routing'])})")
-    reviewers = dict(risk)
-    for surface in intake["surfaces"]:
-        extra = CONFIG["surface_reviewers"].get(surface)
-        if extra is None:
-            die(f"surface {surface!r} isn't in config.json surface_reviewers ({', '.join(CONFIG['surface_reviewers'])})")
-        reviewers.update(extra)
-    for lens, entry in CONFIG.get("risk_upgrades", {}).get(intake["risk"], {}).items():
-        if lens in reviewers:  # a stronger model for this lens at this risk
-            reviewers[lens] = entry
-    builder = CONFIG["builder"].get("by_risk", {}).get(intake["risk"]) or CONFIG["builder"]["default"]
-    agents = {"builder": builder, "reviewers": reviewers}
-    res = subprocess.run([job_bin, "agents", job_id, json.dumps(agents)], capture_output=True, text=True)
-    if res.returncode != 0:
-        die(res.stderr.strip())
-    print(res.stdout.strip())
-
-
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    script = Path(__file__).resolve().with_suffix(".py")
+    __file__ = str(script)
+    exec(compile(script.read_bytes(), __file__, "exec"))
