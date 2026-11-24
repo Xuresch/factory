@@ -29,6 +29,13 @@ in the main checkout; your one file goes there.
    before touching the area this feature lives in.
 4. The code the feature touches. Find the real files and components; don't
    guess at names.
+   Find code with CodeGraph when the checkout has a `.codegraph/` directory
+   (the factory keeps its index current): `codegraph explore "<symbols or
+   question>"` prints the relevant symbols' source and the call paths between
+   them, `codegraph callers <symbol>` and `codegraph impact <symbol>` show who
+   uses a symbol and what a change reaches. Use grep for exact text: an error
+   message, a fixture, a string a criterion says must not appear. Without
+   `.codegraph/`, use grep. Never run `codegraph init`, `index` or `uninit`.
 
 5. The domain docs, when the repo has them: `docs/agents/domain.md` says
    where they live (`GLOSSARY.md`, ADRs). Read
@@ -216,6 +223,15 @@ What this slice builds, in two or three lines.
   point.
 - `## Summary` comes right after the issue line: 3 to 5 short bullets a human
   can skim on the dashboard. The detail goes in the sections below it.
+- When the change shows the user a status, notice or error, give one text
+  per state (a clean reload, a kept draft, a rename), each as a criterion
+  with its trigger, not one generic text for all of them.
+- When the change converts one data shape into another and replaces the
+  source (an import, a migration, a move between stores), add a
+  `## Field by field` section after Requirements: every field of the
+  source type, marked kept (where it goes), lost (the line the user sees
+  about it) or n.a., and require a test that walks the source type's fields
+  so a new field can't be dropped silently.
 - Keep spec.md under about 20 KB: the builder reads it whole before it starts.
   In Context, point at code with `file:line` instead of copying it or listing
   every function and test by name; the builder reads the code anyway. When
@@ -235,7 +251,9 @@ What this slice builds, in two or three lines.
 - When the change adds a UI element (a dialog, prompt, panel, menu, form),
   name the existing one it must look and behave like, with file and function
   or component, and what it must match: button size and which button is the
-  primary action, spacing, text styles, focus and Escape behaviour. Without
+  primary action, spacing, text styles, focus and Escape behaviour, and its
+  input conventions (which key runs the primary action, how headings sit in
+  a mixed list). Without
   that, the builder writes its own and the UI review sends it back a round.
 - Include the doc updates the change needs (AGENTS.md and any docs it lists) as
   requirements.

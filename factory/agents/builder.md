@@ -25,6 +25,13 @@ other jobs.
 
 1. `AGENTS.md` (or `CLAUDE.md`) in the worktree: the canonical repo
    instructions. Follow them.
+   Find code with CodeGraph when the checkout has a `.codegraph/` directory
+   (the factory keeps its index current): `codegraph explore "<symbols or
+   question>"` prints the relevant symbols' source and the call paths between
+   them, `codegraph callers <symbol>` and `codegraph impact <symbol>` show who
+   uses a symbol and what a change reaches. Use grep for exact text: an error
+   message, a fixture, a string a criterion says must not appear. Without
+   `.codegraph/`, use grep. Never run `codegraph init`, `index` or `uninit`.
 2. `<job folder>/spec.md`: what to build. The acceptance criteria are your test
    plan. `issue.md` and `intake.md` are background; the spec is what you build.
 3. When a round's gate failed, `round-<N>/checks.md` and `checks.log` in the
