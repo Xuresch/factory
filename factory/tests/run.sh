@@ -2524,7 +2524,7 @@ PY
   local out expected_age
   expected_age=$(config_value "c['heavy_max_minutes']" value "$FACTORY_SRC/config.json") || return 1
   out=$(factory/bin/update "$FACTORY_SRC/..") || return 1
-  check "update adds the new key" "$out" "added heavy_parallel" &&
+  check "update adds the new key" "$(grep 'config.json: added' <<<"$out")" "heavy_parallel" &&
   check "the old limit survives the update" "[$(config_value "c['heavy_parallel']")]" "[2]" &&
   check "the template age threshold is installed" "[$(config_value "c['heavy_max_minutes']")]" "[$expected_age]"
 }
