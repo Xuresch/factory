@@ -82,6 +82,7 @@ factory/dashboard.html
 factory/job-summary.js
 factory/cost-aggregation.js
 factory/package.json
+factory/.gitignore
 ```
 
 ```bash
@@ -94,6 +95,11 @@ chmod +x factory/checks.sh factory/bin/* factory/tests/run.sh
 
 Don't copy `README.md`, `DESIGN.md`, `INSTALL.md`, `LICENSE`, `examples/` or
 `docs/`. They describe the reference, not the user's project.
+
+If your installed updater predates the `FACTORY_UPDATE_TEMPLATE` handoff
+introduced in #26, the first update installs the new updater. Commit the
+first update and run `factory/bin/update` again to pick up files the old
+updater missed, or pass `--force` on the second run.
 
 ## 2. Adapt
 
@@ -437,6 +443,10 @@ The project's linters and formatters must leave `factory/` alone: its scripts,
 `factory/jobs/` is runtime state. Exclude `factory` in their config (Biome
 `files.includes` `"!factory"`, ESLint `ignores`, Prettier `.prettierignore`),
 or the first gate fails on the factory's own files.
+
+If a pre-commit hook runs Fallow or another unused-file linter, exclude
+`factory/**` from that check. The factory runs its scripts and tests directly,
+so they have no references from app code.
 
 Tools that scan the project directory without reading `.gitignore` see every
 job's checkout in `.worktrees/`: some `jest`, `vitest`, `eslint` and `tsc`
