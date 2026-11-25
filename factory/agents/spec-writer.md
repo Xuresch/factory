@@ -243,6 +243,7 @@ What this slice builds, in two or three lines.
   could answer. Make the remaining calls yourself and list them under
   Assumptions.
 <!-- include: principles -->
+- In Requirements, list what the change makes obsolete and must remove.
 - Name the existing pattern in Context and require it. Say in the same
   requirement what the pattern must keep, the part a copy most easily
   drops (for example "log the caught error object, not a fixed string", "keep

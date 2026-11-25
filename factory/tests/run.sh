@@ -833,6 +833,29 @@ assert not duplicates, "move duplicated instructions to factory/agents/shared"
 PY
 }
 
+t_brief_subtract_rule_is_shared() {
+  python3 - "$FACTORY_SRC/agents" <<'PY'
+from pathlib import Path
+import sys
+
+agents = Path(sys.argv[1])
+principles = agents / "shared" / "principles.md"
+part = principles.read_text()
+assert "Make the smallest change" in part
+assert "Reuse existing helpers" in part
+assert "Leave out speculative" in part
+assert "CodeGraph in an indexed checkout" in part
+rule = "move its callers and delete the old one in the same branch"
+assert [path for path in agents.rglob("*.md") if rule in path.read_text()] == [principles]
+assert "Leave unrelated cleanup for the structure review" in part
+include = "<!-- include: principles -->"
+roles = {path.stem for path in agents.glob("*.md") if include in path.read_text().splitlines()}
+assert roles == {"spec-writer", "builder", "reviewer-code"}, roles
+assert "In Requirements, list what the change makes obsolete and must remove." in (agents / "spec-writer.md").read_text()
+assert "Flag any code the change left obsolete as a `[should]` finding." in (agents / "reviewer-code.md").read_text()
+PY
+}
+
 t_worktree_root_outside_repo() {
   new_repo wtroot; ticket 01 One; commit_all
   local root="$TMP_ROOT/wtroot/outside"

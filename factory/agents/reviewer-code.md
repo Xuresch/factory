@@ -54,6 +54,7 @@ below alone.
 - **Correctness**: it does what the spec's requirements say. Look for edge
   cases, missing awaits, unhandled errors, and off-by-one or wrong-path bugs.
 <!-- include: principles -->
+- Flag any code the change left obsolete as a `[should]` finding.
 - Where the spec names a pattern and what it must keep, check every new use
   keeps exactly that. A new copy of a helper that already exists in two or
   more files is a `[should]` finding.
