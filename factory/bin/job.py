@@ -44,6 +44,7 @@ Usage:
   job slices <job>               a split job's slices and which to start next
   job slice-start <job> <k>      worktree and branch for slice k (when its Needs are merged)
   job slice-done <job> <k>       slice k reported: merge it into the job branch, or continue/park it
+  job unsplit <job>              drop an unfinished split in build when no slice is running
   job approve <job>              needs-human → merging → merged: a human approves an escalated job
   job resume <job>               paused → on: after the human reviewed (and maybe edited) intake.md or spec.md;
                                  stdin: what they accepted, then one line per spec Needs-a-human item
@@ -2002,7 +2003,7 @@ def observe_transition(job, target=None, *, reading=None):
             used = (job.get("continues") or {}).get(str(job["round"]), 0)
             return facts(report=status, continues_left=used < CONFIG.get("max_continues", 3))
         if status == "STATUS: READY":
-            open_slices = [str(s["n"]) for s in job.get("slices") or [] if s["state"] != "done"]
+            open_slices = [str(s["n"]) for s in unfinished_slices(job)]
             if open_slices:
                 return facts(problem=f"slices {', '.join(open_slices)} aren't merged yet: "
                                      f"see `factory/bin/job slices {job['id']}`")
@@ -2288,10 +2289,7 @@ def cleanup_transition(job):
         run(["git", "branch", "-D", job["branch"]], check=False)
     # Slices left behind by a blocked split.
     for s in job.get("slices") or []:
-        if Path(slice_worktree(job, s["n"])).exists():
-            remove_worktree(slice_worktree(job, s["n"]), check=False,
-                            teardown=job_dir(job["id"]) / f"worktree-teardown-s{s['n']}.log")
-        run(["git", "branch", "-D", slice_branch(job, s["n"])], check=False)
+        cleanup_slice(job, s["n"], check=False)
 
 
 def finish_transition(job, stage):
@@ -2348,6 +2346,7 @@ def finish_transition(job, stage):
 # own branch and worktree with its work kept, the rest go back to pending.
 
 MAX_SLICES = 7  # each slice's builder gets its own port: base + step*n + 2 + k
+START_SLICES = "start the slices as in a first build"
 
 
 def owns_overlap(a, b):
@@ -2413,6 +2412,10 @@ def slice_of(job, k):
     return hits[0]
 
 
+def unfinished_slices(job):
+    return [s for s in job.get("slices") or [] if s["state"] != "done"]
+
+
 def slice_branch(job, k):
     return f"{job['branch']}-s{k}"
 
@@ -2450,15 +2453,21 @@ def slice_branch_exists(job, k):
     return run(["git", "rev-parse", "--verify", "--quiet", ref], check=False).returncode == 0
 
 
+def cleanup_slice(job, k, *, check=True):
+    where = slice_worktree(job, k)
+    remove_worktree(where, check=check and Path(where).exists(),
+                    teardown=job_dir(job["id"]) / f"worktree-teardown-s{k}.log")
+    if slice_branch_exists(job, k):
+        run(["git", "branch", "-D", slice_branch(job, k)], check=check)
+
+
 def reopen_slices(job, feedback):
     """After feedback or a rewind to build, the slices never merged run again. One
     that ran (blocked, or stopped mid-run) resumes on its branch with its work
     kept; one that never started, waiting on a blocked slice, goes back to pending.
     Returns the reopened slices; a job whose slices are all merged has none."""
     reopened = []
-    for s in job.get("slices") or []:
-        if s["state"] == "done":
-            continue
+    for s in unfinished_slices(job):
         if s.get("fork") and slice_branch_exists(job, s["n"]):
             s["state"] = "resume"
         else:
@@ -2471,6 +2480,29 @@ def reopen_slices(job, feedback):
 def cmd_slices(job):
     require(job.get("slices"), f"{job['id']} isn't split into slices")
     print(slices_status(job))
+
+
+def cmd_unsplit(job):
+    i = job["id"]
+    require(job["stage"] == "build", f"{i}: unsplit requires build, currently {job['stage']}")
+    require(unfinished_slices(job), f"{i} has no unfinished slices")
+    dispatches = job.get("dispatch") or {}
+    running = []
+    for s in job["slices"]:
+        dispatch = dispatches.get(f"builder-s{s['n']}")
+        if s["state"] == "running" or (dispatch and dispatch_state(live_dispatch(job, dispatch)) == "running"):
+            running.append(str(s["n"]))
+    require(not running, f"{i}: wait for running slice builders before unsplitting (slices {', '.join(running)})")
+    entry = f"- {now()} @{operator()} unsplit the build in round {job['round']}.\n"
+    for s in job["slices"]:
+        cleanup_slice(job, s["n"])
+        dispatches.pop(f"builder-s{s['n']}", None)
+    set_slices(job, None)
+    job.pop("slice_merge_order", None)
+    append_acceptance(job, entry)
+    save(job)
+    step = f"advance {i} gate" if first_line(job_dir(i) / "build.md") == "STATUS: READY" else f"start {i} builder"
+    print(f"{i}: split removed. Run `job {step}`")
 
 
 def cmd_slice_start(job, k):
@@ -3025,6 +3057,11 @@ def optional_stdin():
     return sys.stdin.read() if ready else ""
 
 
+def append_acceptance(job, entry):
+    f = job_dir(job["id"]) / "accepted.md"
+    f.write_text((f.read_text() if f.exists() else "# Accepted by a human\n\n") + entry)
+
+
 def record_acceptance(job, after, edited, note):
     """What the human accepted when resuming a pause: an entry in accepted.md,
     so the approver reads it instead of inferring it from the resume. The note's
@@ -3039,8 +3076,7 @@ def record_acceptance(job, after, edited, note):
     risk = (job.get("intake") or {}).get("risk")
     entry = (f"- {now()} @{operator()} resumed after {after} ({reason}, risk {risk}): {line}\n"
              + "".join(f"  - {l.removeprefix('- ')}\n" for l in lines[1:]))
-    f = job_dir(job["id"]) / "accepted.md"
-    f.write_text((f.read_text() if f.exists() else "# Accepted by a human\n\n") + entry)
+    append_acceptance(job, entry)
     job.setdefault("accepted", []).append({"after": after, "note": line, "at": now(), "by": operator()}
                                           | ({"answers": [l.removeprefix("- ") for l in lines[1:]]} if lines[1:] else {}))
 
@@ -3080,9 +3116,12 @@ def cmd_resume(job, note=""):
         sync_with_base(job)
     job.setdefault("history", []).append({"stage": job["stage"], "round": job["round"], "at": now(), "t": time.time()})
     save(job)
+    resumed = f"{job['id']}: resumed at {job['stage']}" + (f" with your edited {f.name}" if edited else "")
+    if job["stage"] == "build" and unfinished_slices(job):
+        print(f"{resumed}. {START_SLICES.capitalize()}.\n{slices_status(job)}")
+        return
     nxt = "spec" if job["stage"] == "spec" else "builder"
-    print(f"{job['id']}: resumed at {job['stage']}" + (f" with your edited {f.name}" if edited else "")
-          + f"; `job start {job['id']} {nxt}`"
+    print(resumed + f"; `job start {job['id']} {nxt}`"
           + (". If you changed RISK or SURFACES, set reviewers with `job route-set`." if edited and p["after"] == "intake" else ""))
 
 
@@ -3127,7 +3166,7 @@ def cmd_rewind(job, target, text):
     role = {"intake": "intake", "spec": "spec", "build": "builder"}[target]
     how = (f"`job send {job['id']} builder` or `job start` it" if role == "builder" else f"`job start {job['id']} {role}`")
     if reopened:
-        how = f"start the slices as in a first build, not one builder (each fresh builder-s<k> gets feedback-{k}.md)"
+        how = f"{START_SLICES} (each fresh builder-s<k> gets feedback-{k}.md)"
     print(f"{job['id']}: back to {target} with feedback-{k}.md. Stop the job's running workers, then {how}."
           + (f"\n{slices_status(job)}" if reopened else ""))
 
@@ -4924,6 +4963,10 @@ def overlap_wait(job):
 
 
 def cmd_start(job, role, extra):
+    if role == "builder" and unfinished_slices(job):
+        i = job["id"]
+        die(f"{i} has unfinished slices. See `job slices {i}` and use `job slice-start {i} <k>` "
+            f"to build them, or run `job unsplit {i}` to switch to one builder.")
     entry = role_entry(job, role)
     wait = overlap_wait(job) if role == "builder" and job["stage"] == "build" else None
     if wait:
@@ -5253,14 +5296,14 @@ def next_slices(job, since):
         elif k in ready:
             out.append(("run", f"{JOB} slice-start {i} {k}, then {JOB} start {i} {role}"))
     if not out:
-        stuck = [str(s["n"]) for s in job["slices"] if s["state"] != "done"]
+        stuck = [str(s["n"]) for s in unfinished_slices(job)]
         out.append(("wait", f"slices {', '.join(stuck)} wait on others; `{JOB} slices {i}`"))
     return out
 
 
 def next_build(job, since):
     d = job_dir(job["id"])
-    if job.get("slices") and any(s["state"] != "done" for s in job["slices"]):
+    if unfinished_slices(job):
         return next_slices(job, since)
     c = job.get("continued") or {}
     w = (job.get("workers") or {}).get("builder") or {}
@@ -5489,6 +5532,8 @@ def main(argv):
             cmd_slice_start(resolve(args[0]), args[1])
         elif cmd == "slice-done" and len(args) == 2:
             cmd_slice_done(resolve(args[0]), args[1])
+        elif cmd == "unsplit" and len(args) == 1:
+            cmd_unsplit(resolve(args[0]))
         elif cmd == "continue" and len(args) == 1:
             cmd_continue(resolve(args[0]))
         elif cmd == "resume" and len(args) == 1:

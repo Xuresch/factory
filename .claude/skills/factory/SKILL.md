@@ -340,6 +340,10 @@ again. Start them as in step 1, not one builder; `job start <id> builder-s<k>`
 tells each fresh slice builder to read the feedback file (and its slice file
 when it resumes).
 
+An operator can run `job unsplit <id>` during build once no slice is running.
+It removes the slice worktrees and branches, discards unmerged slice work, and
+prints whether to advance a READY build to the gate or start a whole-job builder.
+
 Later rounds, after the gate or reviews, use one builder for the whole job:
 start a new `builder` worker told it takes over from the slice builders.
 
