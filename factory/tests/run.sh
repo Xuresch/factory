@@ -3162,6 +3162,21 @@ t_update_installs_commonjs_in_esm_repo() {
   check "refuses to overwrite local package changes" "$out" "uncommitted changes in files this would replace: factory/package.json"
 }
 
+t_update_installs_factory_gitignore() {
+  new_repo update-gitignore; commit_all
+  local out
+  out=$(factory/bin/update "$FACTORY_SRC/..") || return 1
+  check "update adds the factory ignore file" "$out" "added factory/.gitignore" &&
+  cmp "$FACTORY_SRC/.gitignore" factory/.gitignore &&
+  git check-ignore -q factory/bin/__pycache__/cache-entry &&
+  git check-ignore -q factory/bin/job.pyc && commit_all || return 1
+
+  # The tracked file must still be protected when it has a local edit.
+  printf '\n# Local edit\n' >> factory/.gitignore
+  if out=$(factory/bin/update "$FACTORY_SRC/.." 2>&1); then return 1; fi
+  check "update refuses to overwrite an edited ignore file" "$out" "uncommitted changes in files this would replace: factory/.gitignore"
+}
+
 t_update_from_738a009() {
   new_repo update-layout-new
   local template="$PWD" name out

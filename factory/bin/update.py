@@ -9,8 +9,9 @@ Usage:
 branch or tag.
 
 What it does:
-- factory/bin/*, dashboard.html, its JavaScript modules and package.json, factory/tests/*, the factory skill and
-  every brief without project blocks: replaced by the template's version.
+- factory/bin/*, dashboard.html, its JavaScript modules and package.json, factory/.gitignore,
+  factory/tests/*, the factory skill and every brief without project blocks: replaced by the
+  template's version.
 - factory/agents/*.md: the template's version, with this installation's
   `<!-- project: ... -->` ... `<!-- /project -->` blocks put back into the
   template's slots of the same kind (matched by the text after `project:`).
@@ -163,7 +164,7 @@ def dirty():
     """Uncommitted changes in the files update replaces."""
     paths = ["factory/bin", "factory/tests", "factory/agents", "factory/config.json",
              "factory/dashboard.html", "factory/job-summary.js", "factory/cost-aggregation.js",
-             "factory/package.json", ".claude/skills/factory"]
+             "factory/package.json", "factory/.gitignore", ".claude/skills/factory"]
     out = subprocess.run(["git", "-C", str(REPO), "status", "--porcelain", "--", *paths],
                          capture_output=True, text=True).stdout
     return [l[3:] for l in out.splitlines() if "__pycache__" not in l]
@@ -221,7 +222,7 @@ def main(argv):
                     put(dst, f.read_bytes())
                     if not dry and f.stat().st_mode & 0o111:
                         dst.chmod(dst.stat().st_mode | 0o755)
-        for name in ["dashboard.html", "job-summary.js", "cost-aggregation.js", "package.json"]:
+        for name in ["dashboard.html", "job-summary.js", "cost-aggregation.js", "package.json", ".gitignore"]:
             if (tf / name).exists():
                 put(FACTORY / name, (tf / name).read_text())
         if not (FACTORY / "env.sh").exists() and (tf / "env.sh").exists():  # older installs had none

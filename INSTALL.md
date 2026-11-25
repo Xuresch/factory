@@ -82,6 +82,7 @@ factory/dashboard.html
 factory/job-summary.js
 factory/cost-aggregation.js
 factory/package.json
+factory/.gitignore
 ```
 
 ```bash
