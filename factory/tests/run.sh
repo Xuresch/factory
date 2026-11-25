@@ -58,13 +58,25 @@ EOF
   python3 - <<'EOF'
 import json
 p = "factory/config.json"; c = json.load(open(p))
-c.setdefault("hold", {})["only_when_needed"] = False  # most tests want every high-risk spec held
-c.setdefault("labels", {})["factory"] = None  # an installation's opt-in label; the label tests set it
+c.setdefault("hold", {}).update(after_spec_risk=["high"], only_when_needed=False)
+c["labels"] = dict(queue="ready-for-agent", needs_info="needs-info", needs_human="ready-for-human",
+                   returned="needs-triage", wontfix="wontfix", factory=None)
 c.pop("template_version", None)  # a fresh installation has never run update
-c.update(base_branch="master", concurrency=3, notify="", tracker="local", merge_method="merge", worktree_root=None, worktree_setup="", replace_builder_after_partials=2,
-         codegraph="off",
+# Keep the job flow deterministic while preserving the installation's agent routes.
+c.update(base_branch="master", concurrency=3, notify="", tracker="local", merge_method="merge",
+         worktree_root=None, worktree_setup="", worktree_teardown="", replace_builder_after_partials=2,
+         max_rounds=3, max_continues=3, max_disputes=1, max_cost_usd=None,
+         feature_review=True, feature_review_every=0, structure_review_every=0,
+         retro_after_merge="friction", retro_cost_usd=None, commit_tickets=True,
+         skip_spec_when={"size": ["small"], "risk": ["low"]}, keep_open_roles=["builder"],
+         codegraph="off", overlap_wait=True, main_ci=True,
+         protected_paths=["factory/checks.sh", "factory/config.json", "factory/agents/*",
+                          "factory/bin/*", "factory/env.sh"],
+         review_sections={"code": ["Standards", "Spec"]}, review_skip={},
+         diff_growth={"ratio": 1.5, "min_lines": 50},
          min_risk_for_surface={"security": "medium"},
          worktree_cache_dirs=["target/factory-jobs/{name}", "target/factory-jobs/{name}-native"])
+c["builder"]["fallback_on_changes_from"] = ["ux", "ui"]
 json.dump(c, open(p, "w"), indent=2)
 EOF
   mkdir -p .scratch/f/issues
@@ -86,6 +98,47 @@ import json, sys; p = "factory/config.json"; c = json.load(open(p)); a = sys.arg
 c.update({a[i]: json.loads(a[i + 1]) for i in range(0, len(a), 2)}); json.dump(c, open(p, "w"), indent=2)
 EOF
 }
+
+config_value() {  # config_value <expression> [value|label|flags|worker] [config.json path]
+  python3 - "$1" "${2:-value}" "${3:-factory/config.json}" <<'PY'
+import json, sys
+from pathlib import Path
+
+expression, form, path = sys.argv[1:]
+c = json.loads(Path(path).read_text())
+
+def builder(risk):
+    return c["builder"].get("by_risk", {}).get(risk) or c["builder"]["default"]
+
+def stage(role, risk):
+    return c.get("stages_by_risk", {}).get(role, {}).get(risk) or c["stages"][role]
+
+def cross_review(lens, entry, build):
+    cross = c["cross_review"]
+    if lens in cross["lenses"] and entry["agent"] == build["agent"]:
+        return cross["when_builder_is"][build["agent"]]
+    return entry
+
+def reviewer(risk, lens, *surfaces):
+    entries = c["routing"][risk].copy()
+    for surface in surfaces:
+        entries.update(c["surface_reviewers"][surface])
+    entry = c.get("risk_upgrades", {}).get(risk, {}).get(lens) or entries[lens]
+    return cross_review(lens, entry, builder(risk))
+
+value = eval(expression, {"c": c, "builder": builder, "stage": stage, "reviewer": reviewer, "cross_review": cross_review})
+if form == "label":
+    value = value["agent"] + ("/" + value["model"] if value.get("model") else "") + (
+        ":" + value["effort"] if value.get("effort") else "")
+elif form in {"flags", "worker"}:
+    can_set_effort = value["agent"] != "claude" or "haiku" not in (value.get("model") or "")
+    keys = ("agent", "model", "effort") if form == "flags" and can_set_effort else ("agent", "model")
+    value = " ".join(f"--{key} {value[key]}" for key in keys if value.get(key))
+print(value)
+PY
+}
+
+start_flags() { sed -n 's/^orchestration worker-start \(.*\) --worktree .*/\1/p'; }
 
 J() { factory/bin/job "$@"; }
 
@@ -363,6 +416,7 @@ t_ready_needs_self_review() {
 
 t_pre_review_before_ready() {
   new_repo prereview; ticket 01 One; commit_all
+  builder_cfg pre_review '["codex review --base {base}"]'
   local id; id=$(to_build 01 low none); J start "$id" builder >/dev/null
   check "builder told to pre-review" "$(cat "$SPECS")" "Pre-review: \`codex review --base master\`" || return 1
   J send "$id" builder 'round 1' >/dev/null
@@ -389,11 +443,16 @@ t_pre_review_list() {
 
 t_job_start_routes_agents() {
   new_repo routing; ticket 01 One; commit_all
-  local id; id=$(to_build 01 medium "ui, security"); J start "$id" builder >/dev/null
-  build_commit "$id" y.txt y; to_review "$id"
-  for r in code ux ui security; do J start "$id" "reviewer-$r" >/dev/null; done
-  check "builder on codex" "$(grep 'r1' "$CALLS" | grep 'builder' )" "--agent codex" &&
-  check "code review on claude" "$(grep 'reviewer-code r1' "$CALLS")" "--agent claude --model opus" &&
+  local id expected r
+  id=$(to_build 01 medium "ui, security") && J start "$id" builder >/dev/null || return 1
+  expected=$(config_value "builder('medium')" flags) || return 1
+  check "builder uses the configured route" "[$(tail -1 "$CALLS" | start_flags)]" "[$expected]" || return 1
+  build_commit "$id" y.txt y && to_review "$id" || return 1
+  for r in code ux ui security; do
+    expected=$(config_value "reviewer('medium', '$r', 'ui', 'security')" flags) || return 1
+    J start "$id" "reviewer-$r" >/dev/null &&
+    check "$r uses the configured route" "[$(tail -1 "$CALLS" | start_flags)]" "[$expected]" || return 1
+  done
   check "dispatch recorded" "$(field "$id" "d['dispatch']['reviewer-code']")" "ctx_fake"
 }
 
@@ -404,37 +463,61 @@ c["builder"][sys.argv[1]] = json.loads(sys.argv[2]); json.dump(c, open(p, "w"), 
 EOF2
 }
 
+distinct_fallback() {  # These switch tests need two different builder routes.
+  local same agent
+  same=$(config_value "builder('$1') == c['builder']['fallback']") || return 1
+  [[ "$same" == True ]] || return 0
+  agent=$(config_value "builder('$1')['agent']") || return 1
+  if [[ "$agent" == claude ]]; then
+    builder_cfg fallback '{"agent":"codex","model":"gpt-6.2-sol","effort":"high"}'
+  else
+    builder_cfg fallback '{"agent":"claude","model":"sonnet","effort":"high"}'
+  fi
+}
+
 ui_round() {  # ui_round <job> <round>: a build, the gate, every review PASS but ux CHANGES, back to build
   build_commit "$1" "y$2.txt" y; to_review "$1"
   review "$1" "$2" code PASS; review "$1" "$2" ux CHANGES; review "$1" "$2" ui PASS
   J advance "$1" build
 }
 
-t_codex_fixes_ui_first() {
+t_initial_builder_fixes_ui_first() {
   new_repo uifixes; ticket 01 One; commit_all; set_config max_rounds 5; builder_cfg ui_fixes_before_fallback 2
-  local id; id=$(to_build 01 low ui)
-  check "round 1 CHANGES: codex keeps it" "$(ui_round "$id" 1; field "$id" "d['agents']['builder']['agent']")" "codex" &&
-  check "round 2 CHANGES: codex keeps it" "$(ui_round "$id" 2; field "$id" "d['agents']['builder']['agent']")" "codex" &&
-  check "round 3 CHANGES: claude takes over" "$(ui_round "$id" 3)" "builder is now claude/opus"
+  distinct_fallback low || return 1
+  local id initial fallback
+  initial=$(config_value "builder('low')") && fallback=$(config_value "c['builder']['fallback']" label) || return 1
+  id=$(to_build 01 low ui) &&
+  ui_round "$id" 1 >/dev/null &&
+  check "round 1 CHANGES keeps the initial builder" "$(field "$id" "d['agents']['builder'] == $initial")" "True" &&
+  ui_round "$id" 2 >/dev/null &&
+  check "round 2 CHANGES keeps the initial builder" "$(field "$id" "d['agents']['builder'] == $initial")" "True" &&
+  check "round 3 CHANGES switches to the fallback" "$(ui_round "$id" 3)" "builder is now $fallback"
 }
 
 t_last_round_goes_to_fallback() {
   new_repo uilast; ticket 01 One; commit_all; set_config max_rounds 3; builder_cfg ui_fixes_before_fallback 5
-  local id; id=$(to_build 01 low ui)
-  check "round 1: codex keeps it" "$(ui_round "$id" 1; field "$id" "d['agents']['builder']['agent']")" "codex" &&
-  check "round 3 is the last: claude gets it" "$(ui_round "$id" 2)" "is the last one"
+  distinct_fallback low || return 1
+  local id initial
+  initial=$(config_value "builder('low')") && id=$(to_build 01 low ui) &&
+  ui_round "$id" 1 >/dev/null &&
+  check "round 1 keeps the initial builder" "$(field "$id" "d['agents']['builder'] == $initial")" "True" &&
+  check "the last round goes to the fallback" "$(ui_round "$id" 2)" "is the last one"
 }
 
 t_ui_changes_switch_builder() {
   new_repo fallback; ticket 01 One; commit_all; builder_cfg ui_fixes_before_fallback 0
+  distinct_fallback medium || return 1
   local id; id=$(to_build 01 medium "ui, security"); J start "$id" builder >/dev/null
   build_commit "$id" y.txt y; to_review "$id"
   for r in code ui security; do review "$id" 1 "$r" PASS; done; review "$id" 1 ux CHANGES
-  local out; out=$(J advance "$id" build)
-  check "switch announced" "$out" "builder is now claude/opus" &&
-  check "send refuses old builder" "$(J send "$id" builder hi 2>&1)" "has no builder worker recorded" &&
-  check "code review moves to codex" "$(field "$id" "d['agents']['reviewers']['code']['agent']")" "codex" &&
-  check "security moves to codex" "$(field "$id" "d['agents']['reviewers']['security']['agent']")" "codex"
+  local out fallback r expected
+  fallback=$(config_value "c['builder']['fallback']" label) && out=$(J advance "$id" build) || return 1
+  check "switch announced" "$out" "builder is now $fallback" &&
+  check "send refuses old builder" "$(J send "$id" builder hi 2>&1)" "has no builder worker recorded" || return 1
+  for r in code security; do
+    expected=$(config_value "cross_review('$r', reviewer('medium', '$r', 'ui', 'security'), c['builder']['fallback'])") || return 1
+    check "$r uses the configured reviewer after the switch" "$(field "$id" "d['agents']['reviewers']['$r'] == $expected")" "True" || return 1
+  done
 }
 
 t_base_sync_conflict() {
@@ -470,10 +553,13 @@ t_approve_escalated_job() {
 
 t_partial_continue_then_swap() {
   new_repo partial; ticket 01 One; commit_all
+  distinct_fallback low || return 1
   local id; id=$(to_build 01 low none)
+  local next_builder
+  next_builder=$(config_value "c['builder']['fallback']" label) || return 1
   printf 'STATUS: PARTIAL\n\n## Remaining\n- rest\n' > "factory/jobs/$id/build.md"
   check "first continue" "$(J continue "$id")" "continue 1/3" &&
-  check "second swaps" "$(J continue "$id")" "builder is now claude/opus" &&
+  check "second swaps" "$(J continue "$id")" "builder is now $next_builder" &&
   check "third continue" "$(J continue "$id")" "continue 3/3" &&
   check "fourth escalates" "$(J continue "$id")" "needs-human"
 }
@@ -697,20 +783,24 @@ PY
   check "nothing in .worktrees" "$(ls .worktrees 2>&1)" "No such file"
 }
 
-t_small_low_skips_spec_and_cheap_models() {
+t_small_low_skips_spec_and_routes_stages() {
   new_repo skipspec; ticket 01 Tiny; ticket 02 Medium; commit_all
   local id; id=$(J create f/01); intake "$id" low none
   printf '\n## Acceptance criteria\n1. tiny works: `true`\n' >> "factory/jobs/$id/intake.md"
   factory/bin/route "$id" >/dev/null
   local out; out=$(J advance "$id" spec)
+  local expected
+  expected=$(config_value "stage('approver', 'low')" worker) || return 1
   check "spec skipped" "$out" "spec skipped" &&
   check "in build" "$(field "$id" "d['stage']")" "build" &&
   check "spec from intake" "$(cat "factory/jobs/$id/spec.md")" "tiny works" &&
-  check "approver on sonnet at low risk" "$(J worker "$id" approver)" "--model sonnet"
+  check "approver uses the low-risk route" "$(J worker "$id" approver)" "$expected --worktree " || return 1
   local id2; id2=$(J create f/02); intake "$id2" medium security; factory/bin/route "$id2" >/dev/null
+  expected=$(config_value "stage('spec', 'medium')" worker) || return 1
   check "medium keeps the spec" "$(J advance "$id2" spec)" "spec (round 0)" &&
-  check "spec on opus at medium" "$(J worker "$id2" spec)" "--model opus" &&
-  check "security on sonnet below high" "$(field "$id2" "d['agents']['reviewers']['security']['model']")" "sonnet"
+  check "spec uses the medium-risk route" "$(J worker "$id2" spec)" "$expected --worktree " || return 1
+  expected=$(config_value "reviewer('medium', 'security', 'security')") || return 1
+  check "security uses the configured reviewer" "$(field "$id2" "d['agents']['reviewers']['security'] == $expected")" "True"
 }
 
 t_security_surface_raises_low_risk() {
@@ -753,10 +843,12 @@ t_blocked_builder_proposal() {
   check "one-line approval" "$dec" "factory/bin/job feedback $id"
 }
 
-t_high_risk_security_on_opus() {
+t_high_risk_security_uses_configured_route() {
   new_repo riskup; ticket 01 Risky; commit_all
-  local id; id=$(J create f/01); intake "$id" high security; factory/bin/route "$id" >/dev/null
-  check "security upgraded" "$(field "$id" "d['agents']['reviewers']['security']['model']")" "opus"
+  local id expected
+  id=$(J create f/01) && intake "$id" high security && factory/bin/route "$id" >/dev/null || return 1
+  expected=$(config_value "reviewer('high', 'security', 'security')") || return 1
+  check "high-risk security uses the configured reviewer" "$(field "$id" "d['agents']['reviewers']['security'] == $expected")" "True"
 }
 
 t_merge_starts_retro_and_commits_ticket() {
@@ -764,8 +856,9 @@ t_merge_starts_retro_and_commits_ticket() {
   local id; id=$(to_build 01 low none); build_commit "$id" y.txt y; to_review "$id"; review "$id" 1 code CHANGES
   J advance "$id" build >/dev/null; build_commit "$id" z.txt z; to_review "$id"; review "$id" 2 code PASS
   J advance "$id" approve >/dev/null; printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"
-  local out; out=$(J merge "$id")
-  check "retro started on friction" "$(grep "$id retro" "$CALLS")" "--agent claude --model sonnet" &&
+  local expected
+  expected=$(config_value "stage('retro', 'low')" flags) && J merge "$id" >/dev/null || return 1
+  check "retro starts on friction with the configured route" "[$(grep "$id retro" "$CALLS" | start_flags)]" "[$expected]" &&
   check "retro dispatch" "$(field "$id" "d['dispatch'].get('retro')")" "ctx_fake" &&
   check "ticket committed" "$(git log --oneline -1)" "chore(factory): close f/01" &&
   check "ticket clean" "[$(git status --short .scratch)]" "[]"
@@ -853,27 +946,20 @@ t_no_dependencies_no_pause() {
 
 t_codex_model_and_effort() {
   new_repo codexmodel; ticket 01 One; ticket 02 Two; commit_all
-  local expected id flags preset
-  expected=$(python3 - <<'PY'
-import json
-
-with open("factory/config.json") as file:
-    config = json.load(file)
-builder = config["builder"]
-entry = builder.get("by_risk", {}).get("low") or builder["default"]
-print(" ".join(f"--{key} {entry[key]}" for key in ("agent", "model", "effort") if entry.get(key)))
-preset = config["model_presets"]["sol-high"]
-print(preset["agent"] + (f"/{preset['model']}" if preset.get("model") else "")
-      + (f":{preset['effort']}" if preset.get("effort") else ""))
-PY
-  ) || return 1
-  preset=${expected#*$'\n'}
+  local expected id flags preset name
+  expected=$(config_value "builder('low')" flags) &&
+  name=$(config_value "next(iter(c.get('model_presets') or {}), '')") || return 1
+  if [[ -z "$name" ]]; then
+    set_config model_presets '{"test-builder":{"agent":"codex","model":"gpt-6.2-sol","effort":"high"}}'
+    name=test-builder
+  fi
+  preset=$(config_value "next(iter(c['model_presets'].values()))" label) || return 1
   id=$(to_build 01 low none) && J start "$id" builder >/dev/null || return 1
-  flags=$(tail -1 "$CALLS" | sed -n 's/^orchestration worker-start \(.*\) --worktree .*/\1/p')
-  check "configured builder flags reach Orca" "[$flags]" "[${expected%%$'\n'*}]" &&
-  check "configured preset is selected" "$(J route-set "$id" builder=sol-high)" "builder=$preset;" &&
+  flags=$(tail -1 "$CALLS" | start_flags)
+  check "configured builder flags reach Orca" "[$flags]" "[$expected]" &&
+  check "configured preset is selected" "$(J route-set "$id" "builder=$name")" "builder=$preset;" &&
   check "explicit effort" "$(J route-set "$id" builder=codex/gpt-6.1-terra:medium)" "codex/gpt-6.1-terra:medium" &&
-  check "bad entry" "$(J route-set "$id" builder=gpt 2>&1)" "terra-low"
+  check "bad entry" "$(J route-set "$id" builder=gpt 2>&1)" "use claude or codex"
 }
 
 t_gh_happy_path() {
@@ -1039,7 +1125,7 @@ t_structure_review_cadence() {
   set_config structure_review_every 3
   for n in 01 02 03 04; do ticket "$n" "Ticket $n"; done
   commit_all
-  local dir=factory/jobs/_structure out first last prompt n
+  local dir=factory/jobs/_structure out first last prompt n expected
   export FAKE_WORKER=running
   for n in 01 02; do
     out=$(merge_local_job "f/$n") || return 1
@@ -1047,9 +1133,10 @@ t_structure_review_cadence() {
     check "count after $n" "[$(structure_count)]" "[${n#0}]" || return 1
   done
   out=$(merge_local_job f/03) || return 1
+  expected=$(config_value "c['stages']['structure']" flags) || return 1
   check "third merge starts the live worker and returns" "$out" "started structure" &&
   check "exactly one dispatch, with no worker wait" "[$(wc -l < "$CALLS")]" "[1]" &&
-  check "default routing in main checkout" "$(cat "$CALLS")" "--agent claude --model opus --effort high --worktree path:$PWD" &&
+  check "configured route runs in the main checkout" "$(cat "$CALLS")" "$expected --worktree path:$PWD" &&
   check "count reset" "[$(structure_count)]" '[0]' || return 1
 
   prompt=$(cat "$SPECS")
@@ -2030,8 +2117,14 @@ t_job_summary() {  # factory/job-summary.js and the dashboard's use of it, under
   check "node --test factory/tests/cost-aggregation.test.js" "$out" "ℹ fail 0"
 }
 
+OUTSIDE_TEST_PRICES='{
+  "claude-opus-5-5":{"input":4,"output":20,"cache_write_5m":5,"cache_write_1h":8,"cache_read":0.4},
+  "gpt-6.1-sol":{"input":2,"cached_input":0.2,"output":10}
+}'
+
 t_dashboard_outside() {
   new_repo dashout; commit_all
+  set_config prices_usd_per_mtok "$OUTSIDE_TEST_PRICES"
   local h="$TMP_ROOT/dashout/home"; local cl="$h/.claude/projects/-x" cx="$h/.codex/sessions/2026/11/14"
   local acct="$h/.config/orca/codex-accounts/a/home/sessions/2026/11/14"
   mkdir -p "$cl/s1/subagents" "$cx" "$acct"
@@ -2073,6 +2166,7 @@ print(json.dumps({"untouched": untouched, "kept": r3 == r, "months": {k: {a: rou
 
 t_dashboard_outside_matches_report() {
   new_repo outsideagree; commit_all
+  set_config prices_usd_per_mtok "$OUTSIDE_TEST_PRICES"
   local h="$TMP_ROOT/outsideagree/home"; mkdir -p "$h/.claude/projects/-x" "$h/.codex/sessions/2026/11/14"
   printf '%s\n' '{"type":"user","cwd":"/w/app","message":{"role":"user","content":"hi"}}' \
     '{"type":"assistant","timestamp":"2026-11-14T12:00:00Z","message":{"id":"m1","model":"claude-opus-5-5","usage":{"input_tokens":1000000}}}' > "$h/.claude/projects/-x/s1.jsonl"
@@ -2962,14 +3056,17 @@ del c["labels"]["factory"]; c["labels"]["queue"] = "agent-go"
 del c["structure_review_every"]; del c["stages"]["structure"]; json.dump(c, open(p, "w"), indent=2)
 PY
   commit_all
-  local out; out=$(factory/bin/update "$FACTORY_SRC/.." --force 2>&1)
-  check "says it added the key" "$out" "labels.factory" &&
+  local out; out=$(factory/bin/update "$FACTORY_SRC/.." --force 2>&1) || return 1
+  check "says it added the key" "$out" "labels.factory" || return 1
   # The template's value: null in the template, an installation's own when its tests run.
-  local want; want=$(python3 -c "import json; print(repr(json.load(open('$FACTORY_SRC/config.json'))['labels'].get('factory')))")
+  local want cadence route
+  want=$(config_value "repr(c['labels'].get('factory'))" value "$FACTORY_SRC/config.json") &&
+  cadence=$(config_value "c['structure_review_every']" value "$FACTORY_SRC/config.json") &&
+  route=$(config_value "c['stages']['structure']" value "$FACTORY_SRC/config.json") || return 1
   check "added with the template's value" "$(python3 -c "import json; print(json.load(open('factory/config.json'))['labels'])")" "'factory': $want" &&
   check "own value kept" "$(python3 -c "import json; print(json.load(open('factory/config.json'))['labels']['queue'])")" "agent-go" &&
-  check "structure cadence added and defaults off" "$(python3 -c "import json; print(json.load(open('factory/config.json'))['structure_review_every'])")" "0" &&
-  check "structure route added" "$(python3 -c "import json; print(json.load(open('factory/config.json'))['stages']['structure']['model'])")" "opus"
+  check "structure cadence added" "[$(config_value "c['structure_review_every']")]" "[$cadence]" &&
+  check "structure route added" "$(config_value "c['stages']['structure'] == $route")" "True"
 }
 
 t_update_records_template_version() {
@@ -3211,18 +3308,19 @@ t_diff_growth_flagged() {
 
 t_gh_pr_review_table() {
   new_gh_repo ghtable; gh_issue 1 One
-  local id; id=$(gh_to_approve 1) || return 1
+  local id who body
+  id=$(gh_to_approve 1) && who=$(config_value "reviewer('low', 'code')" label) || return 1
   rv "$id" 1 code CHANGES "" $'F1 [blocker] y.txt:1 wrong\nF2 [nit] y.txt:1 name'
   J advance "$id" build >/dev/null
-  local body; body=$(python3 -c "import json; print(json.load(open('$GH/pr.json'))['body'])")
-  check "the builder's text stays" "$body" "b" &&
+  body=$(python3 -c "import json; print(json.load(open('$GH/pr.json'))['body'])")
+  check "the builder's text stays" "[${body%%$'\n'*}]" "[b]" &&
   check "table in the PR" "$body" "## Factory review" &&
-  check "round 1" "$body" "| code | CHANGES (1 blocker, 1 nit)<br>claude/sonnet:medium |" || return 1
+  check "round 1" "$(grep '^| code |' <<< "$body")" "| code | CHANGES (1 blocker, 1 nit)<br>$who |" || return 1
   build_commit "$id" y.txt y2; (cd ".worktrees/$id" && git push -q origin "factory/$id")
   built "$id" "code F1 fixed: right now"; regate "$id" || return 1
   rv "$id" 2 code PASS "F1 resolved" "None."; J advance "$id" approve >/dev/null
   body=$(python3 -c "import json; print(json.load(open('$GH/pr.json'))['body'])")
-  check "round 2 next to it" "$body" "| code | CHANGES (1 blocker, 1 nit)<br>claude/sonnet:medium | PASS<br>claude/sonnet:medium |" &&
+  check "round 2 next to it" "$(grep '^| code |' <<< "$body")" "| code | CHANGES (1 blocker, 1 nit)<br>$who | PASS<br>$who |" &&
   check "the gate row" "$body" "| gate | PASS | PASS |" &&
   check "one table, not two" "[$(grep -c '## Factory review' <<< "$body")]" "[1]"
 }
