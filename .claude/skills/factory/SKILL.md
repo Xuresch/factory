@@ -445,6 +445,13 @@ first line and that the candidates are in `factory/jobs/<id>/retro.md`. Never
 apply them yourself. Only if `job merge` says the retro didn't start, start it
 with `factory/bin/job start <id> retro`.
 
+**Structure review.** After every `structure_review_every` job merges into
+`base_branch` (default `0`, off), `job merge` starts a read-only repository
+review. Keep running the queue while it works. On its `worker_done`, run
+`factory/bin/job next <id>` for the triggering job and tell the user the summary and report path under
+`factory/jobs/_structure/`. Leave the proposals for the human to triage. If a
+start fails, the next base merge retries it.
+
 **feature branches.** When `job merge` prints that every ticket for a branch is
 done, run `factory/bin/job finish <branch>`. It syncs the branch with
 `base_branch` and runs the full checks, then asks for a feature review: run

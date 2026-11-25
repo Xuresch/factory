@@ -28,6 +28,10 @@ new_repo() {  # new_repo <name>: cd into a fresh repo with the factory installed
 log="$(dirname "$0")/calls.log"; n=$(( $(wc -l < "$log" 2>/dev/null || echo 0) + 1 ))
 [[ " $* " == *" --spec-file - "* ]] && cat >> "$(dirname "$0")/specs.log"
 echo "$*" >> "$log"
+if [[ "$1 $2" == "orchestration worker-start" && " $* " == *" structure r"* && -f "$(dirname "$0")/fail-structure" ]]; then
+  rm "$(dirname "$0")/fail-structure"
+  echo 'structure worker unavailable' >&2; exit 1
+fi
 if [[ "$1 $2" == "orchestration worker-show" ]]; then  # FAKE_WORKER=running|settled (default)
   echo "{\"ok\":true,\"result\":{\"stage\":\"${FAKE_WORKER:-settled}\"}}"; exit 0
 fi
@@ -255,7 +259,12 @@ elif cmd == ["pr", "merge"]:
         fail["count"] -= 1; save("merge-fail.json", fail)
         subprocess.run(fail.get("run") or "true", shell=True)  # e.g. another PR lands meanwhile
         sys.exit(fail["stderr"])
-    pr["state"], pr["mergedHead"], pr["mergeCommit"] = "MERGED", head(), {"oid": MAIN_SHA}; save("pr.json", pr)
+    sha = MAIN_SHA
+    if (d / "merge-updates-base").exists():
+        sha = head()
+        subprocess.run(["git", "push", (d / "../origin.git").resolve(), f"{sha}:refs/heads/master"],
+                       check=True, capture_output=True)
+    pr["state"], pr["mergedHead"], pr["mergeCommit"] = "MERGED", head(), {"oid": sha}; save("pr.json", pr)
 else:
     sys.exit(f"fake gh: unsupported call: gh {' '.join(args)}")
 EOF
@@ -332,7 +341,8 @@ t_local_happy_path() {
   check "ticket done" "$(status_of 01)" "done" &&
   check "master has the work" "$(git show master:y.txt)" "y" &&
   check "history" "$(field "$id" "[h['stage'] for h in d['history']]")" "'review', 'approve', 'merging', 'merged'" &&
-  check "clean job, no retro" "$out" "no retro: the job went through without friction"
+  check "clean job, no retro" "$out" "no retro: the job went through without friction" &&
+  check "structure review defaults off" "$(test ! -e factory/jobs/_structure && test ! -e "$CALLS" && echo off)" "off"
 }
 
 t_review_needs_standards_and_spec() {
@@ -1005,13 +1015,96 @@ t_gh_feature_pr_comments() {
   check "never merged" "[$(grep -c 'pr merge' "$GH_LOG")]" "[0]"
 }
 
-merge_feature_job() {  # merge_feature_job <ticket>: run a local ticket through to merged; prints the merge output
+merge_local_job() {  # merge_local_job <ticket>: run a local ticket through to merged; prints the merge output
   local id; id=$(J create "$1") || return 1
   intake "$id" low none; factory/bin/route "$id" >/dev/null; J advance "$id" spec >/dev/null
   echo s > "factory/jobs/$id/spec.md"; J advance "$id" build >/dev/null
   build_commit "$id" "${1//\//-}.txt" c; to_review "$id"; review "$id" 1 code PASS; J advance "$id" approve >/dev/null
   printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"
   J merge "$id"
+}
+
+structure_count() {
+  python3 -c 'import json; print(len(json.load(open("factory/jobs/_structure/state.json"))["jobs"]))'
+}
+
+t_structure_review_cadence() {
+  new_repo structure
+  set_config structure_review_every 3
+  for n in 01 02 03 04; do ticket "$n" "Ticket $n"; done
+  commit_all
+  local dir=factory/jobs/_structure out first last prompt n
+  export FAKE_WORKER=running
+  for n in 01 02; do
+    out=$(merge_local_job "f/$n") || return 1
+    check "no start on merge $n" "$(test ! -e "$CALLS" && echo none)" "none" &&
+    check "count after $n" "[$(structure_count)]" "[${n#0}]" || return 1
+  done
+  out=$(merge_local_job f/03) || return 1
+  check "third merge starts the live worker and returns" "$out" "started structure" &&
+  check "exactly one dispatch, with no worker wait" "[$(wc -l < "$CALLS")]" "[1]" &&
+  check "default routing in main checkout" "$(cat "$CALLS")" "--agent claude --model opus --effort high --worktree path:$PWD" &&
+  check "count reset" "[$(structure_count)]" '[0]' || return 1
+
+  prompt=$(cat "$SPECS")
+  first=$(sed -n 's/^Write: //p' <<< "$prompt")
+  check "date-named report location" "$(dirname "$first")" "$PWD/$dir" &&
+  [[ $(basename "$first") =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$ ]] &&
+  check "whole base is pinned" "$prompt" "master commit $(git rev-parse master)" &&
+  check "uses the structure review brief" "$prompt" "factory/agents/reviewer-structure.md" &&
+  check "first review has no predecessor" "$prompt" "Previous structure review: none" || return 1
+  for n in 01 02 03; do
+    local spec diff before after
+    spec=$(compgen -G "factory/jobs/0$n-*/spec.md") || return 1
+    diff=$(awk -v spec="$PWD/$spec" 'index($0, spec) {split($0, fields, "`"); print fields[2]}' <<< "$prompt")
+    [[ $diff =~ ^git\ diff\ ([a-f0-9]+)\ ([a-f0-9]+)$ ]] || return 1
+    before=${BASH_REMATCH[1]}; after=${BASH_REMATCH[2]}
+    check "job $n spec and diff survive cleanup" "$(git diff --name-only "$before" "$after")" "f-$n.txt" || return 1
+  done
+  printf 'STRUCTURE: 1 new proposals, 0 seen before\n' > "$first"
+  check "completed report is shown" "$(J next)" "STRUCTURE: 1 new proposals, 0 seen before (${first#"$PWD/"})" &&
+  check "trigger job shows the report" "$(J next f/03)" "STRUCTURE: 1 new proposals, 0 seen before" || return 1
+
+  set_config structure_review_every 1 stages "$(python3 -c 'import json; s = json.load(open("factory/config.json"))["stages"]; s["structure"] = {"agent": "codex", "model": "worker-model"}; print(json.dumps(s))')"
+  : > "$SPECS"
+  out=$(merge_local_job f/04) || return 1
+  prompt=$(cat "$SPECS")
+  last=$(sed -n 's/^Write: //p' <<< "$prompt")
+  [[ "$last" != "$first" ]] &&
+  check "next review names the previous report" "$prompt" "Previous structure review: $first" &&
+  check "next review covers only new jobs" "$(awk '/^- / {print substr($2, 1, 3)}' <<< "$prompt")" "004" &&
+  check "route can be overridden" "$(tail -1 "$CALLS")" "--agent codex --model worker-model"
+}
+
+t_structure_review_retry() {
+  new_repo structureretry
+  set_config structure_review_every 1
+  ticket 01 One; ticket 02 Two; ticket 03 Side '**Branch:** feature/side'; commit_all
+  local out
+  out=$(merge_local_job f/03) || return 1
+  check "feature merge is excluded" "$(test ! -e factory/jobs/_structure && test ! -e "$CALLS" && echo excluded)" "excluded" || return 1
+  touch "$(dirname "$CALLS")/fail-structure"
+  out=$(merge_local_job f/01) || return 1
+  check "failure is reported on stdout" "$out" "the structure review didn't start; the next base merge retries it" &&
+  check "merge still landed" "$(git show master:f-01.txt)" "c" || return 1
+  : > "$SPECS"
+  out=$(merge_local_job f/02) || return 1
+  check "next merge starts it" "$out" "started structure" &&
+  check "retry covers both jobs" "$(awk '/^- / {print substr($2, 1, 3)}' "$SPECS")" $'002\n003'
+}
+
+t_structure_review_github() {
+  new_gh_repo structuregithub
+  set_config structure_review_every 1 main_ci false
+  gh_issue 1 One
+  touch "$GH/merge-updates-base"
+  local id out
+  id=$(gh_to_merging 1) || return 1
+  out=$(J merge "$id") || return 1
+  check "GitHub merge counts" "$out" "started structure" &&
+  check "remote base includes the merge" "$(git show origin/master:y.txt)" "y" &&
+  check "GitHub review uses remote base" "$(cat "$SPECS")" "origin/master commit $(git rev-parse origin/master)" &&
+  check "uses the merged PR diff" "$(cat "$SPECS")" 'gh pr diff 7'
 }
 
 t_feature_mid_review() {
@@ -1021,9 +1114,9 @@ t_feature_mid_review() {
   ticket 09 Plain; commit_all
   set_config feature_review_every 2
   local f=factory/jobs/_features out
-  out=$(merge_feature_job feat/01)
+  out=$(merge_local_job feat/01)
   check "first merge: no review yet" "[$(grep -c 'mid-feature' <<< "$out")]" "[0]" || return 1
-  out=$(merge_feature_job feat/02)
+  out=$(merge_local_job feat/02)
   check "second merge starts it" "$out" "feature/m: 2 jobs merged since the last feature review" &&
   check "started" "$out" "mid-feature review started" &&
   check "mid mode" "$(tail -3 "$SPECS")" "Mode: mid-feature (tickets still open: feat/03" &&
@@ -1060,7 +1153,7 @@ t_feature_mid_review_off() {
   printf '# Feat\n\n**Branch:** feature/o\n' > .scratch/feat/spec.md
   for n in 01 02; do printf '# %s: T\n\n**Status:** ready-for-agent\n\nc\n' $n > .scratch/feat/issues/$n-t.md; done
   commit_all
-  check "default off" "[$(merge_feature_job feat/01 | grep -c 'mid-feature')]" "[0]" &&
+  check "default off" "[$(merge_local_job feat/01 | grep -c 'mid-feature')]" "[0]" &&
   check "no state" "[$(ls factory/jobs/_features 2>/dev/null)]" "[]"
 }
 
@@ -2796,7 +2889,8 @@ t_update_adds_nested_config_key() {
   new_repo updatecfg
   python3 - <<'PY'
 import json; p = "factory/config.json"; c = json.load(open(p))
-del c["labels"]["factory"]; c["labels"]["queue"] = "agent-go"; json.dump(c, open(p, "w"), indent=2)
+del c["labels"]["factory"]; c["labels"]["queue"] = "agent-go"
+del c["structure_review_every"]; del c["stages"]["structure"]; json.dump(c, open(p, "w"), indent=2)
 PY
   commit_all
   local out; out=$(factory/bin/update "$FACTORY_SRC/.." --force 2>&1)
@@ -2804,7 +2898,9 @@ PY
   # The template's value: null in the template, an installation's own when its tests run.
   local want; want=$(python3 -c "import json; print(repr(json.load(open('$FACTORY_SRC/config.json'))['labels'].get('factory')))")
   check "added with the template's value" "$(python3 -c "import json; print(json.load(open('factory/config.json'))['labels'])")" "'factory': $want" &&
-  check "own value kept" "$(python3 -c "import json; print(json.load(open('factory/config.json'))['labels']['queue'])")" "agent-go"
+  check "own value kept" "$(python3 -c "import json; print(json.load(open('factory/config.json'))['labels']['queue'])")" "agent-go" &&
+  check "structure cadence added and defaults off" "$(python3 -c "import json; print(json.load(open('factory/config.json'))['structure_review_every'])")" "0" &&
+  check "structure route added" "$(python3 -c "import json; print(json.load(open('factory/config.json'))['stages']['structure']['model'])")" "opus"
 }
 
 t_update_uses_template_copy_list() {
