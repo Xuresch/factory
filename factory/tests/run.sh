@@ -837,11 +837,25 @@ t_no_dependencies_no_pause() {
 
 t_codex_model_and_effort() {
   new_repo codexmodel; ticket 01 One; ticket 02 Two; commit_all
-  local id; id=$(to_build 01 low none)
-  check "low builds on terra low" "$(field "$id" "d['agents']['builder']")" "'effort': 'low'" &&
-  J start "$id" builder >/dev/null &&
-  check "model and effort reach Orca" "$(tail -1 "$CALLS")" "--agent codex --model gpt-6.1-terra --effort low" &&
-  check "preset" "$(J route-set "$id" builder=sol-high)" "codex/gpt-6.2-sol:high" &&
+  local expected id flags preset
+  expected=$(python3 - <<'PY'
+import json
+
+with open("factory/config.json") as file:
+    config = json.load(file)
+builder = config["builder"]
+entry = builder.get("by_risk", {}).get("low") or builder["default"]
+print(" ".join(f"--{key} {entry[key]}" for key in ("agent", "model", "effort") if entry.get(key)))
+preset = config["model_presets"]["sol-high"]
+print(preset["agent"] + (f"/{preset['model']}" if preset.get("model") else "")
+      + (f":{preset['effort']}" if preset.get("effort") else ""))
+PY
+  ) || return 1
+  preset=${expected#*$'\n'}
+  id=$(to_build 01 low none) && J start "$id" builder >/dev/null || return 1
+  flags=$(tail -1 "$CALLS" | sed -n 's/^orchestration worker-start \(.*\) --worktree .*/\1/p')
+  check "configured builder flags reach Orca" "[$flags]" "[${expected%%$'\n'*}]" &&
+  check "configured preset is selected" "$(J route-set "$id" builder=sol-high)" "builder=$preset;" &&
   check "explicit effort" "$(J route-set "$id" builder=codex/gpt-6.1-terra:medium)" "codex/gpt-6.1-terra:medium" &&
   check "bad entry" "$(J route-set "$id" builder=gpt 2>&1)" "terra-low"
 }
@@ -2817,6 +2831,22 @@ t_update_uses_template_copy_list() {
   check "first update copies the new file" "$out" "added factory/new-module.js" &&
   check "installed content" "$(cat factory/new-module.js)" "export const addedByUpdate = true;" &&
   check "dry run previews the new file" "$dry" "added factory/new-module.js"
+}
+
+t_update_installs_commonjs_in_esm_repo() {
+  new_repo update-esm
+  printf '{"type":"module"}\n' > package.json
+  commit_all
+
+  factory/bin/update "$FACTORY_SRC/.." >/dev/null || return 1
+  local status=0 out
+  node factory/tests/dashboard-verdicts.mjs || status=1
+  node --test factory/tests/job_summary.test.js factory/tests/cost-aggregation.test.js || status=1
+  [[ "$status" == 0 ]] || return "$status"
+  git diff --exit-code -- package.json && commit_all || return 1
+  printf '{"type":"module"}\n' > factory/package.json
+  if out=$(factory/bin/update "$FACTORY_SRC/.." 2>&1); then return 1; fi
+  check "refuses to overwrite local package changes" "$out" "uncommitted changes in files this would replace: factory/package.json"
 }
 
 t_update_from_738a009() {
