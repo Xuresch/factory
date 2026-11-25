@@ -138,6 +138,7 @@ fake Orca; run it after an update.
 
 To run this repository's CI checks locally, use `factory/tests/check.sh` with
 Bash, Git, Python 3, Node.js 24, and GNU Coreutils (`timeout`).
+It passes the factory's `*.node.js` suites explicitly to `node --test`.
 
 ## Dashboard
 

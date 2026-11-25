@@ -1,5 +1,5 @@
 // Tests for factory/job-summary.js and the dashboard's use of it.
-// Run: node --test factory/tests/job_summary.test.js (factory/tests/run.sh job_summary runs it too).
+// Run: node --test factory/tests/job_summary.node.js (factory/tests/run.sh job_summary runs it too).
 // No network: the local tree and the hub API are served by a fake fetch, the dashboard runs in a vm
 // with just enough DOM for its renderers.
 const test = require('node:test')
@@ -100,7 +100,9 @@ test('an unassigned half cent counts as Other', () => {
 })
 
 const INSTALL = path.join(FACTORY, '..', 'INSTALL.md')
-const installDocs = fs.existsSync(INSTALL) ? fs.readFileSync(INSTALL, 'utf8') : ''
+const hubManifest = path.join(FACTORY, '..', 'hub', 'Cargo.toml')
+const isTemplate = fs.existsSync(hubManifest) && /^name = "factory-hub"$/m.test(fs.readFileSync(hubManifest, 'utf8'))
+const installDocs = isTemplate && fs.existsSync(INSTALL) ? fs.readFileSync(INSTALL, 'utf8') : ''
 test('the documented copy manifest installs runnable dashboard tests', {
   skip: !installDocs.includes('https://raw.githubusercontent.com/Xuresch/factory/main'),
 }, (t) => {
@@ -114,7 +116,7 @@ test('the documented copy manifest installs runnable dashboard tests', {
   }
   const env = { ...process.env }
   delete env.NODE_TEST_CONTEXT
-  const result = spawnSync(process.execPath, ['--test', 'factory/tests/job_summary.test.js', 'factory/tests/cost-aggregation.test.js'],
+  const result = spawnSync(process.execPath, ['--test', 'factory/tests/job_summary.node.js', 'factory/tests/cost-aggregation.node.js'],
     { cwd: project, encoding: 'utf8', env })
   assert.equal(result.status, 0, result.stdout + result.stderr)
 })

@@ -8,7 +8,7 @@
 
 **What to build:** A change to the factory scripts, the dashboard modules or their tests is checked automatically, the same way a hub change already is. Today GitHub CI runs only for hub paths, and `factory/checks.sh` is still the installer's placeholder that exits 1, so a factory-only PR (such as #15 or #21) merges with no automatic check at all.
 
-- [x] A pull request or push to main that touches `factory/**` runs `factory/tests/run.sh`, the Python unit tests (`factory/tests/test_*.py`), the node tests (`factory/tests/*.test.js`) and `factory/tests/dashboard-verdicts.mjs`, and fails on any failure.
+- [x] A pull request or push to main that touches `factory/**` runs `factory/tests/run.sh`, the Python unit tests (`factory/tests/test_*.py`), the Node suites (`factory/tests/*.node.js`) and `factory/tests/dashboard-verdicts.mjs`, and fails on any failure.
 - [x] The hub workflow's path filters still cover every factory file the hub image packages.
 - [x] Running the checks for this repo passes on main.
 

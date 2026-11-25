@@ -4,11 +4,13 @@ on:
   pull_request:
     paths:
       - 'factory/**'
+      - 'INSTALL.md'
       - '.github/workflows/factory-tests.yml'
   push:
     branches: [main]
     paths:
       - 'factory/**'
+      - 'INSTALL.md'
       - '.github/workflows/factory-tests.yml'
 
 permissions:
