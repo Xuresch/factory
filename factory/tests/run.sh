@@ -498,7 +498,12 @@ t_slices() {
   (cd ".worktrees/$id-s2" && test -f a/1 && echo 2 > b/2 && git add -A && git commit -qm "feat: s2")
   printf 'STATUS: READY\n\n## Self-review\nok\n' > "factory/jobs/$id/slice-2.md"
   check "all merged" "$(J slice-done "$id" 2)" "all 2 slices merged" &&
-  check "gate passes" "$(J advance "$id" gate && factory/bin/gate "$id")" "GATE: PASS"
+  check "gate passes" "$(J advance "$id" gate && factory/bin/gate "$id")" "GATE: PASS" || return 1
+  printf 'Use the new format.\n' | J rewind "$id" build >/dev/null || return 1
+  check "rewind keeps merged slices done" "$(field "$id" "[s['state'] for s in d['slices']]")" "['done', 'done']" &&
+  check "rewind opens round 2" "$(field "$id" "d['round']")" "2" &&
+  check "completed split cannot be unsplit" "$(J unsplit "$id" 2>&1)" "has no unfinished slices" &&
+  check "whole builder starts in round 2" "$(J start "$id" builder)" "started builder on"
 }
 
 t_blocked_slice_resumes_after_feedback() {
@@ -1618,6 +1623,69 @@ t_next_slices() {
   (cd ".worktrees/$id-s1" && echo 1 > a/1 && git add -A && git commit -qm s1)
   printf 'STATUS: READY\n\n## Self-review\nok\n' > "factory/jobs/$id/slice-1.md"
   check "slice reported" "$(J next "$id")" "run: factory/bin/job slice-done $id 1"
+}
+
+t_resume_split_job() {
+  new_repo paused-split; mkdir -p a b; touch a/.k b/.k; ticket 01 Big; commit_all
+  local id out
+  id=$(J create f/01) || return 1
+  intake "$id" high none
+  sed -i 's/SPLIT: no/SPLIT: yes/; s/SIZE: small/SIZE: large/' "factory/jobs/$id/intake.md"
+  factory/bin/route "$id" >/dev/null && J advance "$id" spec >/dev/null || return 1
+  printf '# Big\n\n## Slices\n### Slice 1: A\n**Owns:** a/\n**Needs:** none\n\n### Slice 2: B\n**Owns:** b/\n**Needs:** 1\n' > "factory/jobs/$id/spec.md"
+  check "paused after spec" "$(J advance "$id" build)" "paused" || return 1
+  out=$(J resume "$id" </dev/null) || return 1
+  check "resume lists slice starts" "$out" "factory/bin/job slice-start $id 1" &&
+  [[ "$out" != *"job start $id builder"* ]] &&
+  check "next also starts slice 1" "$(J next "$id")" "run: factory/bin/job slice-start $id 1, then factory/bin/job start $id builder-s1" || return 1
+  if out=$(J start "$id" builder 2>&1); then
+    echo "    FAIL: whole builder started with open slices"
+    return 1
+  fi
+  check "use slices to find the next slice" "$out" "job slices $id" &&
+  check "use slice-start" "$out" "job slice-start $id" &&
+  check "use unsplit to switch to one builder" "$out" "job unsplit $id" &&
+  check "unsplit with no READY build starts the whole builder" "$(J unsplit "$id")" "job start $id builder" &&
+  check "whole builder starts after unsplit" "$(J start "$id" builder)" "started builder on"
+}
+
+t_unsplit_job() {
+  new_repo unsplit; mkdir -p a b; touch a/.k b/.k; ticket 01 Big; commit_all
+  local id out
+  id=$(J create f/01) || return 1
+  intake "$id" low none
+  sed -i 's/SPLIT: no/SPLIT: yes/; s/SIZE: small/SIZE: large/' "factory/jobs/$id/intake.md"
+  factory/bin/route "$id" >/dev/null && J advance "$id" spec >/dev/null || return 1
+  printf '# Big\n\n## Slices\n### Slice 1: A\n**Owns:** a/\n**Needs:** none\n\n### Slice 2: B\n**Owns:** b/\n**Needs:** 1\n' > "factory/jobs/$id/spec.md"
+  J advance "$id" build >/dev/null && J slice-start "$id" 1 >/dev/null || return 1
+  if out=$(J unsplit "$id" 2>&1); then
+    echo "    FAIL: unsplit accepted a running slice"
+    return 1
+  fi
+  check "refusal names the running slice" "$out" "running slice builders before unsplitting (slices 1)" &&
+  [[ -d ".worktrees/$id-s1" ]] || return 1
+
+  J start "$id" builder-s1 >/dev/null || return 1
+  printf 'STATUS: BLOCKED\n\n## Blocked\nWhich format?\n' > "factory/jobs/$id/slice-1.md"
+  J slice-done "$id" 1 >/dev/null || return 1
+  check "unsplit requires build" "$(J unsplit "$id" 2>&1)" "unsplit requires build, currently needs-human" || return 1
+  printf 'Use JSON.\n' | J feedback "$id" >/dev/null || return 1
+  if out=$(FAKE_WORKER=running J unsplit "$id" 2>&1); then
+    echo "    FAIL: unsplit accepted a live slice builder after feedback"
+    return 1
+  fi
+  check "the live slice builder is named" "$out" "running slice builders before unsplitting (slices 1)" || return 1
+  mkdir -p "target/factory-jobs/$id-s1"
+  build_commit "$id" a/one json && build_commit "$id" b/two json && ready "$id" || return 1
+  check "gate refuses with the split still open" "$(J advance "$id" gate 2>&1)" "slices 1, 2 aren't merged yet" || return 1
+  out=$(J unsplit "$id") || return 1
+  check "READY build goes to gate" "$out" "job advance $id gate" &&
+  check "job is unsplit" "$(field "$id" "d['slices']")" "None" &&
+  check "operator and time recorded" "$(cat "factory/jobs/$id/accepted.md")" "Z @local unsplit" &&
+  [[ ! -e ".worktrees/$id-s1" && ! -e "target/factory-jobs/$id-s1" ]] &&
+  ! git show-ref --verify --quiet "refs/heads/factory/$id-s1" &&
+  check "next also goes to gate" "$(J next "$id")" "advance: factory/bin/job advance $id gate" &&
+  check "gate passes after unsplit" "$(J advance "$id" gate && factory/bin/gate "$id")" "GATE: PASS"
 }
 
 t_resume_records_acceptance() {
