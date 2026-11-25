@@ -16,7 +16,8 @@ What it does:
   template's slots of the same kind (matched by the text after `project:`).
   A block with no matching slot is kept at the end of the file, and said so.
 - factory/config.json: keys the template added are added, also inside nested
-  objects (`labels.factory` into your `labels`); your values stay.
+  objects (`labels.factory` into your `labels`); your values stay. Each update
+  records the fetched template's version.
 - Never touched: factory/checks.sh, factory/env.sh, factory/jobs/, and
   anything outside factory/ and .claude/skills/factory/.
 
@@ -35,6 +36,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import date
 from pathlib import Path
 
 UPDATE = Path(__file__).resolve()
@@ -67,6 +69,19 @@ def fetch(source, into):
     return into
 
 
+def template_version(tpl, source):
+    git = ["git", "-C", str(tpl)]
+    prefix = subprocess.run([*git, "rev-parse", "--show-prefix"], capture_output=True, text=True)
+    # A plain directory inside another checkout has no template history of its own.
+    if prefix.returncode == 0 and not prefix.stdout.strip():
+        head = subprocess.run([*git, "log", "-1", "--format=%H%n%cI", "HEAD"],
+                              capture_output=True, text=True)
+        if head.returncode == 0:
+            sha, committed = head.stdout.splitlines()
+            return {"commit": sha, "date": committed, "source": source}
+    return {"commit": None, "date": date.today().isoformat(), "source": source}
+
+
 def run_template_update(tpl, update, argv):
     # Load the fetched code with the installation's script path, which older
     # updaters also use to find their destination. Keep the checkout alive
@@ -82,8 +97,8 @@ sys.path[0] = str(update.parent)
 exec(compile(update.read_bytes(), str(update), "exec"))
 """
     env = {**os.environ, "FACTORY_UPDATE_TEMPLATE": str(tpl)}
-    result = subprocess.run([sys.executable, "-B", "-c", loader, str(update), str(UPDATE), *argv], env=env)
-    sys.exit(result.returncode)
+    return subprocess.run([sys.executable, "-B", "-c", loader, str(update), str(UPDATE), *argv],
+                          env=env).returncode
 
 
 def merge_brief(mine, theirs):
@@ -171,11 +186,20 @@ def main(argv):
         tf = tpl / "factory"
         if not (tf / "bin" / "job").exists():
             die(f"{source} doesn't look like the factory template (no factory/bin/job)")
+        version = template_version(tpl, source)
+        config_path = FACTORY / "config.json"
         update = tf / "bin" / "update.py"
         if not update.is_file():
             update = update.with_suffix("")  # template from before the move
         if not fetched and update.is_file() and update.read_bytes() != UPDATE.read_bytes():
-            run_template_update(tpl, update, argv)
+            status = run_template_update(tpl, update, argv)
+            if status == 0 and not dry:
+                # Older template updaters don't record the version themselves.
+                config = json.loads(config_path.read_text())
+                if config.get("template_version") != version:
+                    config["template_version"] = version
+                    config_path.write_text(json.dumps(config, indent=2) + "\n")
+            return status
         changes, notes = [], []
 
         def put(dst, data):
@@ -212,14 +236,19 @@ def main(argv):
                 text, n = merge_brief(dst.read_text(), text)
                 notes += [f"{dst.name}: {x}" for x in n]
             put(dst, text)
-        mine = json.loads((FACTORY / "config.json").read_text())
+        mine = json.loads(config_path.read_text())
         theirs = json.loads((tf / "config.json").read_text())
+        theirs.pop("template_version", None)
         notes += [f"config {d}" for d in differing(mine, theirs)]
         added = merge_config(mine, theirs)
         if added:
             changes.append(f"config.json: added {', '.join(added)}")
-            if not dry:
-                (FACTORY / "config.json").write_text(json.dumps(mine, indent=2) + "\n")
+        version_changed = mine.get("template_version") != version
+        if version_changed:
+            mine["template_version"] = version
+            changes.append("config.json: updated template_version")
+        if (added or version_changed) and not dry:
+            config_path.write_text(json.dumps(mine, indent=2) + "\n")
         if (tf / "checks.sh").exists() and (FACTORY / "checks.sh").exists():
             notes.append("checks.sh and env.sh are yours and were left alone")
     print(("would change (dry run):" if dry else "changed:") if changes else "already up to date")
@@ -232,4 +261,4 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    sys.exit(main(sys.argv[1:]))

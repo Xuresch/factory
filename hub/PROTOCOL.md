@@ -170,6 +170,12 @@ A released migration is never edited; a change is a new file.
 
 - Documents are kept whole: `jobs.doc` (job.json), `checkouts.config_doc`,
   `outside_scans.doc`, `job_files.content`, `tickets.content`.
+- A job may include `template_version: {commit, date, source}`, the installation
+  version at the time of job creation. `commit` is a full Git SHA and `date` is
+  the ISO 8601 committer date. For a plain directory, `commit` is null and
+  `date` is the day of installation. The job projects these values into
+  `template_commit`, `template_date`, and `template_source`. An absent object
+  projects to nulls.
 - Everything the hub filters, sorts, counts or sums is projected from them by
   `hub/src/project.rs` into typed columns of `jobs` (stage group, cost split,
   tokens, durations, …) and child tables (`job_stages`, `job_costs`,
@@ -183,7 +189,8 @@ A released migration is never edited; a change is a new file.
 
 ## Read API
 
-The projected job list, detail, and cost endpoints are specified in [API.md](API.md). Overview job entries use the same summaries.
+The projected job list, detail, cost, and template comparison endpoints are
+specified in [API.md](API.md). Overview job entries use the same summaries.
 
 All JSON, `Cache-Control: no-store`.
 

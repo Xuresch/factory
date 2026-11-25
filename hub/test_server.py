@@ -490,7 +490,115 @@ class TestTree(HubCase):
         self.assertEqual(self.get("/all/jobs/r~m2~001/job.json")[0], 200)
 
 
+class TestTemplateComparison(HubCase):
+    def test_groups_finished_jobs_and_filters_by_repo(self):
+        github = "https://github.com/o/template"
+        newest = {"commit": "a" * 40, "date": "2026-11-20T14:00:00Z", "source": github + ".git@release"}
+        small = {"commit": "b" * 40, "date": "2026-11-20T15:00:00+03:00", "source": "/tmp/template"}
+        oldest = {"commit": "c" * 40, "date": "2026-11-19T14:00:00Z", "source": "https://github.com.example/o/template"}
+
+        def finished(key, version, rounds, cost, waiting=None, minutes=0, **extra):
+            history = [
+                {"stage": waiting or "build", "at": "2026-11-21T10:00:00Z"},
+                {"stage": "review", "at": f"2026-11-21T10:{minutes:02}:00Z"},
+            ]
+            return entry(key, round=rounds, cost=cost, history=history, template_version=version, **extra)
+
+        project = [
+            finished("101", newest, 1, 1, stage="merged"),
+            finished("102", newest, 2, 2, "needs-human", 5, stage="merged",
+                     files={"round-1/checks.md": "GATE: FAIL\n", "round-2/checks.md": "GATE: PASS\n"}),
+            finished("103", newest, 3, 3, "paused", 15, stage="rejected", gate="FAIL"),
+            finished("104", newest, 4, 7, "needs-info", 25, stage="rejected"),
+            finished("105", newest, 37, 900, stage="paused", gate="FAIL"),
+            finished("201", small, 2, 2, stage="merged", files={"round-2/checks.md": "GATE: invalid\n"}),
+            finished("202", small, 3, 5, "paused", 35, stage="rejected"),
+        ]
+        other = [finished("106", newest, 5, 100, stage="merged")]
+        other += [finished(f"30{i}", oldest, i, i, stage="merged") for i in (1, 2, 3, 4, 5, 6)]
+        self.ok(push("m1", [repo("o/r", project), repo("o/other", other)], full=True))
+
+        def row(version, count, rounds, human, wait, gate, cost, link=None):
+            return {"template_commit": version["commit"], "template_date": version["date"],
+                    "commit_url": link, "jobs": count, "median_rounds": rounds,
+                    "human_wait_share": human, "median_wait_minutes": wait, "gate_failure_share": gate,
+                    "median_cost_usd": cost, "too_few_to_compare": count < 5}
+
+        link = github + "/commit/" + newest["commit"]
+        small_row = row(small, 2, 2.5, 0.5, 17.5, 0, 3.5)
+        self.assertEqual(self.get_json("/api/template-versions"), {"repo": None, "versions": [
+            row(newest, 5, 3, 0.4, 5, 0.4, 3, link), small_row, row(oldest, 6, 3.5, 0, 0, 0, 3.5),
+        ]})
+        self.assertEqual(self.get_json("/api/template-versions?repo=o%2Fr"), {"repo": "o/r", "versions": [
+            row(newest, 4, 2.5, 0.5, 10, 0.5, 2.5, link), small_row,
+        ]})
+        self.assertEqual(self.get("/api/template-versions?repo=o/missing")[0], 404)
+
+        # A checkout that stops reporting still contributes its finished jobs.
+        before = self.get_json("/api/template-versions")
+        self.ok(push("m1", [repo("o/r", project[:-1])], full=True))
+        self.assertEqual(self.get_json("/api/template-versions"), before)
+
+    def test_missing_commits_share_an_unknown_row(self):
+        version = {"commit": "a" * 40, "date": "2026-11-15T00:00:00Z", "source": "git@github.com:o/template.git"}
+        plain = {"commit": None, "date": "2026-11-24", "source": "/tmp/template"}
+        self.ok(push("m1", [repo("o/r", [
+            entry("001", "merged", template_version=version), entry("002", "merged"),
+            entry("003", "rejected", template_version=plain), entry("004", "needs-human"),
+        ])], full=True))
+        known, unknown = self.get_json("/api/template-versions")["versions"]
+        self.assertEqual(known["commit_url"], f"https://github.com/o/template/commit/{version['commit']}")
+        self.assertEqual(unknown, {"template_commit": None, "template_date": None, "commit_url": None,
+                                  "jobs": 2, "median_rounds": 0, "human_wait_share": 0, "median_wait_minutes": 0,
+                                  "gate_failure_share": 0, "median_cost_usd": 1, "too_few_to_compare": True})
+
+    def test_comparison_page_is_served_in_both_scopes(self):
+        page = Path(__file__).resolve().parent / "static" / "templates.html"
+        shutil.copyfile(page, Path(self.tmp.name) / "static" / page.name)
+        for path in ("/templates", "/templates?repo=o%2Fr"):
+            status, body, _ = self.get(path)
+            self.assertEqual(status, 200)
+            self.assertIn('<caption id="comparison-caption">Merged and rejected jobs</caption>', body)
+
+
 class TestReadApi(HubCase):
+    def test_job_template_version(self):
+        committed = "2026-11-19T12:00:00+02:00"
+        version = {"commit": "a" * 40, "date": committed, "source": "https://github.com/o/template"}
+        plain = {"commit": None, "date": "2026-11-19", "source": "/tmp/template"}
+        self.ok(push("m1", [repo("o/r", [
+            entry("001", template_version=version), entry("002"), entry("003", template_version=plain),
+        ])], full=True))
+        expected = {"001": ("a" * 40, committed), "002": (None, None), "003": (None, plain["date"])}
+        jobs = self.get_json("/api/repos/o/r/jobs")["jobs"]
+        self.assertEqual({j["id"]: (j["template_commit"], j["template_date"]) for j in jobs}, expected)
+        for key, want in expected.items():
+            detail = self.get_json(f"/api/repos/o/r/jobs/{key}")
+            self.assertEqual((detail["template_commit"], detail["template_date"]), want)
+        self.assertEqual(self.get_json("/r/o/r/jobs/001/job.json")["template_version"], version)
+
+    def test_migration_adds_template_version_to_existing_database(self):
+        self.ok(push("m1", [repo("o/r", [entry("001")])], full=True))
+        self.stop(self.proc)
+        path = Path(self.tmp.name) / "hub.db"
+        db = sqlite3.connect(path)
+        try:
+            with db:
+                # Restore the pre-migration schema while keeping a real job and its children.
+                db.execute("DELETE FROM schema_migrations WHERE version=4")
+                db.execute("UPDATE jobs SET projection_version=4")
+                for field in ("template_commit", "template_date", "template_source"):
+                    db.execute(f"ALTER TABLE jobs DROP COLUMN {field}")
+        finally:
+            db.close()
+        self.assertFalse(path.with_suffix(".db.bak-3").exists())
+        self.start()
+        self.assertTrue(path.with_suffix(".db.bak-3").is_file())
+        detail = self.get_json("/api/repos/o/r/jobs/001")
+        self.assertIsNone(detail["template_commit"])
+        self.assertIsNone(detail["template_date"])
+        self.assertEqual(detail["files"], ["spec.md"])
+
     def test_summaries_details_and_overview(self):
         e = entry("001", round=1, issue="12", round_limit=6,
                   files={"spec.md": "spec", "round-1/checks.md": "GATE: PASS\n",

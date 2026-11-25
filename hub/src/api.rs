@@ -100,7 +100,8 @@ impl Hub {
                  j.duration_s, j.wait_s, j.work_s, j.cost_usd, j.cost_claude, j.cost_codex, \
                  j.cost_other, j.cost_split, j.input_tokens, j.cached_tokens, j.output_tokens, j.findings, \
                  j.findings_disputed, j.builder_changes, j.continues, j.human_approvals, \
-                 j.review_problems, j.removed_at, r.slug AS repo, m.name AS machine, \
+                 j.review_problems, j.template_commit, j.template_date, j.removed_at, \
+                 r.slug AS repo, m.name AS machine, \
                  c.removed_at AS checkout_removed {JOB_FROM}{filter} ORDER BY j.last_activity DESC"
                 ),
                 params.clone(),
@@ -234,6 +235,8 @@ impl Hub {
                     "gate",
                     "started",
                     "ended",
+                    "template_commit",
+                    "template_date",
                     "last_activity",
                     "duration_s",
                     "wait_s",

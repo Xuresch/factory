@@ -27,29 +27,34 @@
 
   const allBase = `${ROOT}all/dashboard.html`
   const repoBase = (repo) => `${ROOT}r/${String(repo).split('/').map(encodeURIComponent).join('/')}/dashboard.html`
-  const VIEWS = { overview: 'Overview', board: 'Board', costs: 'Costs', plan: 'Subscription' }
+  const VIEWS = { overview: 'Overview', board: 'Board', costs: 'Costs', templates: 'Template versions', plan: 'Subscription' }
 
   function where() {
     const p = location.pathname.slice(ROOT.length - 1)
+    if (p === '/templates') {
+      const repo = new URLSearchParams(location.search).get('repo')
+      return repo ? { page: 'templates', scope: 'repo', repo } : { page: 'templates', scope: 'all' }
+    }
     const m = p.match(/^\/r\/([^/]+)\/([^/]+)\//)
     if (m) return { page: 'dash', scope: 'repo', repo: `${dec(m[1])}/${dec(m[2])}` }
     if (/^\/all\//.test(p)) return { page: 'dash', scope: 'all' }
     return { page: 'overview', scope: 'all' }
   }
   const at = where()
-  const viewNow = () => at.page === 'overview' ? 'overview' : ({ '#costs': 'costs', '#plan': 'plan' })[location.hash] || 'board'
+  const viewNow = () => at.page !== 'dash' ? at.page : ({ '#costs': 'costs', '#plan': 'plan' })[location.hash] || 'board'
   // The subscription is always across repos: a repo page asked for it goes to the global one.
-  const redirectPlan = () => { if (at.scope === 'repo' && location.hash === '#plan') location.replace(`${allBase}#plan`) }
+  const redirectPlan = () => { if (at.page === 'dash' && at.scope === 'repo' && location.hash === '#plan') location.replace(`${allBase}#plan`) }
   redirectPlan()
 
   // The address of a view in a scope. A repo has no overview or subscription of its own.
   function href(scope, view) {
+    if (view === 'templates') return `${ROOT}templates${scope === 'all' ? '' : `?repo=${encodeURIComponent(scope)}`}`
+    if (view === 'plan') return `${allBase}#plan`
     if (scope === 'all') return view === 'overview' ? ROOT : `${allBase}#${view}`
     return `${repoBase(scope)}#${view === 'costs' ? 'costs' : 'board'}`
   }
-  const tabs = at.scope === 'all'
-    ? [['overview', ROOT], ['board', `${allBase}#board`], ['costs', `${allBase}#costs`], ['plan', `${allBase}#plan`]]
-    : [['board', `${repoBase(at.repo)}#board`], ['costs', `${repoBase(at.repo)}#costs`], ['plan', `${allBase}#plan`]]
+  const tabs = (at.scope === 'all' ? ['overview', 'board', 'costs', 'templates', 'plan'] : ['board', 'costs', 'templates', 'plan'])
+    .map((view) => [view, href(at.repo || 'all', view)])
 
   const rshort = (r) => String(r).split('/').pop()
   const scopeLabel = () => (at.scope === 'all' ? 'All repos' : rshort(at.repo))
@@ -437,7 +442,7 @@ dialog.nb-pal::backdrop { background: rgba(5, 6, 10, .6); overflow: hidden; over
     const needs = nav.data ? nav.data.needs_you.length : 0
     const label = VIEWS[v]
     els.h1.innerHTML = at.page === 'overview' ? label
-      : `${at.scope === 'all' ? 'All repos' : `<span class="o">${esc(ownerOf(at.repo))}</span>${esc(rshort(at.repo))}`}<span class="sep" aria-hidden="true">·</span><span class="v">${label}</span>`
+      : `${at.scope === 'all' ? 'All repos' : `<span class="o">${esc(ownerOf(at.repo))}</span>${esc(rshort(at.repo))}`}<span class="sep"> · </span><span class="v">${label}</span>`
     document.title = `${needs ? `(${needs}) ` : ''}${at.page === 'overview' ? 'Overview' : `${label} · ${scopeLabel()}`} · Factory`
   }
 
@@ -521,7 +526,7 @@ dialog.nb-pal::backdrop { background: rgba(5, 6, 10, .6); overflow: hidden; over
     const d = nav.data
     if (!d) return []
     const items = []
-    const V = [['board', 'Board'], ['costs', 'Costs']]
+    const V = ['board', 'costs', 'templates'].map((view) => [view, VIEWS[view]])
     items.push({ kind: 'view', label: 'Overview', sub: 'All repos', href: ROOT, hay: 'overview all repos', rank: at.page === 'overview' ? 0.4 : 0.6 })
     for (const [v, l] of V) items.push({ kind: 'view', label: `${l}: All repos`, sub: 'every repo together', href: href('all', v), hay: `${l} all repos`, rank: at.scope === 'all' ? 0.5 : -1 })
     items.push({ kind: 'view', label: 'Subscription', sub: 'API-equivalent vs what you pay, all repos', href: href('all', 'plan'), hay: 'subscription plan fees all repos', rank: at.scope === 'all' ? 0.5 : -1 })

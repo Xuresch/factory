@@ -23,6 +23,7 @@ moving from job.json to the API changes little.
   "issue": "198", "issue_url": "…", "pr": 234, "pr_url": "…",
   "base": "dev", "branch": "factory/002-…", "gate": "PASS", "spec_skipped": false,
   "started": "…", "ended": null, "last_activity": "…",
+  "template_commit": null, "template_date": null,
   "duration_s": 3600, "wait_s": 600, "work_s": 3000,
   "cost_usd": 9.29, "cost_by_agent": {"claude": 5.2, "codex": 4.0, "other": 0.09},
   "cost_split": {"claude": 5.2, "codex": 4.0},
@@ -46,6 +47,10 @@ moving from job.json to the API changes little.
 }
 ```
 
+`template_commit` and `template_date` come from the installation version copied
+into the job at creation. Both are null for older jobs. A plain directory
+install has a null commit and an installation date.
+
 `cost_by_agent` is the projected Agent split used by the hub pages and totals.
 It uses a non-empty stored split, then priced rows, then the full total as `claude`
 for a total-only job. Unknown agents and any positive residue of at least half a
@@ -59,6 +64,9 @@ allowed; `invalid` for any other first line, null when the file is not there yet
 
 ## Endpoints
 
+- `GET /api/template-versions[?repo=owner/name]` returns
+  `{"repo": null, "versions": [row, …]}`. With a repo filter, `repo` echoes
+  the slug. An unknown repo returns 404. See [Template comparison](#template-comparison).
 - `GET /api/repos/<owner>/<name>/jobs` →
   `{"repo": "owner/name", "machines": ["neo"], "jobs": [summary, …]}`, the shown
   jobs (not removed, checkout not removed), newest `last_activity` first.
@@ -83,6 +91,26 @@ allowed; `invalid` for any other first line, null when the file is not there yet
    "input_tokens": 1, "cached_tokens": 2, "output_tokens": 3, "jobs": 4}]}`,
   rows sorted by key for day/month, by cost descending otherwise. Removed jobs
   count (their cost happened).
+
+## Template comparison
+
+Only jobs whose final stage is `merged` or `rejected` count. This includes
+finished jobs the hub retained after a job or checkout was removed. Rows are
+grouped by commit and ordered by the commit timestamp, newest first. Jobs with
+no commit share the last row, with nulls for `template_commit`, `template_date`,
+and `commit_url`.
+
+| Field | Meaning |
+| --- | --- |
+| `template_commit`, `template_date` | Recorded commit SHA and committer date. |
+| `commit_url` | GitHub commit URL if any job in the group recorded a GitHub template source. Otherwise null. |
+| `jobs` | Number of finished jobs. |
+| `median_rounds` | Median final job round. If missing, use the latest recorded round or zero. |
+| `human_wait_share` | Fraction that ever entered `needs-human` or `paused`. |
+| `median_wait_minutes` | Median total human wait per job, including zero for jobs that never waited. The hub tracks time in `needs-human`, `paused`, and `needs-info`. |
+| `gate_failure_share` | Fraction with a `FAIL` verdict in any recorded round or in the job's gate field. |
+| `median_cost_usd` | Median job cost in API-equivalent USD. |
+| `too_few_to_compare` | True if the row represents fewer than five jobs. |
 
 ## Overview
 
