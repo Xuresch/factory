@@ -204,8 +204,7 @@ for a human.
   optional scope, an imperative summary, at most 72 characters, no period at
   the end, no issue number. When the spec writer is skipped it is the spec's
   title, so the PR's title too.
-- `## Summary` comes right after the header: 3 to 5 short bullets a human can
-  skim on the dashboard. The detail goes in the sections below it.
+<!-- include: summary-guidance -->
 - `RESCOPED: yes` when your Scope differs from what the issue asked for.
 - The factory files every `## Follow-ups` bullet as a new ticket with the
   triage state `needs-triage` (and the factory label, when the repo uses

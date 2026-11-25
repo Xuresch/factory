@@ -277,6 +277,11 @@ worker. The orchestrator never passes `--agent` or `--model` itself: in the
 first real run it started every reviewer on Claude, so cross-review never
 happened.
 
+**Briefs share instructions.** A standalone `<!-- include: name -->` line
+expands from `factory/agents/shared/name.md`. Change shared wording in that
+part. A worker reads one rendered brief saved in the job or round folder.
+Feature and structure reviews save theirs beside the report.
+
 **Jobs build on a current base.** Before every build round, the first one and
 a paused job's resumed one included, `job advance` merges the base into the
 job branch and writes `round-<N>/base-sync.md`; a conflict is resolved by the

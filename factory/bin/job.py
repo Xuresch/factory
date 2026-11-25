@@ -3496,7 +3496,7 @@ def feature_file(branch, suffix):
 def start_feature_reviewer(branch, worktree, tip, write, lines, title):
     """Start the feature reviewer's Orca worker; returns its dispatch id."""
     entry = CONFIG["stages"].get("feature-review") or CONFIG["routing"]["high"]["code"]
-    brief = FACTORY / "agents" / "reviewer-feature.md"
+    brief = render_brief("reviewer-feature", report_brief(write, "feature"))
     # Product rules changed by feedback during the feature (`job feedback --rule`).
     rules = [f"Rule changes: {rule_changes_file(branch)}."] if rule_changes_file(branch).exists() else []
     if CONFIG.get("protected_paths"):
@@ -4758,10 +4758,62 @@ def role_entry(job, role):
     return job["agents"]["reviewers"][lens]
 
 
+BRIEF_INCLUDE = re.compile(r"^[ \t]*<!-- include:[ \t]*(.*?)[ \t]*-->[ \t]*$", re.M)
+
+
+def brief_source(role):
+    if role.startswith("builder-s"):
+        return "builder"
+    return {"spec": "spec-writer", "structure": "reviewer-structure"}.get(role, role)
+
+
+def render_brief(name, destination, *, reuse=False):
+    if reuse and destination.is_file():
+        return destination
+    agents = FACTORY / "agents"
+    source = agents / f"{name}.md"
+
+    def read(path):
+        try:
+            return path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise Refused(f"{source.name}: couldn't read {path}: {exc}") from exc
+
+    def include(match):
+        part = match[1]
+        require(re.fullmatch(r"[a-zA-Z0-9_-]+", part),
+                f"{source.name}: invalid shared brief include {part!r}")
+        path = agents / "shared" / f"{part}.md"
+        require(path.is_file(), f"{source.name}: missing shared brief include {part!r} ({path})")
+        text = read(path)
+        require(not BRIEF_INCLUDE.search(text), f"{source.name}: nested include in shared brief part {part!r}")
+        return text.removesuffix("\n")
+
+    text = BRIEF_INCLUDE.sub(include, read(source))
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(text, encoding="utf-8")
+    return destination
+
+
+def report_brief(report, role):
+    return report.with_name(f"{report.stem}-brief-{role}.md")
+
+
+def job_brief(job, role, *, reuse=False):
+    if role == "structure" and job.get("structure_review"):
+        destination = report_brief(STRUCTURE_REVIEWS / job["structure_review"], role)
+    else:
+        folder = job_dir(job["id"])
+        if job["round"] and role not in {"intake", "spec", "retro"}:
+            folder = round_dir(job)
+        destination = folder / f"brief-{role}.md"
+    return render_brief(brief_source(role), destination, reuse=reuse)
+
+
 def cmd_worker(job, role):
     """The flags for `orca orchestration worker-start`, and the brief file."""
     entry = role_entry(job, role)
-    agent_file = "spec-writer" if role == "spec" else "builder" if role.startswith("builder-s") else role
+    agent_file = brief_source(role)
     # intake runs before the worktree exists; a slice builder works in its own.
     where = ("current" if role == "intake"
              else f"path:{slice_worktree(job, role.removeprefix('builder-s'))}" if role.startswith("builder-s")
@@ -4997,10 +5049,6 @@ def cmd_start(job, role, extra):
     if job["stage"] == "review" and lens in (job.get("skipped_reviews") or {}):
         die(f"{role} is skipped in round {job['round']} ({job['skipped_reviews'][lens]}); "
             f"round-{job['round']}/review-{lens}.md carries its PASS")
-    agent_file = {"spec": "spec-writer", "structure": "reviewer-structure"}.get(role, role)
-    if role.startswith("builder-s"):
-        agent_file = "builder"
-    brief = FACTORY / "agents" / f"{agent_file}.md"
     where = "current" if role in {"intake", "retro"} else f"path:{worker_place(job, role)[0]}"
     port = role_port(job, role)
     lines = [job_header(job, role)]
@@ -5038,6 +5086,7 @@ def cmd_start(job, role, extra):
         lines.append(protected_note())
     if extra:
         lines.append(extra.strip())
+    brief = job_brief(job, role)
     spec = (" ".join(lines) + f"\n\nYour brief is {brief}. Read it in full and follow it exactly. "
             "When you're done, report with worker_done; its summary is the one line your brief names.")
     cmd = [orca_cli(), "orchestration", "worker-start", "--agent", entry["agent"]]
@@ -5114,9 +5163,9 @@ def cmd_send(job, role, text):
     if not dispatch:
         die(f"{job['id']} has no {role} worker recorded (a new session, or the builder was switched); "
             f"start one with `job start {job['id']} {role} ...`")
-    agent_file = "builder" if role.startswith("builder") else "spec-writer" if role == "spec" else role
     # The worker may have been closed and reopened as a fresh agent: point it at its brief.
-    body = (f"{job_header(job, role)} {text.strip()}\n\nYour brief is {FACTORY / 'agents' / (agent_file + '.md')}. "
+    brief = job_brief(job, role, reuse=True)
+    body = (f"{job_header(job, role)} {text.strip()}\n\nYour brief is {brief}. "
             "If you don't remember this job, read the brief, build.md and `git log` first. "
             "When you're done, report with worker_done; its summary is the one line your brief names.")
     cmd = [orca_cli(), "orchestration", "send", "--to", f"dispatch:{dispatch}",

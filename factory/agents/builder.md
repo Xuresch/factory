@@ -144,9 +144,9 @@ If a skill is missing on this machine, carry on without it.
   instead, and why. This holds for a change in a later round or after a
   pre-review finding too. An unlisted deviation the approver finds goes to
   a human as one you hid.
-- Make the simplest change that fully meets the spec. No fallbacks, hidden
-  defaults or extras the spec doesn't ask for. Add no concurrency mechanism
-  (a transaction, a lock, an isolation level, a retry) the spec doesn't name.
+<!-- include: principles -->
+- Add no concurrency mechanism (a transaction, a lock, an isolation level,
+  a retry) the spec doesn't name.
 - Never modify or delete an existing file that matches `protected_paths` in
   `factory/config.json`; the gate fails the branch if you do. If the spec
   can't be met without changing a protected file, write a BLOCKED build.md

@@ -753,8 +753,12 @@ t_feedback_rule_change() {
   check "appended" "$(grep -c "^- .* $id: " "$rules")" "2" || return 1
   # The feature reviewer's prompt names the file (finish wrote the state it starts from).
   printf '{"worktree": "%s", "tip": "abc"}' "$PWD" > factory/jobs/_features/feature-r.json
+  printf '\n<!-- include: summary-guidance -->\n' >> factory/agents/reviewer-feature.md
   J feature-review feature/r >/dev/null
-  check "reviewer told" "$(cat "$SPECS")" "Rule changes: $PWD/$rules." || return 1
+  local feature_brief="$PWD/factory/jobs/_features/feature-r-review-brief-feature.md"
+  check "reviewer told" "$(cat "$SPECS")" "Rule changes: $PWD/$rules." &&
+  check "feature review prompt names its rendered brief" "$(cat "$SPECS")" "Your brief is $feature_brief." &&
+  check "feature review expanded its include" "$(cat "$feature_brief")" "$(cat factory/agents/shared/summary-guidance.md)" || return 1
   # On the base branch there is no feature review: nothing to record.
   ticket 02 Two; commit_all
   local id2; id2=$(to_build 02 low none)
@@ -767,10 +771,66 @@ t_builder_kept_open_then_released() {
   new_repo keepopen; ticket 01 One; commit_all
   local id; id=$(to_build 01 low none); J start "$id" builder >/dev/null
   check "builder kept open" "$(grep "$id builder r1" "$CALLS")" "--keep-open" &&
-  check "send carries the brief" "$(J send "$id" builder 'round 2' >/dev/null; tail -1 "$CALLS")" "agents/builder.md"
+  check "send carries the brief" "$(J send "$id" builder 'round 2' >/dev/null; tail -1 "$CALLS")" "$PWD/factory/jobs/$id/round-1/brief-builder.md"
   build_commit "$id" y.txt y; to_review "$id"; review "$id" 1 code PASS
   J advance "$id" approve >/dev/null; printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"; J merge "$id" >/dev/null
   check "released on merge" "$(grep worker-release "$CALLS")" "--dispatch ctx_fake"
+}
+
+t_worker_brief_includes() {
+  new_repo brief-render; ticket 01 One; ticket 02 Two; commit_all
+  local id intake_id brief out
+  intake_id=$(J create f/02) && J start "$intake_id" intake >/dev/null || return 1
+  check "intake brief is saved without a round" "$(cat "$SPECS")" "Your brief is $PWD/factory/jobs/$intake_id/brief-intake.md." || return 1
+  id=$(to_build 01 low none) || return 1
+  printf 'An example shared instruction.\n\n<!-- project: example -->\nInstallation example.\n<!-- /project -->\n' > factory/agents/shared/example.md
+  printf '# Example builder\n\n<!-- include: example -->\n\nKeep this conclusion.\n' > factory/agents/builder.md
+  J start "$id" builder >/dev/null || return 1
+  brief="$PWD/factory/jobs/$id/round-1/brief-builder.md"
+  check "prompt names the round snapshot" "$(cat "$SPECS")" "Your brief is $brief." &&
+  diff -u <(printf '# Example builder\n\n%s\n\nKeep this conclusion.\n' "$(cat factory/agents/shared/example.md)") "$brief" || return 1
+  printf 'An updated shared instruction.\n' > factory/agents/shared/example.md
+  FAKE_SEND_NEW=1 J send "$id" builder 'Continue.' >/dev/null || return 1
+  check "follow-up reuses the round snapshot" "$(tail -1 "$CALLS")" "Your brief is $brief." &&
+  check "same round retains the original text" "$(cat "$brief")" "An example shared instruction." || return 1
+  printf 'Revise the implementation.\n' | J rewind "$id" build >/dev/null || return 1
+  J send "$id" builder 'Continue.' >/dev/null || return 1
+  check "a new round has its own file even when resuming the worker" "$(tail -1 "$CALLS")" "round-2/brief-builder.md." &&
+  check "new snapshot has updated text" "$(cat "factory/jobs/$id/round-2/brief-builder.md")" "An updated shared instruction." || return 1
+
+  printf '<!-- include: absent -->\n' > factory/agents/shared/example.md
+  local calls; calls=$(wc -l < "$CALLS")
+  if out=$(J start "$id" builder 2>&1); then return 1; fi
+  check "nested include refuses with the brief and part" "$out" "builder.md: nested include in shared brief part 'example'" || return 1
+  rm factory/agents/shared/example.md
+  if out=$(J start "$id" builder 2>&1); then return 1; fi
+  check "missing include refuses with the brief and part" "$out" "builder.md: missing shared brief include 'example'" &&
+  check "both errors occur before dispatch" "[$(wc -l < "$CALLS")]" "[$calls]" &&
+  check "failed renders keep the previous brief" "$(cat "factory/jobs/$id/round-2/brief-builder.md")" "An updated shared instruction."
+}
+
+t_brief_paragraphs_are_shared() {
+  python3 - "$FACTORY_SRC/agents" <<'PY'
+from collections import defaultdict
+from pathlib import Path
+import re
+import sys
+
+agents = Path(sys.argv[1])
+# Blank lines, list items, fences and include lines are paragraph boundaries.
+paragraph = re.compile(r"^\S.*?(?=\n[ \t]*\n|\n[-*] |\n\d+\. |\n```|\n<!-- include:|\Z)", re.M | re.S)
+copies = defaultdict(set)
+for path in agents.rglob("*.md"):
+    source = re.sub(r"<!-- project: .*?<!-- /project -->", "", path.read_text(), flags=re.S)
+    for block in paragraph.findall(source):
+        text = " ".join(block.split())
+        if len(text) > 80:
+            copies[text].add(str(path.relative_to(agents)))
+duplicates = {text: sorted(paths) for text, paths in copies.items() if len(paths) > 1}
+for text, paths in duplicates.items():
+    print(f"Duplicate paragraph in {', '.join(paths)}: {text}")
+assert not duplicates, "move duplicated instructions to factory/agents/shared"
+PY
 }
 
 t_worktree_root_outside_repo() {
@@ -1125,6 +1185,7 @@ structure_count() {
 t_structure_review_cadence() {
   new_repo structure
   set_config structure_review_every 3
+  printf '\n<!-- include: summary-guidance -->\n' >> factory/agents/reviewer-structure.md
   for n in 01 02 03 04; do ticket "$n" "Ticket $n"; done
   commit_all
   local dir=factory/jobs/_structure out first last prompt n expected
@@ -1146,7 +1207,8 @@ t_structure_review_cadence() {
   check "date-named report location" "$(dirname "$first")" "$PWD/$dir" &&
   [[ $(basename "$first") =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$ ]] &&
   check "whole base is pinned" "$prompt" "master commit $(git rev-parse master)" &&
-  check "uses the structure review brief" "$prompt" "factory/agents/reviewer-structure.md" &&
+  check "uses the rendered structure review brief" "$prompt" "Your brief is ${first%.md}-brief-structure.md." &&
+  check "structure review expanded its include" "$(cat "${first%.md}-brief-structure.md")" "$(cat factory/agents/shared/summary-guidance.md)" &&
   check "first review has no predecessor" "$prompt" "Previous structure review: none" || return 1
   for n in 01 02 03; do
     local spec diff before after
@@ -1216,6 +1278,7 @@ t_feature_mid_review() {
   check "started" "$out" "mid-feature review started" &&
   check "mid mode" "$(tail -3 "$SPECS")" "Mode: mid-feature (tickets still open: feat/03" &&
   check "writes the integration file" "$(tail -3 "$SPECS")" "Write: $PWD/$f/feature-m-integration.md" &&
+  check "mid-feature brief stays next to its own report" "$(tail -3 "$SPECS")" "Your brief is $PWD/$f/feature-m-integration-brief-feature.md." &&
   check "detached worktree on the branch" "$(git -C .worktrees/_midreview-feature-m rev-parse HEAD)" "$(git rev-parse feature/m)" &&
   check "counted" "$(python3 -c "import json; print(json.load(open('$f/feature-m-mid.json'))['merged'])")" "2" || return 1
   local plain; plain=$(J create f/09); J start "$plain" intake >/dev/null
@@ -3217,6 +3280,48 @@ PY
   commit_all
   factory/bin/update "$FACTORY_SRC/.." --force >/dev/null 2>&1
   check "no template effort on the repo's model" "$(python3 -c "import json; print(json.load(open('factory/config.json'))['routing']['low']['code'])")" "{'agent': 'claude', 'model': 'haiku'}"
+}
+
+t_update_shared_brief_parts() {
+  new_repo shared-brief-template
+  local source="$PWD" shared=factory/agents/shared out file
+  printf '# New builder text\n\n<!-- include: extension -->\n\n<!-- project: builder -->\n<!-- /project -->\n' > factory/agents/builder.md
+  printf 'New shared instruction.\n\n<!-- project: shared -->\n<!-- /project -->\n' > "$shared/extension.md"
+  printf 'Another shared instruction.\n' > "$shared/added.md"
+  # Exercise the handoff to the template's updater, as a real upgrade would.
+  printf '\n# New updater in the template.\n' >> factory/bin/update.py
+  commit_all || return 1
+
+  new_repo shared-brief-install
+  printf '# Old builder text\n\n<!-- project: builder -->\nKeep this builder instruction.\n<!-- /project -->\n' > factory/agents/builder.md
+  printf 'Old shared instruction.\n\n<!-- project: shared -->\nKeep this shared instruction.\n<!-- /project -->\n' > "$shared/extension.md"
+  printf 'Old shared part.\n' > "$shared/obsolete.md"
+  printf 'Other agent file.\n' > factory/agents/only-local.md
+  printf 'Other shared file.\n' > "$shared/keep.txt"
+  commit_all || return 1
+  printf 'Uncommitted text.\n' >> "$shared/obsolete.md"
+  if out=$(factory/bin/update "$source" 2>&1); then return 1; fi
+  check "local edits to a shared part are protected" "$out" "uncommitted changes in files this would replace: $shared/obsolete.md" &&
+  git restore -- "$shared/obsolete.md" || return 1
+  out=$(factory/bin/update "$source" --dry-run) || return 1
+  check "dry run previews obsolete shared part" "$out" "removed $shared/obsolete.md" &&
+  check "dry run leaves the installation clean" "[$(git status --porcelain)]" "[]" || return 1
+  out=$(factory/bin/update "$source") || return 1
+  check "removed obsolete shared part" "$out" "removed $shared/obsolete.md" &&
+  [[ ! -e "$shared/obsolete.md" ]] &&
+  cmp "$shared/added.md" "$source/$shared/added.md" &&
+  check "ordinary brief takes the new template text" "$(cat factory/agents/builder.md)" "# New builder text" &&
+  check "ordinary project block survives" "$(cat factory/agents/builder.md)" "Keep this builder instruction." &&
+  check "shared part takes the new template text" "$(cat "$shared/extension.md")" "New shared instruction." &&
+  check "shared project block survives" "$(cat "$shared/extension.md")" "Keep this shared instruction." &&
+  git diff --exit-code -- factory/agents/only-local.md "$shared/keep.txt" || return 1
+
+  local outside="$TMP_ROOT/shared-brief-install/external"
+  mkdir "$outside" && printf 'Outside the installation.\n' > "$outside/other.md" &&
+  mv "$shared" "${shared}.saved" && ln -s "$outside" "$shared" || return 1
+  if out=$(factory/bin/update "$source" --force 2>&1); then return 1; fi
+  check "shared path cannot redirect pruning outside the checkout" "$out" "$shared must be inside this checkout" &&
+  check "outside file survives" "$(cat "$outside/other.md")" "Outside the installation."
 }
 
 t_haiku_gets_no_effort() {
