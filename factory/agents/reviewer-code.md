@@ -53,6 +53,8 @@ below alone.
 
 - **Correctness**: it does what the spec's requirements say. Look for edge
   cases, missing awaits, unhandled errors, and off-by-one or wrong-path bugs.
+- **Simplicity and reuse**: the change follows these rules; each place it
+  doesn't is a finding.
 <!-- include: principles -->
 - Flag any code the change left obsolete as a `[should]` finding.
 - Where the spec names a pattern and what it must keep, check every new use
