@@ -110,6 +110,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -117,6 +118,7 @@ from pathlib import Path
 sys.dont_write_bytecode = True  # no __pycache__ in factory/bin of the repos the factory runs in
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import codegraph_tools  # noqa: E402
+import heavy  # noqa: E402
 import session_usage  # noqa: E402  (factory/bin/session_usage.py)
 import jobfiles  # noqa: E402  (factory/bin/jobfiles.py: how a job folder reads)
 import lifecycle  # noqa: E402
@@ -737,6 +739,13 @@ def save(job):
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(job, indent=2) + "\n")
     tmp.replace(path)
+
+
+def add_heavy_wait(job, role, seconds):
+    if 0 < seconds < float("inf"):
+        waits = job.setdefault("heavy_wait_s", {})
+        waits[role] = waits.get(role, 0) + seconds
+        save(job)
 
 
 def all_jobs():
@@ -3690,7 +3699,7 @@ def cmd_create(number):
         "worktree": str(worktree_base() / job_id),
         "stage": "intake", "round": 0, "round_limit": CONFIG["max_rounds"],
         "intake": None, "agents": None, "gate": None, "reviews": {},
-        "dispatch": {}, "cost_usd": 0.0, "started": now(), "ended": None,
+        "dispatch": {}, "cost_usd": 0.0, "heavy_wait_s": {}, "started": now(), "ended": None,
         "history": [{"stage": "intake", "round": 0, "at": now(), "t": time.time()}],
         "holds": holds,
         "commit_format": "conventional",  # the gate checks commit subjects and the PR title
@@ -4261,7 +4270,13 @@ def cmd_merge(job):
         if not ok:
             return finish_failure("recoverable", f"The branch conflicts with {jbase(job)}:\n\n"
                                   + (f"{note}\n\n" if note else "") + f"```\n{out}\n```")
-        gate = subprocess.run([str(BIN / "gate"), job["id"], "--merge"], stdout=subprocess.PIPE, text=True)  # stderr shows "gate: waiting for ..."
+        # This process owns the job lock. Record the child's wait here.
+        with tempfile.TemporaryFile(mode="w+t") as wait:
+            fd = wait.fileno()
+            gate = subprocess.run([str(BIN / "gate"), job["id"], "--merge"], stdout=subprocess.PIPE,
+                                  text=True, env=dict(os.environ, FACTORY_GATE_WAIT_FD=str(fd)), pass_fds=(fd,))
+            wait.seek(0)
+            add_heavy_wait(job, "gate", float(wait.read() or 0))
         if gate.returncode != 0:
             return finish_failure("recoverable", f"The gate failed after syncing with {jbase(job)}. "
                                   f"See round-{job['round']}/merge-checks.md and merge-checks.log.\n\n{gate.stdout.strip()}")
@@ -4796,10 +4811,16 @@ def worker_place(job, role):
 
 def job_header(job, role):
     where, branch = worker_place(job, role)
+    heavy_note = ""
+    if role.startswith(("builder", "reviewer-")):
+        invocation = shlex.quote(str(BIN / "heavy"))
+        heavy_note = (f" For heavy commands use `FACTORY_JOB={shlex.quote(job['id'])} "
+                      f"FACTORY_ROLE={shlex.quote(role)} {invocation} <command>`.")
     return (f"Job: {job['id']}. Job folder: {job_dir(job['id'])}/. Main checkout: {REPO}. "
             f"Worktree: {where}. Branch: {branch}. Base: {jref(job)} (merges into {jbase(job)}). "
             f"Tracker: {job.get('tracker', TRACKER)}. Issue: {job['issue']}."
             + (f" Pre-review: {pre_review(job)}." if role == "builder" and pre_review(job) else "")
+            + heavy_note
             + integration_note(job, role))
 
 
@@ -5415,6 +5436,18 @@ def steps_and_comments(job):
     return steps + ([("tell", tell)] if tell else [])
 
 
+def show_long_heavy_commands(job_id=None):
+    limit = CONFIG.get("heavy_max_minutes", 30) * 60
+    for holder in heavy.active_holders(REPO):
+        owner = holder.get("job")
+        if job_id and owner != job_id:
+            continue
+        elapsed = time.time() - holder["since"]
+        if elapsed >= limit:
+            print(f"{owner or 'heavy'}: tell: heavy slot held for {elapsed / 60:.1f} min "
+                  f"(since {clock(holder['since'])}): {heavy.describe(holder)}")
+
+
 def cmd_next(args):
     """One line per step for <job>; without one, a line per unfinished job."""
     why = stand_in()
@@ -5428,6 +5461,7 @@ def cmd_next(args):
             report = STRUCTURE_REVIEWS / name
             if summary := first_line(report):
                 print(f"{job['id']}: tell: {summary} ({report.relative_to(REPO)})")
+        show_long_heavy_commands(job["id"])
         return
     every = all_jobs()
     jobs = [j for j in every if j["stage"] not in TERMINAL]
@@ -5435,6 +5469,7 @@ def cmd_next(args):
         print(f"{j['id']}: " + "; ".join(f"{verb}: {what}" for verb, what in steps_and_comments(j)))
     for j, alert in main_ci_alerts(every):
         print(f"{j['id']}: tell: {alert}")
+    show_long_heavy_commands()
     if report := latest_structure_review():
         print(f"structure: tell: {first_line(report)} ({report.relative_to(REPO)})")
     if not jobs:
@@ -5478,6 +5513,12 @@ def main(argv):
     COMMAND = cmd
     NO_WAIT = cmd in READ_ONLY or (cmd == "dispatch" and len(args) == 2)
     try:
+        if cmd == "_heavy-wait" and len(args) == 3:
+            job_id, role, seconds = args
+            require(Path(job_id).name == job_id and job_id not in {"", ".", ".."},
+                    "invalid job ID for heavy wait")
+            add_heavy_wait(load(job_id), role, float(seconds))
+            return
         if cmd != "claim":
             refresh_claim()
         if cmd == "queue":

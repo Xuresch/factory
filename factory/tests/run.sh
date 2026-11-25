@@ -446,12 +446,14 @@ t_job_start_routes_agents() {
   local id expected r
   id=$(to_build 01 medium "ui, security") && J start "$id" builder >/dev/null || return 1
   expected=$(config_value "builder('medium')" flags) || return 1
-  check "builder uses the configured route" "[$(tail -1 "$CALLS" | start_flags)]" "[$expected]" || return 1
+  check "builder uses the configured route" "[$(tail -1 "$CALLS" | start_flags)]" "[$expected]" &&
+  check "builder gets its heavy command environment" "$(cat "$SPECS")" "FACTORY_JOB=$id FACTORY_ROLE=builder $PWD/factory/bin/heavy" || return 1
   build_commit "$id" y.txt y && to_review "$id" || return 1
   for r in code ux ui security; do
     expected=$(config_value "reviewer('medium', '$r', 'ui', 'security')" flags) || return 1
     J start "$id" "reviewer-$r" >/dev/null &&
-    check "$r uses the configured route" "[$(tail -1 "$CALLS" | start_flags)]" "[$expected]" || return 1
+    check "$r uses the configured route" "[$(tail -1 "$CALLS" | start_flags)]" "[$expected]" &&
+    check "$r gets its heavy command environment" "$(cat "$SPECS")" "FACTORY_JOB=$id FACTORY_ROLE=reviewer-$r $PWD/factory/bin/heavy" || return 1
   done
   check "dispatch recorded" "$(field "$id" "d['dispatch']['reviewer-code']")" "ctx_fake"
 }
@@ -2300,6 +2302,7 @@ EOF
 
 t_gates_take_turns() {
   new_repo gatelock; ticket 01 One; ticket 02 Two; commit_all
+  set_config heavy_parallel 1
   local a b; a=$(to_build 01 low none); b=$(to_build 02 low none)
   for j in "$a" "$b"; do build_commit "$j" y.txt y; ready "$j"; J advance "$j" gate >/dev/null; done
   export TURNS="$TMP_ROOT/gatelock/turns.log"
@@ -2312,9 +2315,9 @@ t_gates_take_turns() {
   check "one after the other" "$(awk '{print $1}' "$TURNS" | tr '\n' ' ')" "start end start end" &&
   check "the wait is recorded apart" "$(cat "factory/jobs/$b/round-1/checks.md")" "for another gate ($a) before checks.sh ran; not counted in its 2s" &&
   check "checks.sh's own time" "$(cat "factory/jobs/$b/round-1/checks.md")" "checks.sh passed in 2s" &&
-  check "holder recorded" "$(cat factory/jobs/_gate.lock)" "\"job\": \"$b\"" || return 1
+  check "holder recorded" "$(cat factory/jobs/_heavy/*/slot-1.lock)" "\"job\": \"$b\"" || return 1
   python3 - <<'EOF'
-import json; p = "factory/config.json"; c = json.load(open(p)); c["gate_parallel"] = 0; json.dump(c, open(p, "w"))
+import json; p = "factory/config.json"; c = json.load(open(p)); del c["heavy_parallel"]; c["gate_parallel"] = 0; json.dump(c, open(p, "w"))
 EOF
   : > "$TURNS"
   factory/bin/gate "$a" >/dev/null 2>&1 &
@@ -2322,6 +2325,208 @@ EOF
   err=$(factory/bin/gate "$b" 2>&1 >/dev/null); wait
   check "gate_parallel 0: no waiting" "[$err]" "[]" &&
   check "gate_parallel 0: together" "$(awk '{print $1}' "$TURNS" | tr '\n' ' ')" "start start end end"
+}
+
+await_event() {
+  local i
+  for (( i=0; i<100; i++ )); do
+    if grep -Fq -- "$2" "$1" 2>/dev/null; then return 0; fi
+    sleep .05
+  done
+  echo "    FAIL: timed out waiting for $2 in $1"
+  return 1
+}
+
+heavy_fixture() {
+  export HEAVY_EVENTS="$TMP_ROOT/$1/events" HEAVY_RELEASE="$TMP_ROOT/$1"
+  HEAVY_RUNNER="$PWD/factory/bin/heavy"
+  HOLD_SCRIPT="$TMP_ROOT/$1/hold"
+  cat > "$HOLD_SCRIPT" <<'EOF'
+#!/usr/bin/env bash
+printf '%s start\n' "$1" >> "$HEAVY_EVENTS"
+until [[ -f "$HEAVY_RELEASE/$1" ]]; do sleep .05; done
+printf '%s end\n' "$1" >> "$HEAVY_EVENTS"
+EOF
+}
+
+t_heavy_worktree_slots() {
+  new_repo heavy-worktrees; commit_all
+  heavy_fixture heavy-worktrees
+  git worktree add -qb a "$HEAVY_RELEASE/a checkout" &&
+  git worktree add -qb b "$HEAVY_RELEASE/b checkout" || return 1
+  local slots a b
+  for slots in 1 2; do
+    set_config heavy_parallel "$slots"
+    rm -f "$HEAVY_RELEASE"/{a,b}
+    : > "$HEAVY_EVENTS"
+    (cd "$HEAVY_RELEASE/a checkout" && exec env FACTORY_JOB=job-a FACTORY_ROLE=builder timeout 10 factory/bin/heavy bash "$HOLD_SCRIPT" a) &
+    a=$!
+    await_event "$HEAVY_EVENTS" "a start" || return 1
+    (cd "$HEAVY_RELEASE/b checkout" && exec timeout 10 factory/bin/heavy bash "$HOLD_SCRIPT" b) 2>"$HEAVY_RELEASE/b.err" &
+    b=$!
+    if [[ "$slots" == 1 ]]; then
+      await_event "$HEAVY_RELEASE/b.err" "heavy: waiting for job-a builder: bash " &&
+      check "waiting names the command and time" "$(cat "$HEAVY_RELEASE/b.err")" "hold a (since " &&
+      check "waiting prints once" "[$(wc -l < "$HEAVY_RELEASE/b.err")]" "[1]" &&
+      check "only a runs with one slot" "[$(cat "$HEAVY_EVENTS")]" "[a start]" || return 1
+    else
+      await_event "$HEAVY_EVENTS" "b start" &&
+      check "two slots allow overlap" "[$(cat "$HEAVY_EVENTS")]" $'[a start\nb start]' &&
+      check "two slots need no wait" "[$(cat "$HEAVY_RELEASE/b.err")]" "[]" || return 1
+    fi
+    touch "$HEAVY_RELEASE/a"
+    await_event "$HEAVY_EVENTS" "b start" || return 1
+    wait "$a" || return 1
+    touch "$HEAVY_RELEASE/b"
+    wait "$b" || return 1
+    if [[ "$slots" == 1 ]]; then
+      check "one slot serializes across worktrees" "[$(cat "$HEAVY_EVENTS")]" $'[a start\na end\nb start\nb end]' &&
+      check "only one message across the whole wait" "[$(wc -l < "$HEAVY_RELEASE/b.err")]" "[1]" || return 1
+    fi
+  done
+}
+
+t_gate_and_heavy_share_pool() {
+  new_repo heavy-gate; ticket 01 One; commit_all
+  set_config heavy_parallel 1 heavy_max_minutes 0
+  heavy_fixture heavy-gate
+  local id gate builder reviewer prior n
+  id=$(to_build 01 low none) && build_commit "$id" y.txt y && ready "$id" &&
+  J advance "$id" gate >/dev/null || return 1
+  printf '#!/usr/bin/env bash\nexec bash %q gate\n' "$HOLD_SCRIPT" > factory/checks.sh
+  FACTORY_JOB="$id" FACTORY_ROLE=builder timeout 10 "$HEAVY_RUNNER" bash "$HOLD_SCRIPT" builder &
+  builder=$!
+  await_event "$HEAVY_EVENTS" "builder start" || return 1
+  check "next reports a long-held slot for the job" "$(J next "$id")" "$id builder: bash $HOLD_SCRIPT builder" &&
+  check "next lists the slot in its global view" "$(J next)" "$id: tell: heavy slot held" || return 1
+  timeout 10 factory/bin/gate "$id" >"$HEAVY_RELEASE/gate.out" 2>"$HEAVY_RELEASE/gate.err" &
+  gate=$!
+  await_event "$HEAVY_RELEASE/gate.err" "gate: waiting for $id builder" || return 1
+  check "gate cannot start yet" "[$(cat "$HEAVY_EVENTS")]" "[builder start]" || return 1
+  touch "$HEAVY_RELEASE"/{builder,gate}
+  wait "$builder" && wait "$gate" || return 1
+  check "gate has its own wait metric" "$(field "$id" "d['heavy_wait_s']['gate'] > 0")" "True" &&
+  check "gate wait is separate in checks.md" "$(cat "factory/jobs/$id/round-1/checks.md")" "before checks.sh ran; not counted in its" || return 1
+
+  prior=0
+  for n in 1 2; do
+    rm "$HEAVY_RELEASE/gate"
+    : > "$HEAVY_EVENTS"
+    timeout 10 factory/bin/gate "$id" >/dev/null &
+    gate=$!
+    await_event "$HEAVY_EVENTS" "gate start" || return 1
+    FACTORY_JOB="$id" FACTORY_ROLE=builder timeout 10 "$HEAVY_RUNNER" true 2>"$HEAVY_RELEASE/builder.err" &
+    builder=$!
+    FACTORY_JOB="$id" FACTORY_ROLE=reviewer-code timeout 10 "$HEAVY_RUNNER" true 2>"$HEAVY_RELEASE/reviewer.err" &
+    reviewer=$!
+    await_event "$HEAVY_RELEASE/builder.err" "heavy: waiting for $id gate: bash" &&
+    await_event "$HEAVY_RELEASE/reviewer.err" "heavy: waiting for $id gate: bash" || return 1
+    touch "$HEAVY_RELEASE/gate"
+    wait "$gate" && wait "$builder" && wait "$reviewer" || return 1
+    check "builder wait accumulates" "$(field "$id" "d['heavy_wait_s']['builder'] > $prior")" "True" || return 1
+    prior=$(field "$id" "d['heavy_wait_s']['builder']") || return 1
+  done
+  check "reviewer wait is tracked separately" "$(field "$id" "d['heavy_wait_s']['reviewer-code'] > 0")" "True" &&
+  check "released slots are absent from next" "[$(J next | sed -n '/heavy slot held/p')]" "[]" || return 1
+
+  rm "$HEAVY_RELEASE/builder"
+  : > "$HEAVY_EVENTS"
+  printf '{"message":{"content":"Job: %s."}}\n' "$id" > "$HEAVY_RELEASE/transcript.jsonl"
+  printf '{"agent_transcript_path":"%s/transcript.jsonl"}\n' "$HEAVY_RELEASE" > "$HEAVY_RELEASE/hook.json"
+  timeout 10 "$HEAVY_RUNNER" bash "$HOLD_SCRIPT" builder &
+  builder=$!
+  await_event "$HEAVY_EVENTS" "builder start" || return 1
+  timeout 10 factory/bin/gate --hook <"$HEAVY_RELEASE/hook.json" 2>"$HEAVY_RELEASE/hook.err" &
+  gate=$!
+  await_event "$HEAVY_RELEASE/hook.err" "gate: waiting for $PWD: bash" || return 1
+  touch "$HEAVY_RELEASE/builder"
+  wait "$builder" && wait "$gate" || return 1
+  check "builder self-check uses the pool and tracks wait" "$(field "$id" "d['heavy_wait_s']['builder'] > $prior")" "True" || return 1
+
+  J advance "$id" review >/dev/null && review "$id" 1 code PASS &&
+  J advance "$id" approve >/dev/null || return 1
+  printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"
+  printf '\n# changed to force a fresh merge gate\n' >> factory/checks.sh
+  rm "$HEAVY_RELEASE/builder"
+  : > "$HEAVY_EVENTS"
+  prior=$(field "$id" "d['heavy_wait_s']['gate']") || return 1
+  timeout 10 "$HEAVY_RUNNER" bash "$HOLD_SCRIPT" builder &
+  builder=$!
+  await_event "$HEAVY_EVENTS" "builder start" || return 1
+  timeout 10 factory/bin/job merge "$id" >"$HEAVY_RELEASE/merge.out" 2>"$HEAVY_RELEASE/merge.err" &
+  gate=$!
+  await_event "$HEAVY_RELEASE/merge.err" "gate: waiting for $PWD: bash" || return 1
+  touch "$HEAVY_RELEASE/builder"
+  wait "$builder" && wait "$gate" || return 1
+  check "merge completed without reacquiring its own job lock" "$(field "$id" "d['stage']")" "merged" &&
+  check "merge records its gate wait" "$(field "$id" "d['heavy_wait_s']['gate'] > $prior")" "True"
+}
+
+t_heavy_nested_signals_and_exit() {
+  new_repo heavy-signals; commit_all
+  set_config heavy_parallel 1
+  local out rc runner="$PWD/factory/bin/heavy"
+  out=$(printf 'input\n' | EXAMPLE=kept "$runner" bash -c 'read -r line; printf "%s:%s:%s" "$line" "$EXAMPLE" "$PWD"; exit 37')
+  rc=$?
+  check "exit code passes through" "[$rc]" "[37]" &&
+  check "stdin, env, cwd and stdout pass through" "[$out]" "[input:kept:$PWD]" &&
+  check "nested command bypasses the slot outside Git" "$(timeout 3 "$runner" bash -c 'cd / && "$1" printf nested' _ "$runner")" "nested" || return 1
+
+  python3 - "$runner" <<'PY'
+import os, signal, subprocess, sys, time
+from pathlib import Path
+
+runner = sys.argv[1]
+path = Path("child-pid")
+for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGKILL):
+    path.unlink(missing_ok=True)
+    with subprocess.Popen([runner, "bash", "-c", 'echo "$$" > child-pid; exec sleep 10']) as parent:
+        for _ in range(100):
+            if path.exists() and path.read_text().strip():
+                break
+            time.sleep(0.02)
+        child = int(path.read_text())
+        try:
+            parent.send_signal(sig)
+            assert parent.wait(timeout=4) == (-sig if sig == signal.SIGKILL else 128 + sig)
+            if sig != signal.SIGKILL:
+                try:
+                    os.kill(child, 0)
+                except ProcessLookupError:
+                    pass
+                else:
+                    raise AssertionError(f"child {child} survived {sig}")
+            # An abruptly dead holder leaves metadata behind. flock still frees its slot.
+            subprocess.run([runner, "true"], check=True, timeout=2)
+        finally:
+            if parent.poll() is None:
+                parent.kill()
+            try:
+                os.kill(child, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+PY
+}
+
+t_update_migrates_gate_parallel() {
+  new_repo heavy-config
+  python3 - <<'PY'
+import json
+from pathlib import Path
+p = Path("factory/config.json")
+c = json.loads(p.read_text())
+c.pop("heavy_parallel", None)
+c.pop("heavy_max_minutes", None)
+c["gate_parallel"] = 2
+p.write_text(json.dumps(c))
+PY
+  commit_all || return 1
+  local out expected_age
+  expected_age=$(config_value "c['heavy_max_minutes']" value "$FACTORY_SRC/config.json") || return 1
+  out=$(factory/bin/update "$FACTORY_SRC/..") || return 1
+  check "update adds the new key" "$out" "added heavy_parallel" &&
+  check "the old limit survives the update" "[$(config_value "c['heavy_parallel']")]" "[2]" &&
+  check "the template age threshold is installed" "[$(config_value "c['heavy_max_minutes']")]" "[$expected_age]"
 }
 
 t_send_records_follow_up_dispatch() {

@@ -252,6 +252,9 @@ def main(argv):
         mine = json.loads(config_path.read_text())
         theirs = json.loads((tf / "config.json").read_text())
         theirs.pop("template_version", None)
+        if "heavy_parallel" in theirs and "heavy_parallel" not in mine and "gate_parallel" in mine:
+            # Keep the effective limit when the new key takes precedence.
+            theirs["heavy_parallel"] = mine["gate_parallel"]
         notes += [f"config {d}" for d in differing(mine, theirs)]
         added = merge_config(mine, theirs)
         if added:
