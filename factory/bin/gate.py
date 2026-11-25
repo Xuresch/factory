@@ -17,11 +17,9 @@ non-merge commit since the base, and the PR title on GitHub, must be a
 Conventional Commits line (config.json `commit_types`), at most 72 characters,
 with no trailing period. checks.md says how to reword them.
 
-Gates take turns: config.json `gate_parallel` (default 1) is how many round and
-merge gates may run checks.sh at once on this machine for this repo (0: no
-limit). A gate that has to wait says for whom, once, and checks.md records the
-wait apart from checks.sh's own time. The builder's hook doesn't wait: it is a
-quick self-check inside the builder's turn, and the gate after it runs anyway.
+Gates and the builder's self-check use the repository's heavy command pool.
+A gate that waits names the holder once. checks.md records the wait separately
+from checks.sh's own time.
 
 checks.log and checks.md have ANSI color codes removed. checks.md lists the
 lines that look like failures under `## Failures`, with the first one's
@@ -34,7 +32,6 @@ ran, and checks.sh doesn't read FACTORY_GATE (a repo that runs less in a round
 always gets the full merge run).
 """
 
-import fcntl
 import hashlib
 import fnmatch
 import json
@@ -42,10 +39,10 @@ import os
 import re
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import heavy  # noqa: E402
 import jobfiles  # noqa: E402  (factory/bin/jobfiles.py: how a job folder reads)
 
 REPO = Path(__file__).resolve().parents[2]
@@ -54,7 +51,6 @@ CONFIG = json.loads((FACTORY / "config.json").read_text())
 CHECKS = FACTORY / "checks.sh"
 TAIL = 80
 PASS_TAIL = 20
-GATE_LOCK = FACTORY / "jobs" / "_gate.lock"
 
 
 def die(msg):
@@ -174,19 +170,21 @@ def commit_format(job, worktree, base_ref):
     return "\n".join(out)
 
 
-def run_checks(worktree, base_ref=None, mode="full"):
-    """Run checks.sh. It gets FACTORY_GATE (round, merge or full) and
-    FACTORY_BASE_REF, so a repo may skip slow checks a round's diff can't affect.
-    The merge gate and manual runs always ask for everything."""
+def run_checks(job, base_ref=None, mode="full"):
+    """Run checks.sh in a shared slot with its round, merge or full settings."""
     env = dict(os.environ, FACTORY_GATE=mode)
+    wait_fd = env.pop("FACTORY_GATE_WAIT_FD", None)
     if base_ref:
         env["FACTORY_BASE_REF"] = base_ref
-    start = time.monotonic()
-    # stderr into stdout in the order written, so a summary checks.sh prints
-    # last is the log's tail even when tools warned on stderr before it
-    res = subprocess.run(["bash", str(CHECKS)], cwd=worktree, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                         text=True, env=env)
-    return res.returncode, strip_ansi(res.stdout), int(time.monotonic() - start)
+    role = "builder" if mode == "full" else "gate"
+    result = heavy.run(REPO, CONFIG, ["bash", str(CHECKS)], cwd=job["worktree"],
+                       env=env, job=job["id"], role=role, prefix="gate", capture=True)
+    if mode == "merge" and wait_fd is not None:
+        with os.fdopen(int(wait_fd), "w") as wait:
+            wait.write(str(result.waited))
+    else:
+        heavy.record_wait(REPO, job["id"], role, result.waited)
+    return result
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
@@ -230,59 +228,6 @@ def failures_section(log):
     more = f"\n- ... and {total - len(distinct)} more in the log" if total > len(distinct) else ""
     return ("## Failures\n" + "\n".join(f"- `{d}`" if "`" not in d else f"- {d}" for d in distinct) + more
             + "\n\nThe first failure:\n\n```\n" + "\n".join(block) + "\n```\n\n")
-
-
-# ---- Gate lock: gates take turns --------------------------------------------
-
-
-def gate_slots():
-    """Lock files for config.json `gate_parallel` slots; none when 0 (no limit)."""
-    n = int(CONFIG.get("gate_parallel", 1) or 0)
-    if n <= 0:
-        return []
-    return [GATE_LOCK] + [GATE_LOCK.with_name(f"_gate-{k}.lock") for k in range(2, n + 1)]
-
-
-def holder(path):
-    """Who holds a gate slot, as it wrote itself into the lock file."""
-    try:
-        return json.loads(path.read_text())
-    except (OSError, ValueError):
-        return {}
-
-
-def take_slot(job_id, mode):
-    """Wait for a free gate slot and hold it until this process exits. Returns
-    (seconds waited, the job waited for or None)."""
-    slots = gate_slots()
-    if not slots:
-        return 0, None
-    GATE_LOCK.parent.mkdir(parents=True, exist_ok=True)
-    start, told, other = time.monotonic(), False, None
-    while True:
-        for path in slots:
-            f = open(path, "a+")
-            try:
-                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                f.close()
-                continue
-            f.seek(0)
-            f.truncate()
-            f.write(json.dumps({"job": job_id, "mode": mode, "pid": os.getpid(), "since": time.time()}) + "\n")
-            f.flush()
-            _held.append(f)
-            return int(time.monotonic() - start), other
-        if not told:
-            h = holder(slots[0])
-            other = h.get("job") or "another job"
-            since = time.strftime("%H:%M", time.localtime(h["since"])) if h.get("since") else "?"
-            print(f"gate: waiting for {other}'s gate (since {since})", file=sys.stderr, flush=True)
-            told = True
-        time.sleep(0.5)
-
-
-_held = []
 
 
 WAIT_NOTE_MINUTES = 5
@@ -343,8 +288,9 @@ def gate(job_id, merge):
             print(f"GATE: PASS ({job_id} round {job['round']}, reused checks.md: same commit {commit[:7]})")
             sys.exit(0)
     waited = waited_minutes(job) if not merge else None
-    queued, other = take_slot(job_id, "merge" if merge else "round")
-    code, log, seconds = run_checks(worktree, base_ref, "merge" if merge else "round")
+    result = run_checks(job, base_ref, "merge" if merge else "round")
+    code, log, seconds = result.returncode, strip_ansi(result.stdout or ""), int(result.seconds)
+    other, queued = result.blocked_by, int(result.waited)
     verdict = "PASS" if code == 0 and not protected and not commits else "FAIL"
     name = "merge-checks" if merge else "checks"
     (round_dir / f"{name}.log").write_text(log)
@@ -361,9 +307,10 @@ def gate(job_id, merge):
     if stripped:
         summary.append(f"Removed Co-Authored-By / Generated-with lines from {stripped} commit"
                        + ("" if stripped == 1 else "s") + " (nobody co-authors a factory job)")
-    if other:
-        summary.append(f"Waited {queued}s for another gate ({other}) before checks.sh ran; "
-                       f"not counted in its {seconds}s")
+    if other is not None:
+        holder = (f"another gate ({other['job']})" if other.get("role") == "gate" and other.get("job")
+                  else f"a heavy command ({heavy.describe(other)})")
+        summary.append(f"Waited {queued}s for {holder} before checks.sh ran; not counted in its {seconds}s")
     if waited is not None and waited >= WAIT_NOTE_MINUTES:
         summary.append(f"The gate ran {waited} min after the job entered `gate`: that time went to "
                        f"waiting for the orchestrator, not to checks.sh ({seconds}s)")
@@ -377,7 +324,7 @@ def gate(job_id, merge):
         + f"## checks.sh\nExit {code} in {seconds}s. Last {lines} lines of {name}.log:\n\n```\n{tail}\n```\n"
     )
     print(f"GATE: {verdict} ({job_id} round {job['round']}, checks.sh exit {code} in {seconds}s"
-          + (f", after waiting {queued}s for {other}'s gate" if other else "")
+          + (f", after waiting {queued}s for {heavy.gate_holder(other)}" if other is not None else "")
           + (f", protected paths changed: {', '.join(protected)}" if protected else "")
           + (", commit format" if commits else "") + ")")
     sys.exit(0 if verdict == "PASS" else 1)
@@ -392,7 +339,8 @@ def hook():
     prompt = content if isinstance(content, str) else " ".join(b.get("text", "") for b in content)
     job_id = prompt.split("Job: ", 1)[1].split(".", 1)[0]
     job = jobfiles.load_job(FACTORY / "jobs", job_id)
-    code, log, _ = run_checks(job["worktree"])
+    result = run_checks(job)
+    code, log = result.returncode, strip_ansi(result.stdout or "")
     if code != 0:
         tail = "\n".join(log.rstrip().splitlines()[-40:])
         print(f"factory/checks.sh fails in your worktree (exit {code}). The gate will reject this "

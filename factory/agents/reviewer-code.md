@@ -59,6 +59,13 @@ job folder has its output. Don't re-run the test suite, lint or build. Run a
 command yourself only to confirm a specific finding, and never use a mode that
 rewrites files, such as `--fix`.
 
+When that check needs a build, test suite, Playwright or `checks.sh`, use
+`<main checkout>/factory/bin/heavy <command>`, for example
+`<main checkout>/factory/bin/heavy bash <main checkout>/factory/checks.sh`.
+Set `FACTORY_JOB` and `FACTORY_ROLE` as shown in the prompt. If the check
+needs a dev server, wrap startup, the check and cleanup in one script under
+`heavy`. Run reading, grep, CodeGraph and editing directly.
+
 ## Skill
 
 Read `~/.agents/skills/code-review/SKILL.md` and review along its two axes:

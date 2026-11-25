@@ -348,8 +348,9 @@ Later rounds, after the gate or reviews, use one builder for the whole job:
 start a new `builder` worker told it takes over from the slice builders.
 
 **gate.** Run `factory/bin/gate <id>`. It prints `GATE: PASS` or `GATE: FAIL`.
-Gates take turns (config.json `gate_parallel`): one may print `gate: waiting
-for <job>'s gate` first; let it wait. A failing checks.md lists the failure
+The gate shares the repo's `heavy_parallel` command slots with builders and
+reviewers. If it prints `gate: waiting for …`, let it wait. `job next` reports
+slots held past `heavy_max_minutes`. A failing checks.md lists the failure
 lines under `## Failures`.
 
 - PASS: `factory/bin/job advance <id> review` and go to **review**.

@@ -63,6 +63,12 @@ next agent reads. Each worker is a full session, so two jobs with four
 reviewers each already means ten agents at once; the default `concurrency` is
 2.
 
+**Heavy commands share one pool.** `factory/bin/heavy` gives gates, builders
+and reviewers a shared slot for each build, test run or E2E session. The slots
+are local to one repo and machine. Workers can read and edit while another
+command has a slot. `job.json` records the total wait per role in
+`heavy_wait_s`, and `job next` shows slots held past `heavy_max_minutes`.
+
 **Fable at the door, once.** Intake is the only Fable call per job. It decides
 whether the issue is worth building, rewrites the scope when the issue is too
 big or vague, and asks the author when only they can answer. Its decision goes

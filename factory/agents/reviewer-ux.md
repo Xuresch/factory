@@ -53,8 +53,16 @@ finding needed, and ask for it to be cut.
 
 ## Look at it
 
-If the change shows up on a page, use it like a visitor would. Start the dev
-server from AGENTS.md in the worktree, in the background, on your port.
+Use `<main checkout>/factory/bin/heavy <command>` for builds, test suites,
+Playwright and checks, for example
+`<main checkout>/factory/bin/heavy bash <main checkout>/factory/checks.sh`.
+Set `FACTORY_JOB` and `FACTORY_ROLE` as shown in the prompt. Run reading,
+grep, CodeGraph and editing directly.
+
+If the change shows up on a page, use it like a visitor would. Run one script
+with `<main checkout>/factory/bin/heavy bash <script>` for the browser session.
+In it, start the dev server from AGENTS.md in the worktree on your port,
+run the browser checks and stop the server on exit.
 
 Then use the `agent-browser` CLI (run `agent-browser skills get core` first).
 Pass `--session <job-id>-ux` on every `agent-browser` call, so other jobs'

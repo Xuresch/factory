@@ -67,6 +67,8 @@ factory/bin/jobfiles.py
 factory/bin/lifecycle.py
 factory/bin/session_usage.py
 factory/bin/gate
+factory/bin/heavy
+factory/bin/heavy.py
 factory/bin/route
 factory/bin/dashboard
 factory/bin/report
@@ -176,12 +178,13 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
   and directories that exist (not a top-level directory) or new files with a
   directory and an extension; `## Out of scope` is left out. Set it `false`
   to let jobs build on the same files at once.
-- `gate_parallel`: how many gates (round and merge) run `checks.sh` at once
-  on this machine for this repo; default 1, `0` for no limit. Raise it only
-  when two `checks.sh` runs can't fight over ports, a database, a shared cache
-  or the CPU. A gate that waits prints `gate: waiting for <job>'s gate (since
-  HH:MM)`, and checks.md records the wait apart from `checks.sh`'s own time.
-  The builder's `gate --hook` self-check doesn't wait for other gates.
+- `heavy_parallel` sets how many gates, builds, tests and E2E commands run at
+  once across this repo's worktrees on this machine. It defaults to 1, with
+  `0` allowing unlimited commands. Updates carry over an existing
+  `gate_parallel` value when adding the new key. Once heavy commands take
+  turns, try raising `concurrency` to give more agents time to work between
+  checks. `heavy_max_minutes` sets when `job next` reports a long-held slot
+  and defaults to 30. A gate records its slot wait separately in checks.md.
 - `lockfile_regenerate`: `{lockfile path: shell command}` (a key may be an
   fnmatch pattern). When merging the base into a job branch conflicts only in
   these files, the factory takes the base's lockfile, runs the command in the

@@ -183,6 +183,10 @@ Before any build, test or install command, run
 `source <main checkout>/factory/env.sh` in the same shell. It sets the
 project's build settings and shared caches, the same ones the gate uses.
 
+Use `<main checkout>/factory/bin/heavy <command>` for builds, installs, test
+runs and Playwright. Include `FACTORY_JOB` and `FACTORY_ROLE` as shown in
+your prompt. Run reading, grep, CodeGraph and editing directly.
+
 Builds and test suites here can take many minutes. A command that hits your
 tool's time limit has not failed. Run long commands so they can finish: give
 them a long timeout, or start them in the background with output to a log
@@ -193,8 +197,9 @@ changed while you work, and `checks.sh` once at the end.
 
 ## Test
 
-Run `bash <main checkout>/factory/checks.sh` from the worktree
-(`cd <worktree> && bash <main checkout>/factory/checks.sh`). It must pass:
+From the worktree run
+`<main checkout>/factory/bin/heavy bash <main checkout>/factory/checks.sh`.
+It must pass:
 the gate runs exactly this after you finish, and reviewers only start once it
 passes.
 
@@ -205,8 +210,10 @@ A criterion that asks for a test and has none named isn't met: write the test.
 
 - Never run a command that rewrites files across the repo, such as a lint
   `--fix` over everything.
-- For criteria you can see on a page, start the dev server from AGENTS.md in the
-  worktree on your port, then look at the page with the `agent-browser` CLI (run
+- For criteria you can see on a page, run one script with
+  `<main checkout>/factory/bin/heavy bash <script>`. In that script, start the
+  dev server from AGENTS.md in the worktree on your port, run the browser
+  checks, and stop the server on exit. Look at the page with the `agent-browser` CLI (run
   `agent-browser skills get core` first to learn it). Pass
   `--session <job-id>-builder` on every `agent-browser` call, so other jobs
   never drive your browser. Close it with
