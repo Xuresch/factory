@@ -11,7 +11,7 @@ branch or tag.
 What it does:
 - factory/bin/*, dashboard.html, its JavaScript modules and package.json, factory/.gitignore,
   factory/tests/*, the factory skill and every brief without project blocks: replaced by the
-  template's version.
+  template's version. The two old Node test files are removed when their replacements are installed.
 - factory/agents/*.md: the template's version, with this installation's
   `<!-- project: ... -->` ... `<!-- /project -->` blocks put back into the
   template's slots of the same kind (matched by the text after `project:`).
@@ -47,6 +47,10 @@ CONFIG = json.loads((FACTORY / "config.json").read_text())
 DEFAULT = CONFIG.get("template", "https://github.com/Xuresch/factory")
 BLOCK_RE = re.compile(r"<!-- project: (.*?) -->\n(.*?)<!-- /project -->\n?", re.S)
 NEVER = {"checks.sh", "env.sh", "cargo-env.sh"}
+RENAMED_NODE_TESTS = {
+    "job_summary.test.js": "job_summary.node.js",
+    "cost-aggregation.test.js": "cost-aggregation.node.js",
+}
 
 
 def die(msg):
@@ -222,6 +226,14 @@ def main(argv):
                     put(dst, f.read_bytes())
                     if not dry and f.stat().st_mode & 0o111:
                         dst.chmod(dst.stat().st_mode | 0o755)
+        for old, replacement in RENAMED_NODE_TESTS.items():
+            if not (tf / "tests" / replacement).is_file() or (tf / "tests" / old).exists():
+                continue
+            obsolete = FACTORY / "tests" / old
+            if obsolete.is_file() or obsolete.is_symlink():
+                changes.append(f"removed {obsolete.relative_to(REPO)}")
+                if not dry:
+                    obsolete.unlink()
         for name in ["dashboard.html", "job-summary.js", "cost-aggregation.js", "package.json", ".gitignore"]:
             if (tf / name).exists():
                 put(FACTORY / name, (tf / name).read_text())

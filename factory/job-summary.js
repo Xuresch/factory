@@ -1,6 +1,6 @@
 // The job summary: one shape for a job in every view, with an Agent split computed locally
 // or supplied by the hub (GLOSSARY.md). factory/dashboard.html and the hub's overview
-// (hub/static/index.html) load it; factory/tests/job_summary.test.js runs it under node.
+// (hub/static/index.html) load it; factory/tests/job_summary.node.js runs it under node.
 //
 // A summary is the job's own fields plus
 //   id         unique in the view: the job folder locally, the hub's served id (machine~key, repo~key)

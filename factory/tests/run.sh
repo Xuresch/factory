@@ -2111,10 +2111,10 @@ print(json.dumps(d.subscriptions()))'
 
 t_job_summary() {  # factory/job-summary.js and the dashboard's use of it, under node
   if ! command -v node >/dev/null; then echo "    FAIL: needs node"; return 1; fi
-  local out; out=$(node --test "$FACTORY_SRC/tests/job_summary.test.js" 2>&1)
-  check "node --test factory/tests/job_summary.test.js" "$out" "ℹ fail 0"
-  out=$(node --test "$FACTORY_SRC/tests/cost-aggregation.test.js" 2>&1)
-  check "node --test factory/tests/cost-aggregation.test.js" "$out" "ℹ fail 0"
+  local out; out=$(node --test "$FACTORY_SRC/tests/job_summary.node.js" 2>&1)
+  check "node --test factory/tests/job_summary.node.js" "$out" "ℹ fail 0"
+  out=$(node --test "$FACTORY_SRC/tests/cost-aggregation.node.js" 2>&1)
+  check "node --test factory/tests/cost-aggregation.node.js" "$out" "ℹ fail 0"
 }
 
 OUTSIDE_TEST_PRICES='{
@@ -3149,14 +3149,15 @@ t_update_uses_template_copy_list() {
 t_update_installs_commonjs_in_esm_repo() {
   new_repo update-esm
   printf '{"type":"module"}\n' > package.json
+  printf '# Application setup\n\nFactory source is https://raw.githubusercontent.com/Xuresch/factory/main.\n' > INSTALL.md
   commit_all
 
   factory/bin/update "$FACTORY_SRC/.." >/dev/null || return 1
   local status=0 out
   node factory/tests/dashboard-verdicts.mjs || status=1
-  node --test factory/tests/job_summary.test.js factory/tests/cost-aggregation.test.js || status=1
+  node --test factory/tests/job_summary.node.js factory/tests/cost-aggregation.node.js || status=1
   [[ "$status" == 0 ]] || return "$status"
-  git diff --exit-code -- package.json && commit_all || return 1
+  git diff --exit-code -- package.json INSTALL.md && commit_all || return 1
   printf '{"type":"module"}\n' > factory/package.json
   if out=$(factory/bin/update "$FACTORY_SRC/.." 2>&1); then return 1; fi
   check "refuses to overwrite local package changes" "$out" "uncommitted changes in files this would replace: factory/package.json"
@@ -3175,6 +3176,43 @@ t_update_installs_factory_gitignore() {
   printf '\n# Local edit\n' >> factory/.gitignore
   if out=$(factory/bin/update "$FACTORY_SRC/.." 2>&1); then return 1; fi
   check "update refuses to overwrite an edited ignore file" "$out" "uncommitted changes in files this would replace: factory/.gitignore"
+}
+
+t_update_migrates_node_test_names() {
+  local mode dry out
+  for mode in direct handoff; do
+    new_repo "update-node-tests-$mode"
+    printf '{"scripts":{"test":"vitest run","test:bun":"bun test"}}\n' > package.json
+    mkdir -p factory/tests
+    printf '// Old factory test\n' > factory/tests/job_summary.test.js
+    printf '// Old factory test\n' > factory/tests/cost-aggregation.test.js
+    printf '// Installation helper\n' > factory/tests/local-helper.js
+    if [[ "$mode" == handoff ]]; then
+      cp "$FACTORY_SRC/tests/fixtures/update-738a009.txt" factory/bin/update || return 1
+    fi
+    commit_all || return 1
+
+    dry=$(factory/bin/update "$FACTORY_SRC/.." --dry-run) || return 1
+    check "$mode dry run previews deletion" "$dry" "removed factory/tests/job_summary.test.js" &&
+    check "$mode dry run leaves the installation clean" "[$(git status --porcelain)]" "[]" || return 1
+    printf '// Local edit\n' >> factory/tests/job_summary.test.js
+    if out=$(factory/bin/update "$FACTORY_SRC/.." 2>&1); then return 1; fi
+    check "$mode protects local edits" "$out" "factory/tests/job_summary.test.js" || return 1
+    git restore -- factory/tests/job_summary.test.js || return 1
+
+    out=$(factory/bin/update "$FACTORY_SRC/..") || return 1
+    check "$mode removes the first legacy test" "$out" "removed factory/tests/job_summary.test.js" &&
+    check "$mode removes the second legacy test" "$out" "removed factory/tests/cost-aggregation.test.js" &&
+    cmp factory/tests/job_summary.node.js "$FACTORY_SRC/tests/job_summary.node.js" &&
+    cmp factory/tests/cost-aggregation.node.js "$FACTORY_SRC/tests/cost-aggregation.node.js" &&
+    check "$mode preserves other files" "$(cat factory/tests/local-helper.js)" "Installation helper" &&
+    git diff --exit-code -- package.json || return 1
+    (
+      shopt -s globstar nullglob
+      local discovered=(factory/**/*[._]test.* factory/**/*[._]spec.* factory/**/__tests__)
+      check "$mode Vitest and Bun patterns find no factory tests" "[${discovered[*]}]" "[]"
+    ) || return 1
+  done
 }
 
 t_update_from_738a009() {

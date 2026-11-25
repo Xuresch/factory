@@ -12,7 +12,7 @@ env -i PATH="$PATH" HOME="$scratch/home" TMPDIR="$scratch" \
   LC_ALL=C PYTHONDONTWRITEBYTECODE=1 bash -e -c '
     factory/tests/run.sh
     python3 -m unittest discover -s factory/tests -p "test_*.py"
-    node --test factory/tests/*.test.js
+    node --test factory/tests/job_summary.node.js factory/tests/cost-aggregation.node.js
     node factory/tests/dashboard-verdicts.mjs
     node factory/tests/subscription-views.mjs
   '

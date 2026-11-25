@@ -75,9 +75,9 @@ factory/agents/reviewer-feature.md
 factory/agents/retro.md
 factory/tests/run.sh
 factory/tests/test_lifecycle.py
-factory/tests/job_summary.test.js
+factory/tests/job_summary.node.js
 factory/tests/job_summary_fixtures.json
-factory/tests/cost-aggregation.test.js
+factory/tests/cost-aggregation.node.js
 factory/dashboard.html
 factory/job-summary.js
 factory/cost-aggregation.js
