@@ -83,14 +83,15 @@ section, with its id from the file:
 
 ```
 - inline-123: done: <where the branch already handles it>
-- comment-456: ticket: <the change it needs; also listed under Findings>
+- comment-456: ticket: <the change it needs; also listed under Findings as F<n>>
 - review-789: rejected: <why it doesn't apply or isn't worth doing>
 ```
 
 Check each comment against the code before you classify it: confidence
 doesn't make a comment right, and a bot author doesn't make it wrong.
 `done` means the branch already does what the comment asks. `ticket` means
-it needs a change: list it under Findings too, and the verdict is CHANGES.
+it needs a change: list it under Findings too, as a `[blocker]` or
+`[should]`, so the verdict is CHANGES.
 `rejected` needs a reason a human would accept. A line without a reason
 counts as untriaged, and while any comment is untriaged the factory doesn't
 report the PR as clean. Treat security comments (secrets or tokens in logs,
@@ -102,11 +103,11 @@ Your prompt lists the `Protected paths` (`protected_paths` in
 `factory/config.json`; `*` also matches `/`): the factory's own checks,
 config and briefs. No factory builder may modify those files, so a ticket
 for them would only be stopped at intake. A finding whose fix lies only in
-protected paths is a change for a human: start it with `[human: protected]`
-and name the files, as in
+protected paths is a change for a human: put `[human: protected]` right after
+its id and severity and name the files, as in
 
 ```
-3. [human: protected] factory/checks.sh: <the problem and the change a human makes>
+F3 [should] [human: protected] factory/checks.sh: <the problem and the change a human makes>
 ```
 
 Phrase it as a change for a human, never as a ticket. A finding whose fix
@@ -133,15 +134,28 @@ The repo's standards and the smells, across the tickets.
 Only when your prompt names a PR comments file: one triage line per comment.
 
 ## Findings
-1. <path:line> <the problem and the fix you want>
-2. [human: protected] <path> <a change only a human may make; see Protected paths>
+F1 [blocker|should|nit] <path:line> <the problem and the fix you want>
+F2 [should] [human: protected] <path> <a change only a human may make; see Protected paths>
 
 ## Notes
 Non-blocking observations. Optional.
 ```
 
-Use CHANGES only for real problems in how the pieces fit, gaps against the
-feature's description, or clear standards breaks. In final mode a CHANGES
+- The first line is exactly `VERDICT: PASS` or `VERDICT: CHANGES`.
+- Every finding starts with an id and a severity, `F<n> [blocker|should|nit]`,
+  one finding per line or paragraph. Number them from F1. When you rewrite an
+  existing integration file, a finding you keep keeps its id, and new ones
+  continue after the highest.
+- **blocker**: the tickets together are wrong for a case the feature's
+  description intends, or one ticket breaks what another built. **should**: a
+  real problem in how the pieces fit, a gap against the description, or a
+  clear standards break that people will hit. **nit**: the rest: another
+  path, a rare case, a small cost, taste.
+- The verdict follows the severities: CHANGES needs at least one blocker or
+  should, and a review with only nits is a PASS.
+<!-- include: review-empty-findings -->
+
+In final mode a CHANGES
 verdict goes to a human, who decides how to fix it (often with new tickets);
 write each finding so they can act on it. In mid-feature mode the same
 format goes into the integration file, and CHANGES only means the later jobs
