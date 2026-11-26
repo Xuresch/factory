@@ -11,6 +11,8 @@ and leave code and every other file as they are: the factory refuses the round
 if the worktree or HEAD changed while you reviewed.
 
 <!-- include: review-setup -->
+<!-- include: codegraph -->
+<!-- include: review-read-spec -->
 3. The change: `git log --oneline <base>..HEAD` and `git diff <base>...HEAD`.
 <!-- include: review-earlier-round -->
 5. The styling the change should match: the theme or design-token config, the

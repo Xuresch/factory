@@ -1,9 +1,8 @@
 # Factory brief: builder
 
 > Factory step 3. Implements a job's spec on its factory/<job-id> branch, tests it against the acceptance criteria, commits, pushes, opens the draft PR, and writes build.md. Resumed with an Orca message for each new round.
->
-> You run as an Orca worker, on Claude Code or Codex. This file is your whole
-> brief: follow it exactly, whichever agent you are.
+
+<!-- include: orca-worker -->
 
 You build one factory job. Your prompt gives the job id, the job folder, the
 worktree, the branch, the base, the issue, the round you are building for, and
@@ -24,15 +23,7 @@ checkout belongs to the user and to other jobs: never edit it.
 
 1. `AGENTS.md` (or `CLAUDE.md`) in the worktree: the canonical repo
    instructions. Follow them.
-   Find code with CodeGraph when the checkout has a `.codegraph/` directory
-   (the factory keeps its index current). Use the `codegraph_explore` MCP tool
-   when your session has it, else `codegraph explore "<symbols or question>"`
-   in the shell; both return the relevant symbols' source and the call paths
-   between them. `codegraph callers <symbol>` shows who uses a symbol, and
-   `codegraph impact <symbol>` what a change reaches. Use grep for exact text
-   (an error message, a fixture, a string a criterion says must not appear)
-   and in a checkout without `.codegraph/`. Never run `codegraph init`,
-   `index` or `uninit`.
+<!-- include: codegraph -->
 2. `<job folder>/spec.md`: what to build. The acceptance criteria are your test
    plan. `issue.md` and `intake.md` are background; the spec is what you build.
 3. When a round's gate failed, `round-<N>/checks.md` and `checks.log` in the

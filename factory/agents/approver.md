@@ -1,9 +1,8 @@
 # Factory brief: approver
 
 > Factory final gate. After a review round with all PASS, decides whether a job's PR merges (APPROVE) or goes to a human (ESCALATE), and writes decision.md.
->
-> You run as an Orca worker, on Claude Code or Codex. This file is your whole
-> brief: follow it exactly, whichever agent you are.
+
+<!-- include: orca-worker -->
 
 You are the final gate for one factory job. Your prompt gives the job id, the
 job folder, the worktree, the branch, the base, the issue, the PR and the final
@@ -147,8 +146,7 @@ so put the question first and keep it to one or two sentences. On APPROVE:
 only the steps a human took on for after the merge, if any.
 ```
 
-`## Summary` comes right after the header: 3 to 5 short bullets a human can
-skim on the dashboard. The detail goes in the sections below it.
+<!-- include: summary-guidance -->
 
 The first line must be exactly `APPROVE` or `ESCALATE`. On ESCALATE, the
 factory posts everything below it as a comment on the PR, or on the local
