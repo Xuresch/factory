@@ -140,7 +140,7 @@ def claims(worktree, build, log, paths, inputs):
             lines.append(f"- **Contradiction.** `## Changes` names `{file}`, which the diff does not touch.")
             contradictions += 1
         for file in sorted(paths.keys() - named):
-            lines.append(f"- The diff changes `{file}` without an entry in `## Changes`.")
+            lines.append(f"- The diff changes `{file}` without an entry in `## Changes` (not a contradiction).")
     return lines, contradictions
 
 
@@ -279,7 +279,7 @@ def write(worktree, base_ref, round_dir, verdict, lcov_before, lcov_after):
         inputs.append("CodeGraph: CLI unavailable.")
         indexed = False
     else:
-        inputs.append("CodeGraph: symbols use the nearest preceding declaration in the index's symbol map.")
+        inputs.append("CodeGraph: each changed line is listed under the nearest declaration above it in the index's symbol map.")
 
     deadline = monotonic() + CODEGRAPH_BUDGET if indexed else None
     sources, tests, covered = [], [], []
@@ -320,7 +320,7 @@ def write(worktree, base_ref, round_dir, verdict, lcov_before, lcov_after):
                 links.append("changed tests with a matching filename stem: " + ", ".join(f"`{test}`" for test in nearby))
             if not links:
                 untested += 1
-                links.append("untested (no affected or matching changed test found)")
+                links.append("untested: no CodeGraph affected test and no changed test with a matching filename stem")
             tests.append(f"- `{file}`: " + "; ".join(links) + ".")
         if coverage is not None:
             added = {line for lo, hi in ranges or [] for line in range(lo, hi + 1)}
@@ -341,7 +341,7 @@ def write(worktree, base_ref, round_dir, verdict, lcov_before, lcov_after):
                f"- Changed-line coverage: {'LCOV records available' if coverage is not None else 'unavailable'}."]
     parts = [("Summary", summary), ("Claims", claims_lines or ["No claims to list."]),
              ("Changed code", sources or ["No changed source files listed."]),
-             ("Tests for the change", tests or ["No changed source files to map."]),
+             ("Tests for the change", tests or ["No changed source files to link to tests."]),
              ("Coverage", covered or ["No changed-line coverage to list."]),
              ("Inputs", [f"- {item}" for item in inputs] or ["All inputs available."])]
     report = f"REPORT: {contradictions} contradictions, {untested} untested\n\n"
