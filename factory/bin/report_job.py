@@ -6,6 +6,7 @@ import shutil
 import stat
 import subprocess
 from pathlib import Path
+from time import monotonic
 
 
 SOURCE_SUFFIXES = set(".bash .c .cc .cjs .clj .cpp .cs .css .dart .ex .exs .go .h .hpp .html "
@@ -19,13 +20,31 @@ CRITERION = re.compile(r"^\s*(?:\d+[.)]|[-*])\s+(?:\[[ xX]\]\s+)?(.+)$")
 TEST_REF = re.compile(r"\bTest:\s*(?:`([^`\n]+::[^`\n]+)`|([^`\n]+?::[^`\n]+)(?=$|\s+Test:))")
 CHANGE_ENTRY = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)?(?:\*\*)?(?:`([^`]+)`|([^\s:*]+))")
 SYMBOL = re.compile(r"^- `([^`]+)` \([^\n]+?\).* — :(\d+)[ \t]*$", re.M)
-CALLER_LIMIT = 20
+CALLER_LIMIT = 5
+COMMAND_TIMEOUT = 15
+CODEGRAPH_BUDGET = 120
 INPUT_ERRORS = (OSError, ValueError, subprocess.SubprocessError)
 
 
-def command(worktree, *args):
+class GraphBudgetExhausted(Exception):
+    pass
+
+
+def command(worktree, *args, timeout=COMMAND_TIMEOUT):
     return subprocess.run(args, cwd=worktree, check=True, capture_output=True,
-                          text=True, errors="replace", timeout=15).stdout
+                          text=True, errors="replace", timeout=timeout).stdout
+
+
+def graph_command(worktree, deadline, *args):
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise GraphBudgetExhausted
+    try:
+        return command(worktree, "codegraph", *args, timeout=min(COMMAND_TIMEOUT, remaining))
+    except subprocess.TimeoutExpired:
+        if remaining <= COMMAND_TIMEOUT or monotonic() >= deadline:
+            raise GraphBudgetExhausted from None
+        raise
 
 
 def changed_paths(worktree, revision):
@@ -133,11 +152,11 @@ def is_test(path):
     return bool(TEST_DIRS.intersection(Path(path).parts[:-1])) or test_key(path) != Path(path).stem
 
 
-def graph(worktree, path, ranges, inputs):
+def graph(worktree, path, ranges, inputs, deadline):
     """Read CodeGraph's symbol map and its JSON lists, without parsing source code."""
     affected, symbols = [], []
     try:
-        output = json.loads(command(worktree, "codegraph", "affected", "--json", "--", path))
+        output = json.loads(graph_command(worktree, deadline, "affected", "--json", "--", path))
         tests = output.get("affectedTests") if isinstance(output, dict) else None
         if not isinstance(tests, list) or not all(isinstance(test, str) for test in tests):
             raise ValueError("expected affectedTests")
@@ -146,7 +165,7 @@ def graph(worktree, path, ranges, inputs):
         inputs.append(f"CodeGraph: affected tests unavailable for `{path}`.")
 
     try:
-        output = command(worktree, "codegraph", "node", "--symbols-only", "--file", path)
+        output = graph_command(worktree, deadline, "node", "--symbols-only", "--file", path)
     except INPUT_ERRORS:
         inputs.append(f"CodeGraph: symbol map unavailable for `{path}`.")
         return affected, symbols
@@ -166,7 +185,8 @@ def graph(worktree, path, ranges, inputs):
         if not any(lo < end and max(lo, hi) >= start for lo, hi in ranges):
             continue
         try:
-            result = json.loads(command(worktree, "codegraph", "callers", "--json", "--limit", "2147483647", "--", symbol))
+            result = json.loads(graph_command(worktree, deadline, "callers", "--json", "--limit",
+                                              "2147483647", "--", symbol))
             callers = sorted({f"{row['name']} ({row['filePath']}:{row['startLine']})" for row in result["callers"]})
             listing = ", ".join(f"`{caller}`" for caller in callers[:CALLER_LIMIT]) or "none returned"
             if len(callers) > CALLER_LIMIT:
@@ -199,6 +219,7 @@ def coverage_snapshot(worktree, config):
 
 def coverage_records(worktree, before, after, inputs):
     path, stamp, message = after
+    message = message or before[2]
     if message:
         inputs.append(message)
     elif stamp is None:
@@ -260,6 +281,7 @@ def write(worktree, base_ref, round_dir, verdict, lcov_before, lcov_after):
     else:
         inputs.append("CodeGraph: symbols use the nearest preceding declaration in the index's symbol map.")
 
+    deadline = monotonic() + CODEGRAPH_BUDGET if indexed else None
     sources, tests, covered = [], [], []
     source_count, untested = 0, 0
     changed_tests = [file for file, (status, _) in (paths or {}).items()
@@ -268,8 +290,10 @@ def write(worktree, base_ref, round_dir, verdict, lcov_before, lcov_after):
         source = Path(file).suffix in SOURCE_SUFFIXES and not is_test(file)
         if not source and coverage is None:
             continue
+        use_graph = indexed and source and status != "D"
+        within_budget = use_graph and monotonic() < deadline
         ranges = []
-        if coverage is not None or (indexed and source and status != "D"):
+        if coverage is not None or within_budget:
             try:
                 ranges = diff_ranges(worktree, revision, file, original)
             except INPUT_ERRORS:
@@ -278,7 +302,15 @@ def write(worktree, base_ref, round_dir, verdict, lcov_before, lcov_after):
         if source:
             source_count += 1
             nearby = [test for test in changed_tests if test_key(test) == Path(file).stem]
-            affected, symbols = graph(worktree, file, ranges or [], inputs) if indexed and status != "D" else ([], [])
+            affected, symbols = [], []
+            if within_budget:
+                try:
+                    affected, symbols = graph(worktree, file, ranges or [], inputs, deadline)
+                except GraphBudgetExhausted:
+                    deadline = monotonic()
+                    within_budget = False
+            if use_graph and not within_budget:
+                inputs.append(f"CodeGraph: skipped (time budget) for `{file}`.")
             sources.append(f"- `{file}`" + (" (deleted)" if status == "D" else ""))
             sources.extend(symbols)
             links = []

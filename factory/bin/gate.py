@@ -260,6 +260,14 @@ def reusable(checks_md, commit):
             and not any("FACTORY_GATE" in l for l in code))
 
 
+def coverage_snapshot(worktree, lcov):
+    try:
+        return report_job.coverage_snapshot(worktree, lcov)
+    except Exception as error:  # a report never changes the gate's verdict
+        print(f"gate: couldn't inspect coverage for report.md: {error}", file=sys.stderr)
+        return None, None, "LCOV: could not inspect coverage file."
+
+
 def gate(job_id, merge):
     job = jobfiles.load_job(FACTORY / "jobs", job_id)
     worktree = job["worktree"]
@@ -292,10 +300,10 @@ def gate(job_id, merge):
     if not merge:
         report_config = CONFIG.get("report", {})
         lcov = report_config.get("coverage_lcov") if isinstance(report_config, dict) else None
-        lcov_before = report_job.coverage_snapshot(worktree, lcov)
+        lcov_before = coverage_snapshot(worktree, lcov)
     result = run_checks(job, base_ref, "merge" if merge else "round")
     if not merge:
-        lcov_after = report_job.coverage_snapshot(worktree, lcov)
+        lcov_after = coverage_snapshot(worktree, lcov)
     code, log, seconds = result.returncode, strip_ansi(result.stdout or ""), int(result.seconds)
     other, queued = result.blocked_by, int(result.waited)
     verdict = "PASS" if code == 0 and not protected and not commits else "FAIL"

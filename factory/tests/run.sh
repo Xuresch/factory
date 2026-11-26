@@ -4621,10 +4621,10 @@ PY
   ready "$id"; J advance "$id" gate >/dev/null && factory/bin/gate "$id" >/dev/null || return 1
   report="factory/jobs/$id/round-1/report.md"
   got=$(cat "$report") || return 1
-  [[ "$got" != *'`untouched`'* && "$got" != *caller_20* ]] || return 1
+  [[ "$got" != *'`untouched`'* && "$got" != *caller_05* ]] || return 1
   check "source count excludes symbol rows" "$got" '2 changed source files identified, 1 with no test link found' &&
   check "changed symbol and caller" "$got" '`alpha` at line 4. Callers: `caller_00 (entry.py:1)`' &&
-  check "caller cap" "$got" 'and 3 more' &&
+  check "caller cap" "$got" '`caller_04 (entry.py:5)`, and 18 more' &&
   check "affected test" "$got" '`alpha.py`: CodeGraph affected tests: `tests/integration.py`' &&
   check "CodeGraph failures do not fail gate" "$got" 'CodeGraph: affected tests unavailable for `beta.py`.' &&
   check "second CodeGraph failure recorded" "$got" 'CodeGraph: symbol map unavailable for `beta.py`.' &&
@@ -4636,6 +4636,107 @@ PY
   check "stale coverage ignored" "$(cat "$report")" 'LCOV: configured file was not updated by this gate run.' || return 1
   rm "$wt/coverage/lcov.info"; factory/bin/gate "$id" >/dev/null || return 1
   check "missing configured coverage" "$(cat "$report")" 'LCOV: configured file is missing.'
+}
+
+t_report_codegraph_budget() {
+  new_repo report-budget; commit_all
+  local base; base=$(git rev-parse HEAD) || return 1
+  printf 'def first(): pass\n' > a1.py
+  printf 'def second(): pass\n' > a2.py
+  printf 'def alpha(): pass\n' > alpha.py
+  printf 'def beta(): pass\n' > beta.py
+  printf 'def gamma(): pass\n' > gamma.py
+  commit_all
+  mkdir -p .codegraph evidence/round-1
+  printf 'started\n' > evidence/round-1/checks.log
+  printf 'SF:gamma.py\nDA:1,1\nend_of_record\n' > lcov.info
+  python3 - "$base" <<'PY'
+import subprocess, sys
+from pathlib import Path
+from unittest.mock import patch
+
+sys.path.insert(0, "factory/bin")
+import report_job
+
+root = Path.cwd()
+round_dir = root / "evidence/round-1"
+elapsed = 0
+steps = [
+    ("affected", "a1.py", 15, 15, None),
+    ("node", "a1.py", 15, 15, None),
+    ("affected", "a2.py", 15, 15, None),
+    ("node", "a2.py", 15, 15, None),
+    ("affected", "alpha.py", 15, 15, None),
+    ("node", "alpha.py", 15, 14, "**alpha.py** — 1 symbol\n- `alpha` (function) () — :1"),
+    ("callers", "alpha", 15, 14, '{"symbol":"alpha","callers":[]}'),
+    ("affected", "beta.py", 15, 14, '{"affectedTests":[]}'),
+    ("node", "beta.py", 3, 3, None),
+]
+real_run = subprocess.run
+
+def run(args, **kwargs):
+    global elapsed
+    if args[0] != "codegraph":
+        return real_run(args, **kwargs)
+    command, target, timeout, duration, output = steps.pop(0)
+    assert (args[1], args[-1], kwargs["timeout"]) == (command, target, timeout)
+    elapsed += duration
+    if output is None:
+        raise subprocess.TimeoutExpired(args, timeout)
+    return subprocess.CompletedProcess(args, 0, stdout=output)
+
+before = (root / "lcov.info", None, None)
+after = report_job.coverage_snapshot(root, "lcov.info")
+with patch.object(report_job, "monotonic", lambda: elapsed), patch.object(report_job.shutil, "which", return_value="codegraph"), patch.object(report_job.subprocess, "run", run):
+    report_job.write(root, sys.argv[1], round_dir, "PASS", before, after)
+
+assert not steps and elapsed == 120
+report = (round_dir / "report.md").read_text()
+assert "`alpha` at line 1. Callers: none returned." in report
+assert "CodeGraph: affected tests unavailable for `alpha.py`." in report
+inputs = report.split("## Inputs\n", 1)[1]
+assert "CodeGraph: skipped (time budget) for `beta.py`." in inputs
+assert "CodeGraph: skipped (time budget) for `gamma.py`." in inputs
+assert "`gamma.py`: 1/1 changed lines covered (100.0%)." in report
+PY
+}
+
+t_report_coverage_snapshot_cannot_fail_gate() {
+  new_repo report-snapshot; ticket 01 One; set_config report '{"coverage_lcov":"lcov.info"}'; commit_all
+  local id
+  id=$(to_build 01 low none) || return 1
+  build_commit "$id" alpha.py 'def alpha(): pass' || return 1
+  ready "$id"; J advance "$id" gate >/dev/null || return 1
+  printf 'SF:alpha.py\nDA:1,1\nend_of_record\n' > ".worktrees/$id/lcov.info"
+  python3 - "$id" <<'PY'
+import sys
+from pathlib import Path
+from unittest.mock import patch
+
+sys.path.insert(0, "factory/bin")
+import gate
+
+job_id = sys.argv[1]
+round_dir = Path("factory/jobs") / job_id / "round-1"
+snapshot = gate.report_job.coverage_snapshot(Path(".worktrees") / job_id, "lcov.info")
+error = RuntimeError("unexpected snapshot error")
+for snapshots, verdict, exit_code in [([error, snapshot], "PASS", 0), ([snapshot, error], "FAIL", 1)]:
+    if exit_code:
+        (Path(".worktrees") / job_id / "FAIL").touch()
+    with patch.object(gate.report_job, "coverage_snapshot", side_effect=snapshots) as mocked:
+        try:
+            gate.gate(job_id, merge=False)
+        except SystemExit as result:
+            assert result.code == exit_code
+        else:
+            raise AssertionError("gate must return its exit status")
+        assert mocked.call_count == 2
+    assert (round_dir / "checks.md").read_text().startswith(f"GATE: {verdict}\n")
+    report = (round_dir / "report.md").read_text()
+    assert f"Round gate: {verdict}." in report
+    assert "LCOV: could not inspect coverage file." in report
+    assert "changed lines covered (" not in report
+PY
 }
 
 t_report_pr_comment() {
