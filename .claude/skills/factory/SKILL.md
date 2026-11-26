@@ -6,12 +6,13 @@ description: Run the software factory on GitHub issues. Use when the user types 
 # Factory
 
 You are the factory's only orchestrator. You work through issues labeled
-`ready-for-agent` (GitHub or local tickets), run up to `concurrency` jobs at once, and start every agent
-for every job as an **Orca worker** (`orchestration` skill), on Claude Code or
-Codex as `config.json` says. You never write code, specs, reviews or decisions yourself, and you never
-edit `job.json`: the scripts in `factory/bin/` change state and refuse illegal
-moves. When a script refuses, its message says why. Fix the cause or stop and
-tell the user; never work around it.
+`ready-for-agent` (GitHub or local tickets), run up to `concurrency` jobs at
+once, and start every agent for every job as an **Orca worker**
+(`orchestration` skill), on Claude Code or Codex as `config.json` says. The
+workers write the code, specs, reviews and decisions; the scripts in
+`factory/bin/` change state, including `job.json`, and refuse illegal moves.
+You do neither yourself. When a script refuses, its message says why: fix the
+cause or stop and tell the user, never work around it.
 
 ```
 /factory run          drain the queue: every open `ready-for-agent` issue, `concurrency` at a time; also resumes
@@ -108,13 +109,13 @@ through the scripts. `factory/jobs/` is gitignored runtime state.
 ```
 
 Run every `factory/bin/job` and `factory/bin/gate` command on its own, one
-per Bash call, and read all of its output. Never cut it (`| tail`, `| head`,
-`| grep`) and never chain it (`&&`, `;`) with another command: a refusal or a
-hint the script prints is the step, and a chain or a tail loses it.
+per Bash call, and read all of its output. A refusal or a hint the script
+prints is the next step, and a pipe (`| tail`, `| head`, `| grep`) or a chain
+(`&&`, `;`) with another command loses it.
 
 Read `job.json` with `cat` when you need a field. Read agents' files only by
-their first line (`head -1`); the agents put the detail there for the next
-agent and for the human, not for you. Your context has to last the whole run.
+their first line (`head -1`): the detail below it is for the next agent and
+for the human, and your context has to last the whole run.
 
 ## Starting workers with Orca
 
@@ -154,8 +155,13 @@ writes the header (job folder, worktree, branch, base, tracker, issue, round,
 port), runs `worker-start`, and records the dispatch id. Never run
 `worker-start` yourself and never pass `--agent` or `--model`: routing and
 cross-review (code and security never run on the builder's agent) live in
-`job.json`, and only `job start` reads them. If it fails, it says so; don't
-retry it blindly, read the orchestration guide's recovery reference.
+`job.json`, and only `job start` reads them. If it fails, it says so: read the
+orchestration guide's recovery reference before you retry.
+
+The worker prompt contains `Job folder: <path>/` for cost attribution. It
+points to one rendered brief in the job or round folder, or beside the report
+for a feature or structure review. Common instructions for the briefs live in
+`factory/agents/shared/`, where `<!-- include: name -->` gets its text.
 
 **Message a worker** (a later build round, a continue, a refusal it must
 fix) with:
@@ -259,22 +265,19 @@ runs the worker, so a file from an earlier round never moves a job on. The
 stage notes below say why each step is what it is; `job next` says which one
 is due.
 
-The worker prompt contains `Job folder: <path>/` for cost attribution. It
-points to one rendered brief in the job or round folder, or beside the report
-for a feature or structure review. Update common instructions in
-`factory/agents/shared/`, where `<!-- include: name -->` gets its text.
-
 ## Advancing a job
 
-Each step below runs when the previous agent or script finishes; `job next`
-prints which one is due, so these notes are the why, not a checklist to
-replay. Report one short line per transition, e.g. `004-dark-mode #12: gate PASS → reviewing (code, ux, ui)`.
+Each step below runs when the previous agent or script finishes. `job next`
+prints which one is due; these notes are the why, not a checklist to replay.
+Report one short line per transition, for example
+`004-dark-mode #12: gate PASS → reviewing (code, ux, ui)`.
 
 **intake.** `factory/bin/job start <id> intake`. When it returns, read its
 decision:
 
-- `ACCEPT`: run `factory/bin/route <id>` (it prints the builder and reviewers), then `factory/bin/job advance <id> spec`
-  (it comments on the issue and creates the worktree). Go to **spec**, unless
+- `ACCEPT`: run `factory/bin/route <id>` (it prints the builder and
+  reviewers), then `factory/bin/job advance <id> spec` (it comments on the
+  issue and creates the worktree). Go to **spec**, unless
   it prints `spec skipped`: for a small, low-risk job intake wrote the
   acceptance criteria and the job is already in **build**, so start the builder.
 - `NEEDS-INFO`: `factory/bin/job advance <id> needs-info`. The job parks until
@@ -293,7 +296,8 @@ next` says `advance <id> needs-human` instead: the same stop as a PROTECTED
 intake, caught after the spec. A spec that names unprotected paths too builds
 as usual; the builder leaves the protected part alone.
 
-**build.** Round 1: `factory/bin/job start <id> builder` (unless `job next` says `wait: overlaps`). Later rounds:
+**build.** Round 1: `factory/bin/job start <id> builder` (unless `job next`
+says `wait: overlaps`). Later rounds:
 `factory/bin/job send <id> builder "<what this round is for>"`: the gate's
 `round-<N-1>/checks.md`, the reviews in `round-<N-1>/`, `feedback-<k>.md`, or
 `round-<N>/merge-back.md`. Every round, the first one and a resumed one too,
@@ -301,9 +305,8 @@ starts with the base already merged in; when that conflicted,
 `round-<N>/base-sync.md` says so and the builder resolves it first, so mention
 it. A conflict only in lockfiles that config.json `lockfile_regenerate` names
 never reaches the builder: the script regenerates them and says so in
-`base-sync.md`. If `send` refuses because no builder
-is recorded, `job start` a new one. When it returns, read `build.md`'s first
-line:
+`base-sync.md`. If `send` refuses because no builder is recorded, `job start`
+a new one. When it returns, read `build.md`'s first line:
 
 - `STATUS: READY`: `factory/bin/job advance <id> gate`, then go to **gate**. If
   `advance` refuses (nothing pushed, no PR, a dirty tree), resume the builder
@@ -362,7 +365,12 @@ lines under `## Failures`.
   No reviewer runs on a failing build.
 
 **review.** `factory/bin/job start <id> reviewer-<r>` for every lens that
-`job advance <id> review` lists under `start reviewers:`, **in one message**, so they run in parallel.
+`job advance <id> review` lists under `start reviewers:`, **in one message**,
+so they run in parallel. Each lens runs on the agent `job.json` gives it; that
+is how a Codex build gets a Claude review and the other way round. **WAIT FOR
+ALL.** Each time one finishes, run `factory/bin/job sync <id>` so the
+dashboard fills in.
+
 From round 2 on, only the lenses that asked for CHANGES, those config.json
 `rerun_every_round` lists for the job's risk, and those whose `review_skip`
 paths the round touched run again; every other lens that passed is `skipped`:
@@ -374,10 +382,8 @@ as the last reviewed round's, and every lens passed it) carries every lens:
 `advance` prints `merge-only round` and lists no reviewer; go straight to
 `job advance <id> approve`. A round after a human's feedback is never
 merge-only.
-Each lens runs on the agent `job.json` gives it; that is how a Codex build gets
-a Claude review and the other way round. **WAIT FOR ALL.** Each time one finishes, run
-`factory/bin/job sync <id>` so the dashboard fills in. When every reviewer has
-finished:
+
+When every reviewer has finished:
 
 - `advance` refuses because a review doesn't count (no verdict, a required
   section such as `## Standards` or `## Spec` missing, a CHANGES without a
@@ -409,45 +415,51 @@ finished:
 - `APPROVE`: `factory/bin/job merge <id>`. It syncs the branch with the base
   (regenerating lockfiles when only they conflict), runs the gate again, on
   GitHub pushes and waits for the PR's CI on that head, and merges (the PR, or
-  locally), ending in `merged`. The CI wait can take up to `ci_wait_minutes`
-  (default 30): run `job merge` as a background command. When it exits, read
-  its full output, then always run `factory/bin/job next <id>` before you do
-  anything else with that job. While it waits, the other jobs go on, `job next` says `wait`
-  for this one and a second `job merge` refuses; if it was cut off, the job is
-  still `merging` and `job next` says to run it again. A failing GitHub Actions check is rerun
-  once per commit first (`Passed on rerun` in `merge-ci.md` when it was a flake). A conflict, a
-  failing gate or a check that fails again after the sync is the builder's to fix: it sends the job back to **build** for
-  another round and says so; `job send` the builder `Read
-  round-<N>/merge-back.md and base-sync.md, fix it, and update build.md.` Only
-  with no round left does it go to `needs-human`, and CI still pending after
-  `ci_wait_minutes` goes there too. No check within `ci_start_grace_seconds`
-  means the repo has no CI: it merges, with `CI: NONE` in `merge-ci.md`
-  (when there was no check at approve either, it doesn't wait the grace).
-  After the merge `job merge` starts `job main-ci <id>` in the background
-  (config.json `main_ci`): it watches the CI on the base branch at the merge
-  commit and on a failure comments on the issue and notifies the user. Don't
-  wait for it or start a second one; `job next` says `tell:` when it failed.
+  locally), ending in `merged`.
+  - The CI wait can take up to `ci_wait_minutes` (default 30): run `job
+    merge` as a background command. When it exits, read its full output, then
+    always run `factory/bin/job next <id>` before you do anything else with
+    that job. While it waits, the other jobs go on, `job next` says `wait` for
+    this one and a second `job merge` refuses. If it was cut off, the job is
+    still `merging` and `job next` says to run it again.
+  - A failing GitHub Actions check is rerun once per commit first (`Passed on
+    rerun` in `merge-ci.md` when it was a flake). A conflict, a failing gate
+    or a check that fails again after the sync is the builder's to fix: it
+    sends the job back to **build** for another round and says so; `job send`
+    the builder `Read round-<N>/merge-back.md and base-sync.md, fix it, and
+    update build.md.` Only with no round left does it go to `needs-human`,
+    and CI still pending after `ci_wait_minutes` goes there too.
+  - No check within `ci_start_grace_seconds` means the repo has no CI: it
+    merges, with `CI: NONE` in `merge-ci.md` (when there was no check at
+    approve either, it doesn't wait the grace).
+  - After the merge `job merge` starts `job main-ci <id>` in the background
+    (config.json `main_ci`): it watches the CI on the base branch at the merge
+    commit and on a failure comments on the issue and notifies the user.
+    Leave it running without waiting for it, and start no second one; `job
+    next` says `tell:` when it failed.
 - `ESCALATE`: `factory/bin/job advance <id> needs-human`. It marks the PR ready,
   posts the decision on it and labels the issue `ready-for-human`.
 
-**paused.** When `advance` prints `paused`, the job waits for a human after
-intake or spec (the ticket asked for it, or its risk is in `hold.after_spec_risk`),
-or after a spec whose `## New dependencies` lists any (`paused after dependencies`).
-A job whose risk is in `hold.after_spec_risk` pauses after the spec only when
-its `## Needs a human` lists something (`hold.only_when_needed`, default on);
-tell the user those items, they are what the human has to do. Without a
-hold, the factory posts them on the issue when the build starts and
-notifies the user; a reply that only answers them needs no feedback (`job
-comments <id> --seen`), the approver reads it in issue.md.
-Stop working on it and tell the user which file to review. Resuming a
-dependencies pause approves them; the approver won't ask about them again. It resumes only
-through the user (see below).
+**paused.** When `advance` prints `paused`, the job waits for a human: stop
+working on it and tell the user which file to review. It resumes only through
+the user (see below).
+
+- It pauses after intake or spec when the ticket asked for it or its risk is
+  in `hold.after_spec_risk`, and after a spec whose `## New dependencies`
+  lists any (`paused after dependencies`). Resuming a dependencies pause
+  approves them; the approver won't ask about them again.
+- A job whose risk is in `hold.after_spec_risk` pauses after the spec only
+  when its `## Needs a human` lists something (`hold.only_when_needed`,
+  default on). Tell the user those items: they are what the human has to do.
+- Without a hold, the factory posts those items on the issue when the build
+  starts and notifies the user. A reply that only answers them needs no
+  feedback (`job comments <id> --seen`); the approver reads it in issue.md.
 
 **retro.** After a merge, `job merge` starts a retro worker itself when the job
 had friction (extra rounds, an early stop, a builder switch, conflicts, human
 feedback, an escalation); a clean job gets none. The retro writes `retro.md`
-with suggestions for the environment.
-Don't wait for it to start the next job; when it reports, tell the user its
+with suggestions for the environment. The next job starts without waiting for
+it. When it reports, tell the user its
 first line and that the candidates are in `factory/jobs/<id>/retro.md`. Never
 apply them yourself. Only if `job merge` says the retro didn't start, start it
 with `factory/bin/job start <id> retro`.
@@ -455,8 +467,8 @@ with `factory/bin/job start <id> retro`.
 **Structure review.** After every `structure_review_every` job merges into
 `base_branch` (default `0`, off), `job merge` starts a read-only repository
 review. Keep running the queue while it works. On its `worker_done`, run
-`factory/bin/job next <id>` for the triggering job and tell the user the summary and report path under
-`factory/jobs/_structure/`. Leave the proposals for the human to triage. If a
+`factory/bin/job next <id>` for the triggering job and tell the user the
+summary and the report path under `factory/jobs/_structure/`. Leave the proposals for the human to triage. If a
 start fails, the next base merge retries it.
 
 **feature branches.** When `job merge` prints that every ticket for a branch is
@@ -494,8 +506,8 @@ When a human already merged that PR, `job finish` says `the branch is done`
 **Mid-feature reviews.** With `feature_review_every: N` in `config.json`
 (default 0, off), `job merge` starts a mid-feature review itself after every
 N-th job merged into a feature branch while the feature still has open
-tickets, and says so (`mid-feature review started`). Don't wait for it, and
-don't turn its findings into tickets: it writes
+tickets, and says so (`mid-feature review started`). The queue goes on without
+waiting for it, and its findings never become tickets: it writes
 `factory/jobs/_features/<branch>-integration.md`, and the intake, spec and
 builder of every later job on that branch get a line pointing to it. Only
 if `job merge` says it didn't start, run
@@ -515,14 +527,13 @@ A job is finished for this run when it reaches `merged`, `rejected`,
 **Notifications.** `job advance` itself tells the user, on the channels in
 `config.json` `notify`, each time a job starts waiting on them (with why and
 what to do), when one is merged or rejected, and when the base's CI fails after a merge
-(`job main-ci`); `job queue` says `run finished`
-once when nothing is left to start or running. Don't send notifications
-yourself, and don't change `notify`; if the user asks for phone push, point
+(`job main-ci`); `job queue` says `run finished` once when nothing is left to
+start or running. Send no notifications yourself and leave `notify` as it is. If the user asks for phone push, point
 them to the Notifications section of the factory's INSTALL.md (ntfy, the URL in
 an environment variable, never in the repo).
 
-A person can merge a job's PR (or, locally, its branch into the base) by hand at any stage. `factory/bin/job queue`
-then moves the job to `merged`; stop any workers still running for it, as the
+A person can merge a job's PR (or, locally, its branch into the base) by hand
+at any stage. `factory/bin/job queue` then moves the job to `merged`; stop any workers still running for it, as the
 `orchestration` guide's recovery reference says.
 
 ## /factory run
@@ -539,8 +550,8 @@ then moves the job to `merged`; stop any workers still running for it, as the
    yourself: every new issue goes to intake, which decides whether it gets
    built. For a new issue, `factory/bin/job create <n>` prints the job id;
    start it at **intake**.
-3. Each time a job finishes, run `factory/bin/job queue` (no arguments) again and start its
-   `resume` lines you aren't already running and its `new` lines.
+3. Each time a job finishes, run `factory/bin/job queue` (no arguments) again
+   and start its `new` lines and the `resume` lines you aren't already running.
 4. When nothing is queued or running, print `factory/bin/job summary <ids>`
    for the jobs this run touched, then list what waits on a human: PRs to
    review (merge one to approve it, or give feedback with `/factory`) and
@@ -564,13 +575,13 @@ bare `factory/bin/job queue` stays inside it and says so in a `note` line, and
 `job create` refuses an issue outside it. So when you wake up without the
 context of how the run started, plain `factory/bin/job queue` is still right;
 never pass `--clear` or `--all` in a selected run, and never start an issue
-the queue didn't list as `new`. Selected issues that aren't queued show as `skip` with their
-label or Status; tell the user, don't start them. An issue blocked by another
+the queue didn't list as `new`. Selected issues that aren't queued show as
+`skip` with their label or Status: tell the user and leave them. An issue blocked by another
 one (a GitHub dependency, a `## Blocked by` section or `Blocked by:` line in
 its body, or a local ticket's `Blocked by:`) shows as `wait` until that one is
 closed, then comes out as `new`; `job create` refuses it before. Never start
-a blocked issue by hand. Jobs
-outside the selection keep running and still hold their slots. Finish with
+a blocked issue by hand. Jobs outside the selection keep running and still
+hold their slots. Finish with
 `factory/bin/job summary` for the selected jobs.
 
 ## /factory <anything>
@@ -583,7 +594,8 @@ new feature, ask.
 - **A question** (status, cost, why a job escalated, what a reviewer said):
   answer from `factory/bin/job summary`, `job.json` and the job's files. Here
   you may read a file in full when the answer is in it.
-- **What needs them**: run `factory/bin/job queue --all` (it shows every issue and keeps a running selection). For each `wait` line, say
+- **What needs them**: run `factory/bin/job queue --all` (it shows every issue
+  and keeps a running selection). For each `wait` line, say
   what the job is waiting for: the question in `decision.md` for `needs-human`,
   the question in `intake.md` for `needs-info`. When `decision.md` has a
   `## Proposed change` (a blocked builder's), show it and say that "ja" is
@@ -615,8 +627,8 @@ new feature, ask.
 - **Changing who works on a job** ("build it with Claude", "security review on
   Opus"): `factory/bin/job route-set <id> builder=claude/opus security=claude/opus`
   (agents `claude` or `codex`, `/model` and `:effort` optional, as in
-  `codex/gpt-6.2-sol:high`, or a preset from `model_presets`: `builder=terra-high`). A pinned builder isn't
-  switched by the UI fallback. It warns when a cross-review lens ends up on the
+  `codex/gpt-6.2-sol:high`, or a preset from `model_presets`:
+  `builder=terra-high`). The UI fallback leaves a pinned builder in place. It warns when a cross-review lens ends up on the
   builder's agent; tell the user.
 - **A feature branch** ("bündel das in feature/x", "erst in dev"): the target
   comes from a `**Branch:** <name>` line in the ticket or, for local tickets,
@@ -666,8 +678,8 @@ new feature, ask.
   bring it back, delete `factory/jobs/<id>` and label it `ready-for-agent`
   again.
 - **A protected-only job** (`decision.md` starts its `## Why` with `Only
-  protected files:`): the factory can't do this work, so don't send feedback
-  to build it anyway. Tell the user which files and what change the ticket
+  protected files:`): the factory can't do this work, so send no feedback
+  asking it to build it anyway. Tell the user which files and what change the ticket
   wants. A human makes it, usually as a small PR to `base_branch` (or a
   commit there, for local tickets), outside the factory. When it has landed,
   close the job with the PR in the reason:
