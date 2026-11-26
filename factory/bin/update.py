@@ -12,10 +12,11 @@ What it does:
 - factory/bin/*, dashboard.html, its JavaScript modules and package.json, factory/.gitignore,
   factory/tests/*, the factory skill and every brief without project blocks: replaced by the
   template's version. The two old Node test files are removed when their replacements are installed.
-- factory/agents/*.md: the template's version, with this installation's
+- factory/agents/*.md and factory/agents/shared/*.md: the template's version, with this installation's
   `<!-- project: ... -->` ... `<!-- /project -->` blocks put back into the
   template's slots of the same kind (matched by the text after `project:`).
   A block with no matching slot is kept at the end of the file, and said so.
+  Shared parts removed by the template are also removed here.
 - factory/config.json: keys the template added are added, also inside nested
   objects (`labels.factory` into your `labels`); your values stay. Each update
   records the fetched template's version.
@@ -205,6 +206,9 @@ def main(argv):
                     config["template_version"] = version
                     config_path.write_text(json.dumps(config, indent=2) + "\n")
             return status
+        shared = FACTORY / "agents" / "shared"
+        if shared.resolve() != shared:
+            die(f"{shared.relative_to(REPO)} must be inside this checkout to update shared briefs")
         changes, notes = [], []
 
         def put(dst, data):
@@ -242,13 +246,21 @@ def main(argv):
         skill = tpl / ".claude" / "skills" / "factory" / "SKILL.md"
         if skill.exists():
             put(REPO / ".claude" / "skills" / "factory" / "SKILL.md", skill.read_text())
-        for f in sorted((tf / "agents").glob("*.md")):
-            dst = FACTORY / "agents" / f.name
-            text = f.read_text()
-            if dst.exists():
-                text, n = merge_brief(dst.read_text(), text)
-                notes += [f"{dst.name}: {x}" for x in n]
-            put(dst, text)
+        for rel in ["agents", "agents/shared"]:
+            parts = {f.name: f for f in (tf / rel).glob("*.md") if f.is_file()}
+            for name, source in sorted(parts.items()):
+                dst = FACTORY / rel / name
+                text = source.read_text()
+                if dst.exists():
+                    text, n = merge_brief(dst.read_text(), text)
+                    notes += [f"{rel}/{name}: {x}" for x in n]
+                put(dst, text)
+            if rel == "agents/shared":
+                for old in sorted((FACTORY / rel).glob("*.md")):
+                    if old.name not in parts and (old.is_file() or old.is_symlink()):
+                        changes.append(f"removed {old.relative_to(REPO)}")
+                        if not dry:
+                            old.unlink()
         mine = json.loads(config_path.read_text())
         theirs = json.loads((tf / "config.json").read_text())
         theirs.pop("template_version", None)

@@ -259,8 +259,10 @@ runs the worker, so a file from an earlier round never moves a job on. The
 stage notes below say why each step is what it is; `job next` says which one
 is due.
 
-Every brief `job start` writes contains `Job folder: <path>/`: the job's
-cost is found by that string.
+The worker prompt contains `Job folder: <path>/` for cost attribution. It
+points to one rendered brief in the job or round folder, or beside the report
+for a feature or structure review. Update common instructions in
+`factory/agents/shared/`, where `<!-- include: name -->` gets its text.
 
 ## Advancing a job
 

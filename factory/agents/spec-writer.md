@@ -242,11 +242,10 @@ What this slice builds, in two or three lines.
 - Don't stop to ask. Intake already asked the author everything only they
   could answer. Make the remaining calls yourself and list them under
   Assumptions.
-- Prefer the smallest change that fully meets the scope. Don't add options,
-  fallbacks or "nice to have" extras.
-- Reuse what exists. If the repo already has a pattern for this (a component, a
-  helper, a doc convention), name it in Context and require it. Say in the
-  same requirement what the pattern must keep, the part a copy most easily
+<!-- include: principles -->
+- In Requirements, list what the change makes obsolete and must remove.
+- Name the existing pattern in Context and require it. Say in the same
+  requirement what the pattern must keep, the part a copy most easily
   drops (for example "log the caught error object, not a fixed string", "keep
   the permission check", "same retry and timeout"), so the builder keeps it
   and the reviewer checks it.

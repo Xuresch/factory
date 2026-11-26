@@ -75,6 +75,24 @@ factory/bin/report
 factory/bin/update
 factory/agents/reviewer-feature.md
 factory/agents/retro.md
+factory/agents/shared/browser-build-instructions.md
+factory/agents/shared/browser-evidence.md
+factory/agents/shared/browser-findings-example.md
+factory/agents/shared/browser-heavy.md
+factory/agents/shared/browser-visible-defects.md
+factory/agents/shared/principles.md
+factory/agents/shared/review-binding-findings.md
+factory/agents/shared/review-diff-growth.md
+factory/agents/shared/review-disputes.md
+factory/agents/shared/review-empty-findings.md
+factory/agents/shared/review-findings.md
+factory/agents/shared/review-read-diff.md
+factory/agents/shared/review-report-earlier.md
+factory/agents/shared/review-report-notes.md
+factory/agents/shared/review-report-summary.md
+factory/agents/shared/review-setup.md
+factory/agents/shared/review-small-fixes.md
+factory/agents/shared/summary-guidance.md
 factory/tests/run.sh
 factory/tests/test_lifecycle.py
 factory/tests/job_summary.node.js
@@ -315,7 +333,9 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
   `surface_reviewers`, `cross_review` and `prices_usd_per_mtok` as they are
   unless the user asks.
 
-**Agents.** The checklists are general on purpose. Each brief has an empty
+**Agents.** Edit common instructions in `factory/agents/shared/`. The
+template briefs use one-line `<!-- include: name -->` markers to include
+that text. Each role brief has an empty
 `<!-- project: ... -->` slot where the project goes; write the project's part
 between the slot's two lines and nowhere else, so `factory/bin/update` can
 bring in new versions of the brief later without losing it. Don't change the
