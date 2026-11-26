@@ -44,6 +44,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import heavy  # noqa: E402
 import jobfiles  # noqa: E402  (factory/bin/jobfiles.py: how a job folder reads)
+import report_job  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 FACTORY = REPO / "factory"
@@ -259,6 +260,14 @@ def reusable(checks_md, commit):
             and not any("FACTORY_GATE" in l for l in code))
 
 
+def coverage_snapshot(worktree, lcov):
+    try:
+        return report_job.coverage_snapshot(worktree, lcov)
+    except Exception as error:  # a report never changes the gate's verdict
+        print(f"gate: couldn't inspect coverage for report.md: {error}", file=sys.stderr)
+        return None, None, "LCOV: could not inspect coverage file."
+
+
 def gate(job_id, merge):
     job = jobfiles.load_job(FACTORY / "jobs", job_id)
     worktree = job["worktree"]
@@ -288,12 +297,23 @@ def gate(job_id, merge):
             print(f"GATE: PASS ({job_id} round {job['round']}, reused checks.md: same commit {commit[:7]})")
             sys.exit(0)
     waited = waited_minutes(job) if not merge else None
+    if not merge:
+        report_config = CONFIG.get("report", {})
+        lcov = report_config.get("coverage_lcov") if isinstance(report_config, dict) else None
+        lcov_before = coverage_snapshot(worktree, lcov)
     result = run_checks(job, base_ref, "merge" if merge else "round")
+    if not merge:
+        lcov_after = coverage_snapshot(worktree, lcov)
     code, log, seconds = result.returncode, strip_ansi(result.stdout or ""), int(result.seconds)
     other, queued = result.blocked_by, int(result.waited)
     verdict = "PASS" if code == 0 and not protected and not commits else "FAIL"
     name = "merge-checks" if merge else "checks"
     (round_dir / f"{name}.log").write_text(log)
+    if not merge:
+        try:
+            report_job.write(worktree, base_ref, round_dir, verdict, lcov_before, lcov_after)
+        except Exception as error:  # a report never changes the gate's verdict
+            print(f"gate: couldn't write report.md: {error}", file=sys.stderr)
     lines = TAIL if verdict == "FAIL" else PASS_TAIL
     tail = "\n".join(log.rstrip().splitlines()[-lines:])
     summary = [

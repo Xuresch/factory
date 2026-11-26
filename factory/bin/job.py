@@ -133,6 +133,7 @@ BIN = FACTORY / "bin"
 CONFIG = json.loads((FACTORY / "config.json").read_text())
 BASE = CONFIG["base_branch"]
 MARKER = "<!-- factory -->"
+REPORT_MARKER = "<!-- factory:report -->"
 
 CONCURRENCY = CONFIG["concurrency"]
 
@@ -2205,6 +2206,35 @@ def open_review(job, head):
     record_diff(job, head)
 
 
+def publish_round_report(job):
+    """Keep the latest round in one PR conversation comment owned by the operator."""
+    config = CONFIG.get("report") or {}
+    if not GITHUB or not job.get("pr") or (isinstance(config, dict) and config.get("pr_comment") is False):
+        return
+    path = round_dir(job) / "report.md"
+    if not path.is_file():
+        return  # a round gated before this command was installed
+    try:
+        heading = f"{REPORT_MARKER}\n\n### Factory report\n\nRound {job['round']}\n\n"
+        body = heading + path.read_text(encoding="utf-8")
+        limit = 65536
+        if len(body.encode("utf-8")) > limit:
+            pointer = f"\n\nReport truncated. Full report in `{path.relative_to(REPO)}`."
+            available = limit - len(pointer.encode("utf-8"))
+            body = body.encode("utf-8")[:available].decode("utf-8", errors="ignore").rstrip() + pointer
+        issues = "repos/{owner}/{repo}/issues"
+        collection = f"{issues}/{job['pr']}/comments"
+        login = operator()
+        existing = next((c for c in gh_api_list(collection) if (c.get("body") or "").startswith(REPORT_MARKER)
+                         and (c.get("user") or {}).get("login") == login), None)
+        if existing is None:
+            gh("api", collection, "--method", "POST", "--raw-field", f"body={body}")
+        elif existing["body"] != body:
+            gh("api", f"{issues}/comments/{existing['id']}", "--method", "PATCH", "--raw-field", f"body={body}")
+    except (Refused, OSError, ValueError, KeyError):
+        print(f"{job['id']}: couldn't publish round {job['round']} report to the PR", file=sys.stderr)
+
+
 def open_approval(job):
     ci = ci_status(job)
     if ci:
@@ -2255,6 +2285,7 @@ def apply_effects(job, decision):
         "wait_for_info": wait_for_info, "return_ticket": return_ticket, "reopen_intake": reopen_intake,
         "set_slices": set_slices, "next_round": next_round, "record_build_gate": record_build_gate,
         "escalate_build": escalate_build, "open_review": open_review, "escalate": escalate,
+        "publish_round_report": publish_round_report,
         "open_approval": open_approval, "escalate_disputes": escalate_disputes, "maybe_fall_back": maybe_fall_back,
         "remember_reviewed": remember_reviewed, "update_pr_review": update_pr_review,
         "record_approval": record_approval, "resume_ticket": resume_ticket, "reset_after_feedback": reset_after_feedback,
@@ -3279,7 +3310,8 @@ def pr_comments(number):
         if (r.get("body") or "").strip():  # an approval without words says nothing to triage
             found.append({"id": f"review-{r['id']}", "where": f"review: {(r.get('state') or '').lower()}",
                           "at": r.get("submitted_at"), **_said(r)})
-    return sorted((c for c in found if MARKER not in c["body"]), key=lambda c: c["at"] or "")
+    return sorted((c for c in found if MARKER not in c["body"] and not c["body"].startswith(REPORT_MARKER)),
+                  key=lambda c: c["at"] or "")
 
 
 def _said(c):

@@ -25,6 +25,9 @@ or HEAD changed while you reviewed.
    breaks it; don't reopen points an earlier round settled.
 
 <!-- include: review-diff-growth -->
+<!-- include: review-job-report -->
+
+Raise each unexplained contradiction as a `[should]` finding.
 
 ## Checks are done
 
