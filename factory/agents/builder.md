@@ -348,6 +348,9 @@ pre-review.
 Rewrite it at the end of every round. Keep the Log from earlier rounds and add
 an entry for this one.
 
+Use exact test paths and names in `Test:` references. The gate writes
+`round-<N>/report.md` and reviewers can raise its contradictions as findings.
+
 ```markdown
 STATUS: READY
 

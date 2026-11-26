@@ -40,6 +40,10 @@ one file goes there.
 
 ## Decide
 
+<!-- include: review-job-report -->
+
+ESCALATE if a contradiction remains unexplained.
+
 APPROVE only if all of these hold:
 
 - Every acceptance criterion in the spec is met, with evidence in build.md and
