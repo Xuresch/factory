@@ -42,7 +42,8 @@ file goes there.
 
 <!-- include: review-job-report -->
 
-ESCALATE if a contradiction remains unexplained.
+ESCALATE when a contradiction is still unexplained: neither build.md nor a
+review accounts for it.
 
 APPROVE only if all of these hold:
 

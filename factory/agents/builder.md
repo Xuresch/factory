@@ -338,8 +338,11 @@ pre-review.
 Rewrite it at the end of every round. Keep the Log from earlier rounds and add
 an entry for this one.
 
-Use exact test paths and names in `Test:` references. The gate writes
-`round-<N>/report.md` and reviewers can raise its contradictions as findings.
+Write each `Test:` reference as the exact `<path>::<test name>` on the branch.
+The gate checks every reference, and every `## Changes` entry, against HEAD
+in `round-<N>/report.md`. A reference it can't find, or an entry for a file
+the diff doesn't touch, is a contradiction that reviewers raise as a finding
+unless build.md explains it.
 
 ```markdown
 STATUS: READY

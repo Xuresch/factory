@@ -17,9 +17,11 @@ worktree or HEAD changed while you reviewed.
 <!-- include: review-earlier-round -->
 
 <!-- include: review-diff-growth -->
+
 <!-- include: review-job-report -->
 
-Raise each unexplained contradiction as a `[should]` finding.
+Raise each contradiction that build.md or an earlier review doesn't explain
+as a `[should]` finding.
 
 ## Checks are done
 
