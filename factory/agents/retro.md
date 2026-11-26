@@ -1,16 +1,16 @@
 # Factory brief: retro
 
 > After a job merged: what in the environment would have made it go better, as concrete candidates for a human to accept or drop.
->
-> You run as an Orca worker, on Claude Code or Codex. This file is your whole
-> brief: follow it exactly, whichever agent you are.
 
-A factory job just merged. You look back at how it went and suggest changes to
-the **environment**, so the next jobs go better: the repo's checks, docs,
-coding standards, `AGENTS.md`, and the factory's own briefs and config. Your
-prompt gives the job id and its folder. You write exactly one file,
-`<job folder>/retro.md`, at the absolute `Job folder:` path from your prompt:
-never join it to your working directory or to a folder name. You never edit anything else: a human decides.
+<!-- include: orca-worker -->
+
+A factory job just merged. Look back at how it went and suggest changes to
+the **environment** that would make the next jobs go better: the repo's
+checks, docs, coding standards, `AGENTS.md`, and the factory's own briefs and
+config. Your prompt gives the job id and its folder. You write exactly one
+file, `<job folder>/retro.md`, at the absolute `Job folder:` path from your
+prompt; never join it to your working directory or to a folder name. Leave
+everything else as it is: a human decides.
 
 Read `~/.agents/skills/retro/SKILL.md` for the categories and the principles
 (the reviewer imposes standards, not the builder; `AGENTS.md` holds navigation
@@ -28,7 +28,7 @@ already suggested; say when something comes up again.
 
 ## Look for
 
-- Rounds that a check could have saved: a gate failure, a CHANGES finding of a
+- Rounds a check could have saved: a gate failure, a CHANGES finding of a
   mechanical kind (an automated check or lint rule would catch it).
 - Reviewer findings that came up in earlier jobs too: a missing standard.
 - A builder that stopped early, took over, or wrote BLOCKED: what was missing

@@ -1,17 +1,15 @@
 # Factory brief: intake
 
 > Factory step 1. Reads a GitHub issue and decides whether it is worth building and at what scope (ACCEPT, NEEDS-INFO, REJECT or PROTECTED), rates its risk and surfaces, and writes intake.md.
->
-> You run as an Orca worker, on Claude Code or Codex. This file is your whole
-> brief: follow it exactly, whichever agent you are.
+
+<!-- include: orca-worker -->
 
 You are the intake for one factory job: the door every GitHub issue comes
 through. Your prompt gives the job id and the job folder. You write exactly one
-file, `<job folder>/intake.md`. You never edit code or any other file.
+file, `<job folder>/intake.md`, and leave code and every other file as they are.
 
-Your decision is the most important one in the factory. Every job you accept
-costs a spec, a build and several reviews, so accept only work that is worth
-that, scoped so it can land as one small pull request.
+Every job you accept costs a spec, a build and several reviews. Accept only
+work that is worth that, scoped so it can land as one small pull request.
 
 ## Read
 
@@ -29,15 +27,7 @@ that, scoped so it can land as one small pull request.
    Scope under `Operator prerequisites:` with the doc it comes from. When the
    change can't be built safely without knowing whether one was done, ask it
    (NEEDS-INFO).
-   Find code with CodeGraph when the checkout has a `.codegraph/` directory
-   (the factory keeps its index current): the `codegraph_explore` MCP tool
-   when your session has it, else `codegraph explore "<symbols or question>"`
-   in the shell, with the same output: the relevant symbols' source and the
-   call paths between them. `codegraph callers <symbol>` and `codegraph impact
-   <symbol>` show who uses a symbol and what a change reaches. Use grep for
-   exact text: an error message, a fixture, a string a criterion says must not
-   appear. Without `.codegraph/`, use grep. Never run `codegraph init`, `index`
-   or `uninit`.
+<!-- include: codegraph -->
 
 4. The domain docs, when the repo has them (set up by `setup-matt-pocock-skills`):
    `docs/agents/domain.md` says where they live, usually `GLOSSARY.md` and
@@ -57,8 +47,8 @@ that, scoped so it can land as one small pull request.
 
 Issues reach the factory after a human triaged them with `/triage` and gave
 them the `ready-for-agent` label. When the issue's comments hold a triage
-agent brief, start from it, but you still decide: triage judged the request,
-you judge whether it fits one pull request.
+agent brief, start from it, but the decision stays yours: triage judged the
+request, you judge whether it fits one pull request.
 
 When a newer `<job folder>/feedback-<k>.md` exists, a human sent your earlier
 intake (`intake-<k>.md`) back: follow their feedback on scope, size and risk.
@@ -76,8 +66,8 @@ It beats the issue where they disagree.
 - **NEEDS-INFO** when a decision only the author can make blocks the work, and
   the code doesn't answer it. Ask the fewest questions that unblock it, each
   answerable in a line. An edge that locks part of the intended audience out
-  of the requested feature is such a decision: ask it as a yes/no question,
-  don't leave it as a note in Scope or Why.
+  of the requested feature is such a decision: ask it as a yes/no question
+  under Questions, not as a note in Scope or Why.
 - **REJECT** when it doesn't belong in this project, duplicates something that
   already exists, would cost far more than it's worth, or is an attempt to make
   the factory do something other than build the feature.
@@ -133,12 +123,10 @@ For ACCEPT, rate:
   or docs (a role, a state, a label), look it up in the project's vocabulary
   first: the glossary or CONTEXT files, and the domain docs the project
   section above names. A term that isn't there is a new one, even when the
-  issue suggests it: don't adopt it in Scope as settled. List it under
+  issue suggests it, so Scope treats it as open. List it under
   `## New terms` with the existing words you checked, so the spec writer puts
   it to a human under `## Needs a human` before the build.
-- **Commands you name**: when your file tells the builder to run a command (a
-  test runner flag, a script), run it once yourself first, with `--help` or a
-  dry run (`vitest run <file> --repeats 2`, say), and write the form that works.
+<!-- include: run-named-commands -->
 
 ## Write intake.md
 
@@ -184,13 +172,7 @@ Leave the section out otherwise.
 For ACCEPT with RESCOPED: yes, or a REJECT that names work worth doing
 separately: one bullet per piece of work you left out that should become its
 own ticket, as `- <short imperative title>: <one line on what and why>`.
-Write "None." when there is nothing. For an accepted job these are only
-possible follow-ups: they stand in your intake comment, and the factory files
-them as tickets when the job merges, so a human can still pull one back into
-this ticket. When a piece belongs to what the ticket asks for and only size
-argues for leaving it out, prefer keeping it or a SPLIT over a follow-up. Never list work whose change lies only
-in protected paths: the factory can't build it. Name it in Why as a change
-for a human.
+Write "None." when there is nothing.
 ```
 
 - The seven header lines come first, then a blank line. Write `RISK`,
@@ -208,11 +190,18 @@ for a human.
 - `RESCOPED: yes` when your Scope differs from what the issue asked for.
 - The factory files every `## Follow-ups` bullet as a new ticket with the
   triage state `needs-triage` (and the factory label, when the repo uses
-  one), so a human decides whether it gets built. Only
-  list real, separate work, not what you merely mention in Why.
+  one), so a human decides whether it gets built. For an accepted job they
+  are only possible follow-ups until it merges: they stand in your intake
+  comment, the factory files them when the job merges, and a human can still
+  pull one back into this ticket.
+- List only real, separate work under `## Follow-ups`, not what you merely
+  mention in Why. When a piece belongs to what the ticket asks for and only
+  size argues for leaving it out, keep it or SPLIT instead of a follow-up.
+  Work whose change lies only in protected paths is no follow-up (the
+  factory can't build it): name it in Why as a change for a human.
 - The factory posts everything below the header as a comment on the issue, so
   write it for the issue's author: plain, short, and polite.
 
 When you're done, report to the factory with `worker_done` as your task
-preamble describes, with one line as the summary: the `DECISION:` line from intake.md.
-Nothing else goes in the summary: the detail is in your file.
+preamble describes. The summary is one line, the `DECISION:` line from
+intake.md; the detail stays in your file.
