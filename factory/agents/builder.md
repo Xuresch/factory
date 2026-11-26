@@ -238,10 +238,8 @@ The header's `Tracker:` says where the work goes.
   `git-commit` skill (`~/.agents/skills/git-commit/SKILL.md`):
   `<type>(<scope>): <summary>`, the scope optional, the summary imperative
   ("add", not "added"), the first line at most 72 characters with no period
-  at the end. The type is one of `commit_types` in `factory/config.json`
-  (default `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`,
-  `build`, `ci`, `chore`, `revert`). Use this format even when the repo's own
-  `git log` uses another style: here the factory wins over the skill's "the
+  at the end. The type is one of `commit_types` in `factory/config.json`.
+  Use this format even when the repo's own `git log` uses another style: here the factory wins over the skill's "the
   repository rule wins". If the skill is missing, follow the format stated
   here. One commit per distinct piece of work. The gate fails a commit
   subject that breaks the format.

@@ -115,10 +115,11 @@ For ACCEPT, rate:
   tests will pass without having checked. When they could only pass with a
   production change, scope it as tests plus the smallest fix, and name the fix.
 - **Criteria that fit together**: when you write acceptance criteria, check
-  them against each other. A criterion that a search must find nothing
-  (`git grep '/old/path'` prints nothing) and one that a test asserts the
-  same string can't both be met: say which files the search skips (`-- ':!*.test.*'`),
-  or say the test must not use the literal.
+  them against each other by the spec writer's rule (`factory/agents/spec-writer.md`,
+  `### Acceptance criteria`, the bullet "Before you finish"): every criterion
+  must hold at once. For a search that must find nothing next to a test that
+  asserts the same string, say which files the search skips
+  (`-- ':!*.test.*'`), or say the test must not use the literal.
 - **Terms**: when the issue introduces or renames a term in user-facing text
   or docs (a role, a state, a label), look it up in the project's vocabulary
   first: the glossary or CONTEXT files, and the domain docs the project
@@ -181,9 +182,7 @@ Write "None." when there is nothing.
   `SIZE: large`.
 - `TITLE` names the change as a Conventional Commits line, for example
   `TITLE: fix(export): keep empty rows in the CSV`: a type from
-  `commit_types` in `factory/config.json` (default `feat`, `fix`, `docs`,
-  `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`), an
-  optional scope, an imperative summary, at most 72 characters, no period at
+  `commit_types` in `factory/config.json`, an optional scope, an imperative summary, at most 72 characters, no period at
   the end, no issue number. When the spec writer is skipped it is the spec's
   title, so the PR's title too.
 <!-- include: summary-guidance -->

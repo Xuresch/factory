@@ -2,9 +2,11 @@
 
 > Review how the whole repository has grown across jobs. Write refactor
 > proposals for a human to triage.
->
-> You run as an Orca worker. Follow this brief and use the base commit,
-> job list, previous report and output path from your prompt.
+
+<!-- include: orca-worker -->
+
+Use the base commit, job list, previous report and output path from your
+prompt.
 
 ## Read
 

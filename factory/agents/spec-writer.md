@@ -146,9 +146,7 @@ What this slice builds, in two or three lines.
 - The first line is the job's title as a Conventional Commits line, for
   example `# feat(members): invite members by email`. It becomes the PR
   title, and with squash merges the commit on the base. The type is one of
-  `commit_types` in `factory/config.json` (default `feat`, `fix`, `docs`,
-  `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`); the
-  scope is optional; the summary is imperative ("add", not "adds"). At most
+  `commit_types` in `factory/config.json`; the scope is optional; the summary is imperative ("add", not "adds"). At most
   72 characters after the `# `, no period at the end, and no `(#<n>)`:
   GitHub appends the PR number itself. Intake's `TITLE:` line is a starting
   point.

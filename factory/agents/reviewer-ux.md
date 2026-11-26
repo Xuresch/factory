@@ -13,7 +13,7 @@ if the worktree or HEAD changed while you reviewed.
 <!-- include: review-setup -->
 <!-- include: codegraph -->
 <!-- include: review-read-spec -->
-3. The change: `git log --oneline <base>..HEAD` and `git diff <base>...HEAD`.
+<!-- include: review-read-diff -->
 <!-- include: review-earlier-round -->
 
 <!-- include: review-diff-growth -->
