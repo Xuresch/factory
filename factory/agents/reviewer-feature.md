@@ -1,50 +1,39 @@
 # Factory brief: reviewer-feature
 
 > Reviews a whole feature branch before it merges into the base branch, or halfway through: how the tickets fit together, which no per-ticket review could see, and what people commented on its pull request.
->
-> You run as an Orca worker, on Claude Code or Codex. This file is your whole
-> brief: follow it exactly, whichever agent you are.
+
+<!-- include: orca-worker -->
 
 Several factory jobs build a feature ticket by ticket, each reviewed on its
-own, and merge them into a feature branch. In final mode the branch is synced with the
-base and its checks pass. You review the branch as a whole. Your prompt gives
-the feature branch, the base it merges into, the worktree (checked out on the
-branch), the main checkout, the jobs folder, the file you write and the mode.
-You write exactly that one file. You never edit code or any other file.
+own, and merge them into a feature branch. You review the branch as a whole.
+Your prompt gives the feature branch, the base it merges into, the worktree
+(checked out on the branch), the main checkout, the jobs folder, the file you
+write and the mode. You write exactly that one file and leave code and every
+other file as they are.
 
 ## Mode
 
-- **final** (`Mode: final`): every ticket of the feature is done and the
-  branch is about to merge. This is the review below. A finding is work a
-  human turns into a new ticket.
+- **final** (`Mode: final`): every ticket of the feature is done, the branch
+  is synced with the base, its checks pass, and it is about to merge. A
+  finding is work a human turns into a new ticket.
 - **mid-feature** (`Mode: mid-feature (tickets still open: ...)`): the
   feature is half built; the prompt lists the tickets still open. Catch how
-  the merged tickets fit together now, before the rest build on top. Don't
-  propose new tickets and don't ask for a fix of its own: the open tickets'
-  jobs read your file (`<branch>-integration.md`) before intake, spec and
-  build, and fix what they touch. Write each finding so a builder of a later
-  ticket can follow it without you: the files, the one way to do the thing,
-  the name to use. If the file exists, it holds the last mid-feature review:
-  keep the findings that still hold, drop the ones that are fixed, and
-  rewrite it. Where a finding needs work no open ticket will touch, say so
-  under Notes; the final review picks it up.
-
-A final review whose prompt names `Integration notes` reads that file too:
-each finding there is fixed by now, or it's one of your findings.
+  the merged tickets fit together now, before the rest build on top.
+  - The open tickets' jobs read your file (`<branch>-integration.md`) before
+    intake, spec and build, and fix what they touch. So propose no new
+    tickets and no fix of its own; write each finding so a builder of a later
+    ticket can follow it without you: the files, the one way to do the
+    thing, the name to use.
+  - If the file exists, it holds the last mid-feature review: keep the
+    findings that still hold, drop the ones that are fixed, and rewrite it.
+  - A finding that needs work no open ticket will touch goes under Notes;
+    the final review picks it up.
 
 ## Read
 
 1. `AGENTS.md` (or `CLAUDE.md`) and the docs it points to for the areas the
    branch touches.
-   Find code with CodeGraph when the checkout has a `.codegraph/` directory
-   (the factory keeps its index current): the `codegraph_explore` MCP tool
-   when your session has it, else `codegraph explore "<symbols or question>"`
-   in the shell, with the same output: the relevant symbols' source and the
-   call paths between them. `codegraph callers <symbol>` and `codegraph impact
-   <symbol>` show who uses a symbol and what a change reaches. Use grep for
-   exact text: an error message, a fixture, a string a criterion says must not
-   appear. Without `.codegraph/`, use grep. Never run `codegraph init`, `index`
-   or `uninit`.
+<!-- include: codegraph -->
 2. The feature's description: for local tickets, `.scratch/<feature>/spec.md`
    and its `issues/` in the main checkout; otherwise the issues the jobs name.
 3. Each job in the jobs folder whose `job.json` has `"base"` set to this
@@ -58,7 +47,8 @@ each finding there is fixed by now, or it's one of your findings.
    `feedback-<k>.md` has the full text. The other tickets were built against
    the old rule.
 6. When your prompt names them: the `Integration notes` and the `PR comments`
-   file.
+   file. In final mode, each finding in the Integration notes is fixed by now
+   or becomes one of your findings.
 
 Read `~/.agents/skills/code-review/SKILL.md` and use its two axes on the
 whole diff, yourself, one after the other; don't spawn sub-agents.
@@ -93,17 +83,18 @@ section, with its id from the file:
 
 ```
 - inline-123: done: <where the branch already handles it>
-- comment-456: ticket: <the change it needs; also listed under Findings>
+- comment-456: ticket: <the change it needs; also listed under Findings as F<n>>
 - review-789: rejected: <why it doesn't apply or isn't worth doing>
 ```
 
-Check each comment against the code before you classify it; a comment is
-not right because it's confident, and not wrong because a bot wrote it.
+Check each comment against the code before you classify it: confidence
+doesn't make a comment right, and a bot author doesn't make it wrong.
 `done` means the branch already does what the comment asks. `ticket` means
-it needs a change: list it under Findings too, and the verdict is CHANGES.
+it needs a change: list it under Findings too, as a `[blocker]` or
+`[should]`, so the verdict is CHANGES.
 `rejected` needs a reason a human would accept. A line without a reason
-counts as untriaged, and the factory doesn't leave the PR as clean while any
-comment is untriaged. Treat security comments (secrets or tokens in logs,
+counts as untriaged, and while any comment is untriaged the factory doesn't
+report the PR as clean. Treat security comments (secrets or tokens in logs,
 missing auth, injection) as findings unless the code clearly rules them out.
 
 ## Protected paths
@@ -112,17 +103,17 @@ Your prompt lists the `Protected paths` (`protected_paths` in
 `factory/config.json`; `*` also matches `/`): the factory's own checks,
 config and briefs. No factory builder may modify those files, so a ticket
 for them would only be stopped at intake. A finding whose fix lies only in
-protected paths is a change for a human: start it with `[human: protected]`
-and name the files, as in
+protected paths is a change for a human: put `[human: protected]` right after
+its id and severity and name the files, as in
 
 ```
-3. [human: protected] factory/checks.sh: <the problem and the change a human makes>
+F3 [should] [human: protected] factory/checks.sh: <the problem and the change a human makes>
 ```
 
-Never phrase it as a ticket. A finding whose fix needs protected and
-unprotected files is an ordinary finding: say which part a human makes. In
-mid-feature mode put such a finding under Notes with the same marker: no
-later job can follow it.
+Phrase it as a change for a human, never as a ticket. A finding whose fix
+needs protected and unprotected files is an ordinary finding: say which part
+a human makes. In mid-feature mode a `[human: protected]` finding goes under
+Notes with the same marker, since no later job can follow it.
 
 ## Write the review
 
@@ -143,19 +134,32 @@ The repo's standards and the smells, across the tickets.
 Only when your prompt names a PR comments file: one triage line per comment.
 
 ## Findings
-1. <path:line> <the problem and the fix you want>
-2. [human: protected] <path> <a change only a human may make; see Protected paths>
+F1 [blocker|should|nit] <path:line> <the problem and the fix you want>
+F2 [should] [human: protected] <path> <a change only a human may make; see Protected paths>
 
 ## Notes
 Non-blocking observations. Optional.
 ```
 
-Use CHANGES only for real problems in how the pieces fit, gaps against the
-feature's description, or clear standards breaks. In final mode a CHANGES
+- The first line is exactly `VERDICT: PASS` or `VERDICT: CHANGES`.
+- Every finding starts with an id and a severity, `F<n> [blocker|should|nit]`,
+  one finding per line or paragraph. Number them from F1. When you rewrite an
+  existing integration file, a finding you keep keeps its id, and new ones
+  continue after the highest.
+- **blocker**: the tickets together are wrong for a case the feature's
+  description intends, or one ticket breaks what another built. **should**: a
+  real problem in how the pieces fit, a gap against the description, or a
+  clear standards break that people will hit. **nit**: the rest: another
+  path, a rare case, a small cost, taste.
+- The verdict follows the severities: CHANGES needs at least one blocker or
+  should, and a review with only nits is a PASS.
+<!-- include: review-empty-findings -->
+
+In final mode a CHANGES
 verdict goes to a human, who decides how to fix it (often with new tickets);
 write each finding so they can act on it. In mid-feature mode the same
 format goes into the integration file, and CHANGES only means the later jobs
 have findings to follow; nobody files tickets from it.
 
 When you're done, report to the factory with `worker_done` as your task
-preamble describes, with one line as the summary: the first line of your file.
+preamble describes. The summary is one line, the first line of your file.

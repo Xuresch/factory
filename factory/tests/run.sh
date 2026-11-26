@@ -1321,7 +1321,7 @@ t_feature_mid_review() {
   check "counted" "$(python3 -c "import json; print(json.load(open('$f/feature-m-mid.json'))['merged'])")" "2" || return 1
   local plain; plain=$(J create f/09); J start "$plain" intake >/dev/null
   check "no notes before the file exists" "[$(tail -3 "$SPECS" | grep -c 'Integration notes')]" "[0]" || return 1
-  printf 'VERDICT: CHANGES\n\n## Findings\n1. a.txt:1 use one name\n' > $f/feature-m-integration.md
+  printf 'VERDICT: CHANGES\n\n## Findings\nF1 [should] a.txt:1 use one name\n' > $f/feature-m-integration.md
   local id; id=$(J create feat/03); J start "$id" intake >/dev/null
   check "intake points to it" "$(tail -3 "$SPECS")" "Integration notes: $PWD/$f/feature-m-integration.md" || return 1
   J start "$plain" intake >/dev/null
