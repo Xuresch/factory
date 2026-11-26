@@ -271,9 +271,24 @@ elif cmd[0] == "api" and any(a.startswith("repos/{owner}/{repo}/") for a in args
     # PR comments from pr-comments.json {"pulls/comments": [...], "issues/comments": [...], "pulls/reviews": [...]},
     # two per page: --paginate prints the pages back to back, without it only the first one comes.
     path = next(a for a in args if a.startswith("repos/")).split("/")
-    items = (load("pr-comments.json") or {}).get("/".join(path[3::2]), [])
-    pages = [items[i:i + 2] for i in range(0, len(items), 2)] or [[]]
-    print("".join(json.dumps(p) for p in (pages if "--paginate" in args else pages[:1])))
+    comments = load("pr-comments.json") or {}
+    method = opt("--method")
+    if method in {"POST", "PATCH"}:
+        items = comments.setdefault("issues/comments", [])
+        if method == "POST" and path[-1] == "comments":
+            item = {"id": max((c["id"] for c in items), default=0) + 1, "user": {"login": "op"}}
+            items.append(item)
+        elif method == "PATCH" and path[-2] == "comments":
+            item = next(c for c in items if c["id"] == int(path[-1]))
+        else:
+            sys.exit("unexpected comment path or method")
+        item["body"] = opt("--raw-field").removeprefix("body=")
+        save("pr-comments.json", comments)
+        print(json.dumps(item))
+    else:
+        items = comments.get("/".join(path[3::2]), [])
+        pages = [items[i:i + 2] for i in range(0, len(items), 2)] or [[]]
+        print("".join(json.dumps(p) for p in (pages if "--paginate" in args else pages[:1])))
 elif cmd == ["issue", "edit"]:  # --add-label / --remove-label (comma-separated) change issue-<n>.json
     if (d / "edit-fail").exists():
         sys.exit("HTTP 403: Resource not accessible by integration")
@@ -4500,6 +4515,190 @@ t_lifecycle_advice_validates_slices() {
   check "advice allows a valid split" "$(J next "$id")" "advance: factory/bin/job advance $id build" &&
   J advance "$id" build >/dev/null &&
   check "the validated slices are saved" "$(J slices "$id")" "slice 2 pending: B"
+}
+
+t_report_claims_and_missing_inputs() {
+  new_repo report-claims; ticket 01 One
+  mkdir tests
+  printf 'def test_existing(): pass\n' > tests/test_stable.py
+  printf 'test ! -f FAIL\necho tests/test_alpha.py\necho test_existing\n' >> factory/checks.sh
+  mkdir -p "$TMP_ROOT/report-claims/bin"; export PATH="$TMP_ROOT/report-claims/bin:$PATH"
+  printf '#!/usr/bin/env bash\ntouch "%s"\nexit 1\n' "$PWD/codegraph-called" > "${PATH%%:*}/codegraph"
+  chmod +x "${PATH%%:*}/codegraph"
+  commit_all
+  local id wt report first rc
+  id=$(to_build 01 low none) || return 1
+  wt=".worktrees/$id"
+  build_commit "$id" alpha.py 'def alpha(): pass' &&
+  build_commit "$id" beta.py 'def beta(): pass' &&
+  build_commit "$id" tests/test_alpha.py 'def test_alpha(): pass' || return 1
+  ready "$id"
+  cat >> "factory/jobs/$id/build.md" <<'MD'
+
+## Changes
+- `alpha.py`: Add alpha.
+- `tests/test_alpha.py`: Test alpha.
+- `ghost.py`: Claimed change.
+
+## Acceptance criteria
+1. [x] Alpha works. Test: `tests/test_alpha.py::test_alpha`
+2. [x] Stable behavior. Test: `tests/test_stable.py::test_existing`
+3. [x] Missing file. Test: `tests/test_missing.py::test_absent`
+4. [x] Missing name. Test: `tests/test_alpha.py::test_typo`
+5. [x] Manual check.
+MD
+  J advance "$id" gate >/dev/null || return 1
+  # The named file exists only in the working directory. Claims must use HEAD.
+  printf 'def test_absent(): pass\n' > "$wt/tests/test_missing.py"
+  factory/bin/gate "$id" >/dev/null || return 1
+  report="factory/jobs/$id/round-1/report.md"
+  first=$(cat "$report") || return 1
+  [[ $(head -1 "$report") == 'REPORT: 3 contradictions, 1 untested' ]] || return 1
+  [[ $(grep '^## ' "$report") == $'## Summary\n## Claims\n## Changed code\n## Tests for the change\n## Coverage\n## Inputs' ]] || return 1
+  [[ $(sed -n '/^## Summary$/,/^## Claims$/p' "$report" | grep -c '^- ') == 4 ]] || return 1
+  check "changed test and file logged" "$first" 'file exists on branch, name found in file, file changed, seen in the gate log' &&
+  check "unchanged test and name logged" "$first" 'file exists on branch, name found in file, file unchanged, seen in the gate log' &&
+  check "missing file is a contradiction even when present in the worktree" "$first" 'test_missing.py::test_absent`. **Contradiction.** file missing on branch, file unchanged, not seen in the gate log' &&
+  check "missing name is a contradiction even when file logged" "$first" 'test_alpha.py::test_typo`. **Contradiction.** file exists on branch, name missing from file, file changed, seen in the gate log' &&
+  check "criterion without a reference" "$first" 'Criterion 5 has no `Test:` reference' &&
+  check "claimed but unchanged" "$first" 'names `ghost.py`, which the diff does not touch' &&
+  check "unnamed changed file" "$first" 'changes `beta.py` without an entry' &&
+  check "changed test linked to matching source" "$first" '`alpha.py`: changed tests with a matching filename stem: `tests/test_alpha.py`' &&
+  check "unlinked source" "$first" '`beta.py`: untested' &&
+  check "no index" "$first" 'CodeGraph: no worktree index' &&
+  check "coverage unset" "$first" 'LCOV: report.coverage_lcov is unset' || return 1
+  [[ ! -e codegraph-called ]] || return 1
+  factory/bin/gate "$id" >/dev/null && [[ $(cat "$report") == "$first" ]] || return 1
+  rm "factory/jobs/$id/build.md"; touch "$wt/FAIL"
+  factory/bin/gate "$id" >/dev/null; rc=$?
+  [[ $rc == 1 ]] && check "missing build input on FAIL" "$(cat "$report")" 'build.md: missing.' &&
+  check "reports actual failed gate" "$(cat "$report")" 'Round gate: FAIL.' &&
+  J advance "$id" build >/dev/null && [[ $(field "$id" "d['round']") == 2 ]]
+}
+
+t_report_codegraph_and_coverage() {
+  new_repo report-index; ticket 01 One
+  printf 'def untouched():\n    return 0\n\ndef alpha():\n    old()\n    old()\n    old()\n\n    return 5\n' > alpha.py
+  printf '/coverage/\n/.codegraph/\n' >> .gitignore
+  set_config report '{"coverage_lcov":"coverage/lcov.info"}'
+  cat >> factory/checks.sh <<'SH'
+if [[ ! -e coverage/skip ]]; then
+  mkdir -p coverage
+  printf 'SF:%s/alpha.py\nDA:2,1\nDA:5,1\nDA:6,0\nDA:9,0\nend_of_record\nSF:beta.py\nDA:1,3\nend_of_record\n' "$PWD" > coverage/lcov.info
+fi
+SH
+  local bin="$TMP_ROOT/report-index/bin"
+  cat > "$bin/codegraph" <<'PY'
+#!/usr/bin/env python3
+import json, sys
+from pathlib import Path
+args = sys.argv[1:]
+if args == ["affected", "--json", "--", "alpha.py"]:
+    print(json.dumps({"changedFiles": ["alpha.py"], "affectedTests": ["tests/integration.py"],
+                      "totalDependentsTraversed": 1}))
+elif args == ["affected", "--json", "--", "beta.py"]:
+    print("broken JSON")
+elif args == ["node", "--symbols-only", "--file", "alpha.py"]:
+    print("**alpha.py** — 2 symbols, no other indexed file depends on it\n\n**Symbols**\n"
+          "- `untouched` (function) () — :1\n- `alpha` (function) () — :4")
+elif args == ["node", "--symbols-only", "--file", "beta.py"]:
+    sys.exit("bad index")
+elif args[:3] == ["callers", "--json", "--limit"] and args[-2:] == ["--", "alpha"]:
+    print(json.dumps({"symbol": "alpha", "callers": [
+        {"name": f"caller_{i:02}", "kind": "function", "filePath": "entry.py", "startLine": i + 1}
+        for i in reversed(range(23))]}))
+else:
+    sys.exit(f"unexpected CodeGraph call: {args}")
+PY
+  chmod +x "$bin/codegraph"; export PATH="$bin:$PATH"
+  commit_all
+  local id wt report got
+  id=$(to_build 01 low none) || return 1
+  wt=".worktrees/$id"
+  build_commit "$id" alpha.py $'def untouched():\n    return 0\n\ndef alpha():\n    new()\n    new()\n    new()\n\n    return 9' &&
+  build_commit "$id" beta.py 'def beta(): pass' || return 1
+  mkdir "$wt/.codegraph"
+  ready "$id"; J advance "$id" gate >/dev/null && factory/bin/gate "$id" >/dev/null || return 1
+  report="factory/jobs/$id/round-1/report.md"
+  got=$(cat "$report") || return 1
+  [[ "$got" != *'`untouched`'* && "$got" != *caller_20* ]] || return 1
+  check "source count excludes symbol rows" "$got" '2 changed source files identified, 1 with no test link found' &&
+  check "changed symbol and caller" "$got" '`alpha` at line 4. Callers: `caller_00 (entry.py:1)`' &&
+  check "caller cap" "$got" 'and 3 more' &&
+  check "affected test" "$got" '`alpha.py`: CodeGraph affected tests: `tests/integration.py`' &&
+  check "CodeGraph failures do not fail gate" "$got" 'CodeGraph: affected tests unavailable for `beta.py`.' &&
+  check "second CodeGraph failure recorded" "$got" 'CodeGraph: symbol map unavailable for `beta.py`.' &&
+  check "coverage only counts changed lines" "$got" '`alpha.py`: 1/4 changed lines covered (25.0%). Changed lines without a recorded hit: 6-7, 9.' &&
+  check "relative LCOV path" "$got" '`beta.py`: 1/1 changed lines covered (100.0%).' &&
+  check "unknown build layout" "$got" 'build.md: no criteria found.' || return 1
+  cp "$report" "$TMP_ROOT/sample-report.md"
+  touch "$wt/coverage/skip"; factory/bin/gate "$id" >/dev/null || return 1
+  check "stale coverage ignored" "$(cat "$report")" 'LCOV: configured file was not updated by this gate run.' || return 1
+  rm "$wt/coverage/lcov.info"; factory/bin/gate "$id" >/dev/null || return 1
+  check "missing configured coverage" "$(cat "$report")" 'LCOV: configured file is missing.'
+}
+
+t_report_pr_comment() {
+  new_gh_repo report-pr; gh_issue 1 One
+  pr_comment issues/comments 11 alice 'A human comment'
+  pr_comment issues/comments 12 alice '<!-- factory:report --> human lookalike'
+  local id wt
+  id=$(gh_to_approve 1) || return 1
+  wt=".worktrees/$id"
+  python3 - "$GH/pr-comments.json" "factory/jobs/$id/round-1/report.md" <<'PY' || return 1
+import json, sys
+from pathlib import Path
+human, lookalike, factory = json.loads(Path(sys.argv[1]).read_text())["issues/comments"]
+assert human["body"] == "A human comment" and lookalike["user"]["login"] == "alice"
+assert factory["id"] == 13 and factory["user"]["login"] == "op"
+assert factory["body"] == "<!-- factory:report -->\n\n### Factory report\n\nRound 1\n\n" + Path(sys.argv[2]).read_text()
+PY
+  review "$id" 1 code CHANGES; J advance "$id" build >/dev/null || return 1
+  build_commit "$id" FAIL fail && git -C "$wt" push -q || return 1
+  ready "$id"
+  python3 -c 'print("\n## Acceptance criteria\n1. [x] " + "é" * 66000)' >> "factory/jobs/$id/build.md"
+  J advance "$id" gate >/dev/null || return 1
+  local rc=0
+  factory/bin/gate "$id" >/dev/null || rc=$?
+  [[ $rc == 1 ]] && J advance "$id" build >/dev/null || return 1
+  python3 - "$GH/pr-comments.json" "$id" <<'PY' || return 1
+import json, sys
+from pathlib import Path
+comments = json.loads(Path(sys.argv[1]).read_text())["issues/comments"]
+assert len(comments) == 3 and comments[2]["id"] == 13
+body = comments[2]["body"]
+assert "Round 2\n\nREPORT:" in body and "Round gate: FAIL." in body
+assert len(body.encode()) <= 65536 and "\ufffd" not in body
+assert body.endswith(f"`factory/jobs/{sys.argv[2]}/round-2/report.md`.")
+PY
+  [[ $(grep -c -- '--method POST --raw-field body=<!-- factory:report -->' "$GH_LOG") == 1 ]] &&
+  [[ $(grep -c -- '--method PATCH --raw-field body=<!-- factory:report -->' "$GH_LOG") == 1 ]] || return 1
+  set_config report '{"pr_comment":false}'
+  git -C "$wt" rm -q FAIL && git -C "$wt" commit -qm 'fix: pass the gate' && git -C "$wt" push -q || return 1
+  cp "$GH/pr-comments.json" "$GH/before.json"
+  to_review "$id" && cmp "$GH/before.json" "$GH/pr-comments.json"
+}
+
+t_report_briefs_and_update() {
+  new_repo report-update; commit_all
+  python3 -c 'import json; p="factory/config.json"; d=json.load(open(p)); del d["report"]; json.dump(d,open(p,"w"))'
+  rm factory/bin/report_job.py
+  commit_all
+  factory/bin/update "$FACTORY_SRC/.." --force >/dev/null || return 1
+  [[ -f factory/bin/report_job.py ]] &&
+  [[ $(config_value "c['report'] == {'pr_comment': True, 'coverage_lcov': ''}") == True ]] || return 1
+  python3 - <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, "factory/bin")
+import job
+code, approver, builder = (job.render_brief(role, Path("target") / f"{role}.md").read_text()
+                          for role in ("reviewer-code", "approver", "builder"))
+assert all("report.md" in text for text in (code, approver, builder))
+assert "[should]" in code and "contradiction" in code and "untested" in code
+assert "ESCALATE" in approver and "contradiction" in approver and "untested" in approver
+assert "Test:" in builder and "contradiction" in builder
+PY
 }
 
 # ---- runner ----------------------------------------------------------------

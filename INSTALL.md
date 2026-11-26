@@ -65,6 +65,7 @@ factory/env.sh
 factory/bin/job
 factory/bin/jobfiles.py
 factory/bin/lifecycle.py
+factory/bin/report_job.py
 factory/bin/session_usage.py
 factory/bin/gate
 factory/bin/heavy
@@ -86,6 +87,7 @@ factory/agents/shared/review-diff-growth.md
 factory/agents/shared/review-disputes.md
 factory/agents/shared/review-empty-findings.md
 factory/agents/shared/review-findings.md
+factory/agents/shared/review-job-report.md
 factory/agents/shared/review-read-diff.md
 factory/agents/shared/review-report-earlier.md
 factory/agents/shared/review-report-notes.md
@@ -267,6 +269,17 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
   lines bigger, the file says `DIFF: GROWN`; the reviewers look for what can
   be cut and the approver escalates growth nothing asked for. `null` turns
   the flag off.
+- `report.pr_comment` (default `true`) updates one **Factory report** comment
+  per GitHub PR when the job advances from the round gate.
+- `report.coverage_lcov` (default `""`) optionally names an LCOV file relative
+  to the job worktree, such as `coverage/lcov.info`. Have `checks.sh` write or
+  refresh it during the round gate, and ignore the generated file in Git.
+  For Vitest, use `--coverage --coverage.reporter=lcov`. For Bun, use
+  `--coverage --coverage-reporter=lcov`. For Rust, use
+  `cargo llvm-cov --lcov --output-path coverage/lcov.info`. For pytest-cov, add
+  `--cov-report=lcov:coverage/lcov.info` to the coverage run. The report lists
+  changed lines with a recorded hit and the ranges without one. A missing or
+  stale file leaves coverage unavailable and has no effect on the gate verdict.
 - `trusted_commenters` (default `"write"`), GitHub: whose issue comments go
   into `issue.md` besides the issue's author and the operator. `"write"`:
   anyone with write access to the repo (admin, maintain or write; the factory

@@ -103,13 +103,14 @@ def _gate(job, facts):
         return Decision("rerun-gate", "checks.md's first line isn't `GATE: PASS` or `GATE: FAIL`; run the gate again")
     if gate.get("commit") != facts.head or facts.head is None:
         return Decision("rerun-gate", "checks.md was written for another commit; run the gate again")
+    report = Effect("publish_round_report")
     if verdict == "PASS":
-        return _transition("review", "the gate passed", Effect("open_review", (facts.head,)))
+        return _transition("review", "the gate passed", report, Effect("open_review", (facts.head,)))
     if rounds_left(job):
-        return _transition("build", _round_reason(job), Effect("next_round"))
+        return _transition("build", _round_reason(job), report, Effect("next_round"))
     reason = (f'The gate failed in round {job["round"]}, the last allowed round. '
               f'See round-{job["round"]}/checks.md.')
-    return _transition("needs-human", _round_reason(job), Effect("escalate", (reason,)))
+    return _transition("needs-human", _round_reason(job), report, Effect("escalate", (reason,)))
 
 
 def _review(job, facts):
