@@ -12,8 +12,8 @@ Reading a session gives a record of token counts, never dollars:
            usage: {month: {model: {token field: n}}}}
 
 A session is a factory session when one of its first lines names a
-`Job folder: .../factory/jobs/<job>/`; `job_folder` is that path and `role` the
-brief's `factory/agents/<role>.md`. `month` is the local YYYY-MM of the usage,
+`Job folder: .../factory/jobs/<job>/`; `job_folder` is that path and `role` comes
+from the worker's brief filename. `month` is the local YYYY-MM of the usage,
 None when the line had no timestamp.
 
 Claude usage is kept per message id, so a message copied into a resumed
@@ -40,10 +40,10 @@ FACTORY = Path(__file__).resolve().parents[1]
 JOB_FOLDER = re.compile(r'Job folder: ([^\n]*?/factory/jobs/[^/\s"\\]+/)')
 # Older briefs can mark a factory session without naming a slash-terminated job folder.
 FACTORY_BRIEF = re.compile(r"Job folder: \S*/factory/jobs/")
-ROLE = re.compile(r"factory/agents/([\w-]+)\.md")
+ROLE = re.compile(r"factory/(?:agents/|jobs/(?:[^/\n]+/)+(?:[^/\n]*?-)?brief-)([\w-]+)\.md")
 CLAUDE_HEAD, CODEX_HEAD = 40, 60  # a brief is in a session's first lines
 CODEX_KEYS = ("input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "total_tokens")
-CACHE_VERSION = 2  # bump when a file's cached record changes shape; that drops the cache
+CACHE_VERSION = 3  # bump when a file's cached record changes shape; that drops the cache
 
 
 # ---- where sessions live ---------------------------------------------------
@@ -122,7 +122,7 @@ def claude_user_text(entry):
 
 
 def role_of(text):
-    """The worker's role, from `Your brief is <repo>/factory/agents/<role>.md`."""
+    """The role named in a rendered brief or its legacy source path."""
     m = ROLE.search(text)
     return m.group(1) if m else "unknown"
 

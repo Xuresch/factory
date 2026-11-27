@@ -1066,6 +1066,17 @@ def is_protected(path):
     return any(fnmatch.fnmatch(path, p) for p in CONFIG.get("protected_paths") or [])
 
 
+def warn_dirty_protected_paths(base):
+    if not CONFIG.get("protected_paths"):
+        return
+    status = run(["git", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames",
+                  "--", ".", ":(exclude)factory/jobs"], check=False)
+    paths = sorted(path for entry in status.stdout.split("\0") if entry and is_protected(path := entry[3:]))
+    if paths:
+        print(f"warning: uncommitted protected paths in the main checkout ({', '.join(paths)}). "
+              f"Commit them to {base} so clean clones and CI use the same checks.", file=sys.stderr)
+
+
 def protected_only(job):
     """The repo paths spec.md names when there is at least one and every one is
     protected: work no builder may do. [] otherwise, so a mixed spec builds."""
@@ -4258,6 +4269,7 @@ def structure_review_due(job, diff):
 
 
 def cmd_merge(job):
+    warn_dirty_protected_paths(jbase(job))
     sync(job)
     if job["stage"] == "approve":
         save(advance(job, "merging"))
@@ -5536,6 +5548,7 @@ def cmd_next(args):
         print(f"note: {why}")
     if args:
         job = resolve(args[0])
+        warn_dirty_protected_paths(jbase(job))
         for verb, what in steps_and_comments(job):
             print(f"{job['id']}: {verb}: {what}")
         if name := job.get("structure_review"):
@@ -5544,6 +5557,7 @@ def cmd_next(args):
                 print(f"{job['id']}: tell: {summary} ({report.relative_to(REPO)})")
         show_long_heavy_commands(job["id"])
         return
+    warn_dirty_protected_paths(BASE)
     every = all_jobs()
     jobs = [j for j in every if j["stage"] not in TERMINAL]
     for j in jobs:

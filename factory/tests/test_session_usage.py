@@ -86,6 +86,23 @@ class Base(unittest.TestCase):
 
 
 class JobUsage(Base):
+    def test_assigns_roles_from_each_brief_path(self):
+        briefs = {
+            "builder": "/r/factory/agents/builder.md",
+            "spec": f"{JOB}brief-spec.md",
+            "reviewer-code": f"{JOB}round-2/brief-reviewer-code.md",
+            "structure": "/r/factory/jobs/_structure/structure-2026-11-14-brief-structure.md",
+            "feature": "/r/factory/jobs/_features/feature-a-brief-feature.md",
+        }
+        project = self.projects / "-r"
+        for role, path in briefs.items():
+            prompt = f"Job folder: {JOB}\nYour brief is {path}. Read it in full."
+            lines(project / f"{role}.jsonl", user(prompt), assistant(role, input_tokens=100))
+        _, rows = su.job_usage(JOB, [project], [], PRICES)
+        for role, path in briefs.items():
+            with self.subTest(path=path):
+                self.assertIn((role, "claude", "claude-a"), rows)
+
     def test_empty_codex_count_keeps_cumulative_baseline(self):
         counts = (count("2026-11-14T12:00:00Z", 1_000_000),
                   token_count("2026-11-14T12:00:01Z", {}),

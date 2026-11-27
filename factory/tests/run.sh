@@ -590,18 +590,22 @@ t_slices() {
   J advance "$id" build >/dev/null
   check "slice 2 waits" "$(J slice-start "$id" 2 2>&1)" "waits for slices [1]"
   J slice-start "$id" 1 >/dev/null
-  (cd ".worktrees/$id-s1" && echo 1 > a/1 && echo z > x.txt && git add -A && git commit -qm "feat: s1")
-  printf 'STATUS: READY\n\n## Self-review\nok\n' > "factory/jobs/$id/slice-1.md"
+  (cd ".worktrees/$id-s1" && echo 'def test_alpha(): pass' > a/test_alpha.py && echo z > x.txt && git add -A && git commit -qm "feat: s1")
+  printf 'STATUS: READY\n\n## Acceptance criteria\n1. [x] Alpha. Test: `a/test_alpha.py::test_alpha`\n\n## Self-review\nok\n' > "factory/jobs/$id/slice-1.md"
   check "outside owns refused" "$(J slice-done "$id" 1 2>&1)" "changed files it doesn't own"
   (cd ".worktrees/$id-s1" && git checkout -q HEAD~1 -- x.txt && git commit -qam "fix: s1 owns only a/")
   mkdir -p "target/factory-jobs/$id-s1" "target/factory-jobs/$id"
   check "slice 1 merged" "$(J slice-done "$id" 1)" "slice 1 done"
   [[ "$(ls target/factory-jobs)" == "$id" ]] || { echo "    FAIL: slice target dir not freed, or job dir gone: $(ls target/factory-jobs)"; return 1; }
   J slice-start "$id" 2 >/dev/null
-  (cd ".worktrees/$id-s2" && test -f a/1 && echo 2 > b/2 && git add -A && git commit -qm "feat: s2")
-  printf 'STATUS: READY\n\n## Self-review\nok\n' > "factory/jobs/$id/slice-2.md"
+  (cd ".worktrees/$id-s2" && test -f a/test_alpha.py && echo 'def test_beta(): pass' > b/test_beta.py && git add -A && git commit -qm "feat: s2")
+  printf 'STATUS: READY\n\n## Acceptance criteria\n2. [x] Beta. Test: `b/test_beta.py::test_beta`\n\n## Self-review\nok\n' > "factory/jobs/$id/slice-2.md"
   check "all merged" "$(J slice-done "$id" 2)" "all 2 slices merged" &&
   check "gate passes" "$(J advance "$id" gate && factory/bin/gate "$id")" "GATE: PASS" || return 1
+  local report; report=$(cat "factory/jobs/$id/round-1/report.md") || return 1
+  check "report checks the first slice's criterion" "$report" 'Criterion 1, `a/test_alpha.py::test_alpha`. file exists on branch, name found in file' &&
+  check "report checks the second slice's criterion" "$report" 'Criterion 2, `b/test_beta.py::test_beta`. file exists on branch, name found in file' &&
+  [[ "$report" != *"build.md: no criteria found."* ]] || return 1
   printf 'Use the new format.\n' | J rewind "$id" build >/dev/null || return 1
   check "rewind keeps merged slices done" "$(field "$id" "[s['state'] for s in d['slices']]")" "['done', 'done']" &&
   check "rewind opens round 2" "$(field "$id" "d['round']")" "2" &&
@@ -3055,6 +3059,36 @@ t_overlap_clears_when_merged() {
 
 # ---- protected-only tickets: work no builder may do stops before the build ----
 
+t_warn_dirty_protected_paths() {
+  new_gh_repo dirty-protected; gh_issue 1 One; gh_issue 2 Two
+  set_config protected_paths '["factory/checks.sh","factory/config.json","factory/env.sh","factory/jobs/*"]'
+  mkdir -p factory/jobs/_local
+  touch factory/jobs/_local/ignored
+  git add -f factory/jobs/_local/ignored
+  commit_all && git push -q origin master || return 1
+  local id out warning
+  id=$(gh_to_merging 1 y.txt y) || return 1
+  J create 2 >/dev/null || return 1
+  out=$(J next 2>&1) || return 1
+  [[ "$out" != *"warning: uncommitted protected paths"* ]] || return 1
+  echo '# local checks edit' >> factory/checks.sh
+  git add factory/checks.sh
+  printf '\n' >> factory/config.json
+  echo '# local env file' > factory/env.sh
+  echo local > factory/jobs/_local/ignored
+  echo local > unrelated.txt
+  warning='warning: uncommitted protected paths in the main checkout (factory/checks.sh, factory/config.json, factory/env.sh). Commit them to master so clean clones and CI use the same checks.'
+  out=$(J next 2>&1) || return 1
+  check "lists staged, unstaged and untracked protected paths once for all jobs" "$out" "$warning" &&
+  [[ $(grep -c '^warning: uncommitted protected paths' <<< "$out") == 1 ]] || return 1
+  out=$(J next "$id" 2>&1) || return 1
+  check "warns with a job argument" "$out" "$warning" || return 1
+  out=$(J merge "$id" 2>&1) || return 1
+  check "warns when merging" "$out" "$warning" &&
+  [[ $(grep -c '^warning: uncommitted protected paths' <<< "$out") == 1 ]] &&
+  check "still merges" "$out" "merged PR #"
+}
+
 protected_intake() {  # protected_intake <job> <file>...: intake says the whole change is in protected files
   local id="$1"; shift
   { printf 'DECISION: PROTECTED\nRISK: low\nSURFACES: none\nRESCOPED: no\nSIZE: small\nSPLIT: no\n\n'
@@ -4574,6 +4608,45 @@ MD
   [[ $rc == 1 ]] && check "missing build input on FAIL" "$(cat "$report")" 'build.md: missing.' &&
   check "reports actual failed gate" "$(cat "$report")" 'Round gate: FAIL.' &&
   J advance "$id" build >/dev/null && [[ $(field "$id" "d['round']") == 2 ]]
+}
+
+t_report_directory_changes_and_grouped_criteria() {
+  new_repo report-directories; ticket 01 One
+  mkdir -p server/src/nested server/src-extra messages stable tests
+  touch server/src/nested/.keep server/src-extra/.keep messages/.keep stable/.keep
+  printf 'def test_one(): pass\ndef test_two(): pass\n' > tests/test_slices.py
+  commit_all
+  local id report
+  id=$(to_build 01 low none) || return 1
+  build_commit "$id" server/src/nested/app.py app &&
+  build_commit "$id" server/src-extra/extra.py extra &&
+  build_commit "$id" messages/en.json '{}' || return 1
+  ready "$id"
+  cat >> "factory/jobs/$id/build.md" <<'MD'
+
+## Changes
+- `server/src/`: Change the server.
+- `messages`: Add translations.
+- `stable`: Claimed change to an untouched directory.
+
+## Acceptance criteria
+### Slice 1
+1. [x] First.
+   Test: `tests/test_slices.py::test_one`
+### Slice 2
+2. [x] Second. Test: `tests/test_slices.py::test_two`
+## Validation
+- Ran checks.
+MD
+  J advance "$id" gate >/dev/null && factory/bin/gate "$id" >/dev/null || return 1
+  report=$(cat "factory/jobs/$id/round-1/report.md") || return 1
+  check "first slice criterion and its continuation are read" "$report" 'Criterion 1, `tests/test_slices.py::test_one`.' &&
+  check "second slice criterion is read" "$report" 'Criterion 2, `tests/test_slices.py::test_two`.' &&
+  check "untouched directory contradicts the report" "$report" 'names `stable`, which the diff does not touch' &&
+  check "a matching prefix outside the directory is not covered" "$report" 'changes `server/src-extra/extra.py` without an entry' &&
+  [[ $(grep -c 'without an entry' <<< "$report") == 1 ]] &&
+  [[ $(grep -c ' \*\*Contradiction\.\*\*' <<< "$report") == 1 ]] &&
+  [[ "$report" != *"Criterion 3"* ]]
 }
 
 t_report_codegraph_and_coverage() {
