@@ -43,7 +43,7 @@ FACTORY_BRIEF = re.compile(r"Job folder: \S*/factory/jobs/")
 ROLE = re.compile(r"factory/(?:agents/|jobs/(?:[^/\n]+/)+(?:[^/\n]*?-)?brief-)([\w-]+)\.md")
 CLAUDE_HEAD, CODEX_HEAD = 40, 60  # a brief is in a session's first lines
 CODEX_KEYS = ("input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "total_tokens")
-CACHE_VERSION = 2  # bump when a file's cached record changes shape; that drops the cache
+CACHE_VERSION = 3  # bump when a file's cached record changes shape; that drops the cache
 
 
 # ---- where sessions live ---------------------------------------------------
