@@ -160,7 +160,10 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
   changes every fixture), and a protected test blocks the job with no way
   through. The code reviewer catches weakened or special-cased tests instead.
   Add a path only when no job should ever change it. They are fnmatch
-  patterns, so `*` also matches `/`.
+  patterns, so `*` also matches `/`. `job next` and `job merge` warn about
+  local edits and untracked files that match these patterns, excluding
+  `factory/jobs/`. Commit those changes to the base branch so clean clones
+  and CI use the same checks.
 - `ports`: move `base` if the project already uses ports 5100–5199.
 - `worktree_root`: leave it `null` (worktrees in `.worktrees/`), or set a path
   such as `~/.factory-worktrees` when a tool in the project scans the whole

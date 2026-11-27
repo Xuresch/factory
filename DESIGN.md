@@ -97,11 +97,13 @@ reviewer is spawned, and again after syncing with `main` before the merge.
 A failing build goes straight back to the builder with the log. The gate runs
 the main checkout's copy of `checks.sh`, so a branch can't edit the checks it
 is judged by. It fails any branch that modifies or deletes a file under
-`protected_paths`: the factory's own checks and config. Tests aren't
-protected, since features have to update them; the code reviewer fails any
-test that was weakened, skipped or special-cased to pass. The
-builder also has a `SubagentStop` hook that runs the checks before it finishes,
-as a nudge; the gate is still what decides.
+`protected_paths`: the factory's own checks and config. `job next` and
+`job merge` warn once per invocation about uncommitted protected files in
+the main checkout. Commit them to the base branch so clean clones and CI
+use the same checks. Features can update tests. The code reviewer fails any
+test that was weakened, skipped or special-cased to pass. The builder also
+has a `SubagentStop` hook that runs the checks before it finishes, as a nudge;
+the gate is still what decides.
 
 **Commit messages are checked, not asked for.** Every job commit and PR title
 is a Conventional Commits line (`feat(members): invite members by email`), at

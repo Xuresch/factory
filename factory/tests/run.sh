@@ -3059,6 +3059,36 @@ t_overlap_clears_when_merged() {
 
 # ---- protected-only tickets: work no builder may do stops before the build ----
 
+t_warn_dirty_protected_paths() {
+  new_gh_repo dirty-protected; gh_issue 1 One; gh_issue 2 Two
+  set_config protected_paths '["factory/checks.sh","factory/config.json","factory/env.sh","factory/jobs/*"]'
+  mkdir -p factory/jobs/_local
+  touch factory/jobs/_local/ignored
+  git add -f factory/jobs/_local/ignored
+  commit_all && git push -q origin master || return 1
+  local id out warning
+  id=$(gh_to_merging 1 y.txt y) || return 1
+  J create 2 >/dev/null || return 1
+  out=$(J next 2>&1) || return 1
+  [[ "$out" != *"warning: uncommitted protected paths"* ]] || return 1
+  echo '# local checks edit' >> factory/checks.sh
+  git add factory/checks.sh
+  printf '\n' >> factory/config.json
+  echo '# local env file' > factory/env.sh
+  echo local > factory/jobs/_local/ignored
+  echo local > unrelated.txt
+  warning='warning: uncommitted protected paths in the main checkout (factory/checks.sh, factory/config.json, factory/env.sh). Commit them to master so clean clones and CI use the same checks.'
+  out=$(J next 2>&1) || return 1
+  check "lists staged, unstaged and untracked protected paths once for all jobs" "$out" "$warning" &&
+  [[ $(grep -c '^warning: uncommitted protected paths' <<< "$out") == 1 ]] || return 1
+  out=$(J next "$id" 2>&1) || return 1
+  check "warns with a job argument" "$out" "$warning" || return 1
+  out=$(J merge "$id" 2>&1) || return 1
+  check "warns when merging" "$out" "$warning" &&
+  [[ $(grep -c '^warning: uncommitted protected paths' <<< "$out") == 1 ]] &&
+  check "still merges" "$out" "merged PR #"
+}
+
 protected_intake() {  # protected_intake <job> <file>...: intake says the whole change is in protected files
   local id="$1"; shift
   { printf 'DECISION: PROTECTED\nRISK: low\nSURFACES: none\nRESCOPED: no\nSIZE: small\nSPLIT: no\n\n'
