@@ -78,19 +78,38 @@ def repository_path(value):
     return value.removeprefix("./")
 
 
+def is_branch_directory(worktree, path):
+    try:
+        return command(worktree, "git", "cat-file", "-t", f"HEAD:{path}").strip() == "tree"
+    except INPUT_ERRORS:
+        return False
+
+
 def claims(worktree, build, log, paths, inputs):
     lines, contradictions = [], 0
     if build is None:
         return lines, contradictions
-    sections = re.split(r"^## +([^\n]+)\n", build, flags=re.M)
-    sections = dict(zip((s.strip().lower() for s in sections[1::2]), sections[2::2]))
-    criteria = []
-    for line in sections.get("acceptance criteria", "").splitlines():
-        match = CRITERION.match(line)
-        if match:
-            criteria.append(match[1])
-        elif criteria and line.strip() and not line.startswith("#"):
-            criteria[-1] += " " + line.strip()
+    sections = re.split(r"^(#{1,6}) +([^\n]+)\n", build, flags=re.M)
+    criteria, changes = [], []
+    criteria_level = None
+    for marks, heading, body in zip(sections[1::3], sections[2::3], sections[3::3]):
+        title, level = heading.strip().lower(), len(marks)
+        if criteria_level is not None and level <= criteria_level:
+            criteria_level = None
+        if title == "changes":
+            changes.append(body)
+        if title == "acceptance criteria" and criteria_level is None:
+            criteria_level = level
+        if criteria_level is None:
+            continue
+        block = []
+        for line in body.splitlines():
+            match = CRITERION.match(line)
+            if match:
+                block.append(match[1])
+            elif block and line.strip():
+                block[-1] += " " + line.strip()
+        criteria.extend(block)
     if not criteria:
         inputs.append("build.md: no criteria found.")
     blobs = {}
@@ -125,21 +144,31 @@ def claims(worktree, build, log, paths, inputs):
             label = " **Contradiction.**" if contradicts else ""
             lines.append(f"- Criterion {index}, `{file}::{name}`.{label} " + ", ".join(outcomes) + ".")
 
-    changes = sections.get("changes")
-    if changes is None:
+    if not changes:
         inputs.append("build.md: no Changes section found.")
     elif paths is not None:
         named = set()
-        for line in changes.splitlines():
-            entry = CHANGE_ENTRY.match(line)
-            if entry:
-                file = repository_path(entry[1] or entry[2]).rstrip(",")
-                if file in paths or "/" in file or Path(file).suffix or file.isupper():
-                    named.add(file)
-        for file in sorted(named - paths.keys()):
-            lines.append(f"- **Contradiction.** `## Changes` names `{file}`, which the diff does not touch.")
-            contradictions += 1
-        for file in sorted(paths.keys() - named):
+        for line in "\n".join(changes).splitlines():
+            if entry := CHANGE_ENTRY.match(line):
+                named.add(repository_path(entry[1] or entry[2]).rstrip(","))
+        covered = set()
+        rename_sources = {original for status, original in paths.values() if status.startswith("R")}
+        for file in sorted(named):
+            if file in paths:
+                covered.add(file)
+                if paths[file][0] != "D":
+                    continue
+            directory = file.endswith("/") or is_branch_directory(worktree, file)
+            if directory:
+                prefix = file.rstrip("/") + "/"
+                descendants = {path for path in paths if path.startswith(prefix)}
+                covered.update(descendants)
+                if descendants or any(path.startswith(prefix) for path in rename_sources):
+                    continue
+            if file not in paths and (directory or "/" in file or Path(file).suffix or file.isupper()):
+                lines.append(f"- **Contradiction.** `## Changes` names `{file}`, which the diff does not touch.")
+                contradictions += 1
+        for file in sorted(paths.keys() - covered):
             lines.append(f"- The diff changes `{file}` without an entry in `## Changes` (not a contradiction).")
     return lines, contradictions
 

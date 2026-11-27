@@ -155,9 +155,11 @@ finding asked for. The builder brief asks for the smallest fix first.
 
 **The gate writes a job report.** Each round's gate writes `round-<N>/report.md`
 with build claims checked against the branch and gate log, changed source and
-its test links, and changed-line coverage when checks produce LCOV. Reviewers
-use it as evidence, and it has no effect on the gate verdict. On GitHub, the
-job updates one PR comment as each round leaves the gate.
+its test links, and changed-line coverage when checks produce LCOV. A
+directory listed under `## Changes` covers changed files below it. The report
+checks the acceptance criteria from each slice of a split build. Reviewers use
+it as evidence, and it has no effect on the gate verdict. On GitHub, the job
+updates one PR comment as each round leaves the gate.
 
 **The PR shows who reviewed it.** After every review round the factory
 writes a table into the PR description: one row per lens, one column per
