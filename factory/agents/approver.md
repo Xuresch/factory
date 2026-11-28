@@ -145,6 +145,11 @@ When you escalate: the exact decision or check you need from them, and the
 files to look at, with line ranges. The first lines go into the notification,
 so put the question first and keep it to one or two sentences. On APPROVE:
 only the steps a human took on for after the merge, if any.
+
+## Notes for later
+Optional. One bullet per nit or follow-up a later ticket should pick up, with
+file:line and the ticket it belongs to when known. Anything that blocks the
+merge goes in the sections above.
 ```
 
 <!-- include: summary-guidance -->

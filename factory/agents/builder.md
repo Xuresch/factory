@@ -220,6 +220,8 @@ A criterion that asks for a test and has none named isn't met: write the test.
   `<page>-<width>-<theme>.png`, plus one shot with keyboard focus on each new
   or changed interactive element (`<page>-focus-<element>.png`). Signed in
   where the page needs it, with the account AGENTS.md names for development.
+  Shoot the production build, or wait for the page's stylesheets to load
+  before each capture: a dev server's late stylesheet leaves a card unstyled.
   Look at every shot before READY and fix what it shows wrong, such as a
   focus ring drawn through a heading or a border that doesn't render. List
   each file under `## Screenshots` in build.md with the state it shows. The
