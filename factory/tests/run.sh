@@ -450,6 +450,24 @@ t_review_needs_standards_and_spec() {
   check "refused" "$out" "review-code.md doesn't count" && check "names the section" "$out" "## Standards"
 }
 
+t_gate_keeps_each_round_build() {
+  new_repo round-build; ticket 01 One; commit_all
+  local id d wt
+  id=$(to_build 01 low none) || return 1
+  d="factory/jobs/$id"; wt=".worktrees/$id"
+  build_commit "$id" x.txt first && ready "$id" || return 1
+  printf '\nRound one build.\n' >> "$d/build.md"
+  J advance "$id" gate >/dev/null || return 1
+  touch "$wt/FAIL"
+  factory/bin/gate "$id" >/dev/null
+  [[ $? == 1 ]] && cmp "$d/build.md" "$d/round-1/build.md" || return 1
+  rm "$wt/FAIL" && J advance "$id" build >/dev/null || return 1
+  build_commit "$id" x.txt second && ready "$id" || return 1
+  printf '\nRound two build.\n' >> "$d/build.md"
+  regate "$id" && cmp "$d/build.md" "$d/round-2/build.md" &&
+  check "the first copy survives the next build" "$(cat "$d/round-1/build.md")" 'Round one build.'
+}
+
 t_ready_needs_self_review() {
   new_repo selfreview; ticket 01 One; commit_all
   local id; id=$(to_build 01 low none); build_commit "$id" y.txt y

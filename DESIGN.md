@@ -108,7 +108,8 @@ the main checkout. Commit them to the base branch so clean clones and CI
 use the same checks. Features can update tests. The code reviewer fails any
 test that was weakened, skipped or special-cased to pass. The builder also
 has a `SubagentStop` hook that runs the checks before it finishes, as a nudge;
-the gate is still what decides.
+the gate is still what decides. The round gate also copies the builder's
+`build.md` to `round-<N>/build.md` so later rounds can write their own reports.
 
 **Commit messages are checked, not asked for.** Every job commit and PR title
 is a Conventional Commits line (`feat(members): invite members by email`), at
