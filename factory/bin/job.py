@@ -1906,7 +1906,6 @@ def grant_conflict_round(job):
 
 def next_round(job):
     job["round"] += 1
-    job.pop("merge_conflict_blocked", None)
     round_dir(job).mkdir(exist_ok=True)
     job["gate"] = None
     job["reviews"] = {}
@@ -2369,6 +2368,7 @@ def resume_ticket(job):
 
 def reset_after_feedback(job, round_limit, merge_only=False):
     job["round_limit"] = round_limit
+    job.pop("merge_conflict_blocked", None)
     if merge_only:
         if job.get("review_head") and job["gate"] == "PASS" and set(job["reviews"].values()) == {"PASS"}:
             remember_reviewed(job)
@@ -4833,8 +4833,10 @@ def cmd_approve(job):
             "give feedback with `job feedback` instead")
     if git(job, "rev-parse", "HEAD").stdout.strip() != job.get("review_head"):
         die("the branch changed after review; give feedback so it is gated and reviewed again")
-    if job.get("merge_conflict_blocked") and approval_preflight(job):
-        die("the base still conflicts with the branch; use `job feedback --merge-only` to send it back")
+    if job.get("merge_conflict_blocked"):
+        if approval_preflight(job):
+            die("the base still conflicts with the branch; use `job feedback --merge-only` to send it back")
+        job.pop("merge_conflict_blocked")
     (job_dir(job["id"]) / "approval.md").write_text(
         f"APPROVED\n\nBy @{operator()} after the job escalated.\n")
     save(advance(sync(job), "merging"))
