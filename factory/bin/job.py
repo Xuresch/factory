@@ -4129,9 +4129,12 @@ def merge_summary(job, rough):
     built = section(d / "build.md", "Summary") if (d / "build.md").exists() else None
     if built:
         lines += ["", "**What changed**", built]
-    decided = section(d / "decision.md", "Summary") if (d / "decision.md").exists() else None
-    if decided:
-        lines += ["", "**Why it was approved**", decided]
+    decision = d / "decision.md"
+    if decision.exists():
+        if decided := section(decision, "Summary"):
+            lines += ["", "**Why it was approved**", decided]
+        if notes := section(decision, "Notes for later"):
+            lines += ["", "**Notes for later**", "", notes]
     if (d / "accepted.md").exists():
         lines += ["", "**Accepted by a human**"] + [l for l in (d / "accepted.md").read_text().splitlines() if l.lstrip().startswith("- ")]
     if job.get("follow_ups"):

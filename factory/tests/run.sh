@@ -1934,7 +1934,34 @@ t_gh_clean_merge_closes_issue() {
   J merge "$id" >/dev/null 2>&1
   check "issue closed" "$(python3 -c "import json; print(json.load(open('$GH/issue-1.json'))['state'])")" "CLOSED" &&
   check "summary posted" "$(cat "$GH_LOG")" "### Factory: merged" &&
-  check "says clean" "$(cat "$GH_LOG")" "Clean run"
+  check "says clean" "$(cat "$GH_LOG")" "Clean run" &&
+  [[ $(cat "$GH_LOG") != *"**Notes for later**"* ]]
+}
+
+t_gh_merge_posts_notes_for_later() {
+  new_gh_repo ghnotes; gh_issue 1 One
+  local id comment
+  id=$(gh_to_merging 1) || return 1
+  cat > "factory/jobs/$id/decision.md" <<'MD'
+APPROVE
+
+## Summary
+- Gate and reviews passed.
+
+## Notes for later
+- Keep the `drafts` link.
+  - Check the mobile view.
+- Revisit upload limits.
+
+## For the human
+- Decision details stay in the job.
+MD
+  J merge "$id" >/dev/null || return 1
+  comment=$(sed -n '/^issue comment 1 /,$p' "$GH_LOG")
+  check "approval summary goes to the issue" "$comment" $'**Why it was approved**\n- Gate and reviews passed.' &&
+  check "notes retain their Markdown" "$comment" \
+    $'**Notes for later**\n\n- Keep the `drafts` link.\n  - Check the mobile view.\n- Revisit upload limits.' &&
+  [[ "$comment" != *"Decision details stay in the job."* ]]
 }
 
 t_gh_approved_merge_closes_issue() {
