@@ -1679,6 +1679,8 @@ def skip_unchanged_reviews(job):
             continue
         since = (job.get("reviewed_at") or {}).get(lens, carry["head"])
         rule = rules.get(lens)
+        if carry.get("paths_only") and not (rule or {}).get("paths"):
+            continue
         if rule:
             res = git(job, "diff", "--name-only", "--no-renames", "-z", f"{since}..{head}", check=False)
             if res.returncode != 0:  # the reviewed commit is gone (a rewritten branch): look again
@@ -1944,9 +1946,10 @@ def change_id(job, head):
 
 def merge_only_from(job, head):
     """The reviewed round whose change `head` repeats, when every lens passed it:
-    this round only merged the base. Ordinary feedback and rewinds drop `carry`."""
+    this round only merged the base. Ordinary feedback permits path-based carry only."""
     carry = job.get("carry")
-    if job["round"] < 2 or not carry or carry.get("ci_fix") or not set(reviewers(job)) <= set(carry["passed"]):
+    if (job["round"] < 2 or not carry or carry.get("ci_fix") or carry.get("paths_only")
+            or not set(reviewers(job)) <= set(carry["passed"])):
         return None
     now_id = change_id(job, head)
     return carry["round"] if now_id and now_id == change_id(job, carry["head"]) else None
@@ -2370,17 +2373,25 @@ def resume_ticket(job):
     TICKETS.resume(job["issue"])
 
 
-def reset_after_feedback(job, round_limit, merge_only=False):
+def reset_after_feedback(job, round_limit, mode="rewind"):
     job["round_limit"] = round_limit
     job.pop("merge_conflict_blocked", None)
-    if merge_only:
+    if mode == "merge-only":
         if job.get("review_head") and job["gate"] == "PASS" and set(job["reviews"].values()) == {"PASS"}:
             remember_reviewed(job)
         return
     reset_findings(job)
-    job.pop("carry", None)  # every lens looks again at the whole change
-    job.pop("reviewed_at", None)
     job.pop("approved", None)
+    if mode == "feedback" and CONFIG.get("review_skip"):
+        if (job.get("review_head") and job["gate"] == "PASS" and job["reviews"]
+                and "pending" not in job["reviews"].values()):
+            remember_reviewed(job)
+        if carry := job.get("carry"):
+            carry.pop("ci_fix", None)
+            carry["paths_only"] = True
+    else:
+        job.pop("carry", None)
+        job.pop("reviewed_at", None)
 
 
 def record_merge_failure(job, why):

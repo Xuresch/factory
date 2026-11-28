@@ -151,7 +151,9 @@ or let it burn rounds until the limit. Now a finding the builder disputed
 and the reviewer kept open goes to a human right away, with both sides in
 two lines each (`max_disputes`). UX and UI findings stay build instructions
 and can't be disputed (`binding_lenses`). A human's ordinary feedback closes
-every earlier finding and each lens looks again.
+every earlier finding. Each lens looks again unless it passed the last reviewed
+round, has `review_skip` paths that the diff since its review leaves untouched,
+and isn't in `rerun_every_round` for the job's risk.
 
 **Reviews must not grow the change.** Every review round can add a guard, a
 test, an option, each cheap alone. `job advance` records the size of the

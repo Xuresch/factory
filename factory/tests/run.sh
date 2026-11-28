@@ -2959,13 +2959,45 @@ t_real_change_or_feedback_is_not_carried() {
   for l in code ux ui; do [[ -f "factory/jobs/$id/round-2/review-$l.md" ]] || review "$id" 2 "$l" PASS; done
   J advance "$id" approve >/dev/null
   check "approver runs" "$(J next "$id")" "start: $J_ start $id approver" || return 1
-  # A human's feedback round never carries, even when the change stays the same.
+  # With no review_skip paths configured, feedback reruns every lens on the same patch.
   printf 'ESCALATE\n\n## Why\nhuman\n' > "factory/jobs/$id/decision.md"; J advance "$id" needs-human >/dev/null
   echo "looks the same to me, rerun" | J feedback "$id" >/dev/null
   (cd ".worktrees/$id" && git commit -q --allow-empty -m "chore: nothing new"); ready "$id"
   J advance "$id" gate >/dev/null; factory/bin/gate "$id" >/dev/null
   out=$(J advance "$id" review)
   check "feedback round: every lens runs" "$out" "start reviewers: code, ux, ui"
+}
+
+t_feedback_carries_only_passes_on_untouched_paths() {
+  new_repo feedback-carry; ticket 01 One
+  set_config review_skip '{"ui":{"paths":["app/*"],"except":["app/*.test.ts"]},"ux":{"paths":["app/*.test.ts"]},"code":{"paths":["server/*"]}}' \
+    rerun_every_round '{"medium":["code"]}'
+  commit_all
+  local id d
+  id=$(to_build 01 medium "ui, security") || return 1
+  d="factory/jobs/$id"
+  mkdir -p ".worktrees/$id/app"
+  build_commit "$id" app/copy.ts before && to_review "$id" || return 1
+  local lens
+  for lens in code ux security; do review "$id" 1 "$lens" PASS; done
+  rv "$id" 1 ui PASS "" "F1 [nit] app/copy.ts:1 shorten it"
+  J advance "$id" approve >/dev/null || return 1
+  printf 'ESCALATE\n\n## Why\nHuman decision needed.\n' > "$d/decision.md"
+  J advance "$id" needs-human >/dev/null &&
+    echo "Update the test." | J feedback "$id" >/dev/null || return 1
+  build_commit "$id" app/copy.test.ts test && built "$id" "" && regate "$id" || return 1
+  check "only UI carries" "$(field "$id" "list(d['skipped_reviews'])")" "['ui']" &&
+  check "carried UI PASS names its source round" "$(cat "$d/round-2/review-ui.md")" "carried forward from round 1" &&
+  check "ordinary feedback does not carry approval" "$(field "$id" "d.get('merge_only'), d.get('approved')")" "(None, None)" || return 1
+  for lens in code ux security; do review "$id" 2 "$lens" PASS; done
+  J advance "$id" approve >/dev/null || return 1
+  printf 'ESCALATE\n\n## Why\nHuman decision needed.\n' > "$d/decision.md"
+  J advance "$id" needs-human >/dev/null &&
+    echo "Update the copy." | J feedback "$id" >/dev/null || return 1
+  build_commit "$id" app/copy.ts after && built "$id" "" && regate "$id" || return 1
+  check "UI reruns when its path changes" "$(field "$id" "list(d['skipped_reviews'])")" "['ux']" &&
+  J start "$id" reviewer-ui >/dev/null &&
+  [[ $(tail -1 "$SPECS") != *"Earlier findings to answer"* ]]
 }
 
 t_gh_merge_waits_for_ci() {

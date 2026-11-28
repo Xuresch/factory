@@ -264,10 +264,10 @@ def _progression(job, facts, target, max_rounds):
             return Decision("refuse", "use `job approve` to merge an escalated job")
         if facts.feedback:
             allowance = job["round"] + max_rounds
-            reset = (Effect("reset_after_feedback", (allowance, True)) if facts.merge_only_feedback
-                     else Effect("reset_after_feedback", (allowance,)))
+            mode = "merge-only" if facts.merge_only_feedback else "feedback"
             return _transition("build", "the operator gave feedback",
-                               reset, Effect("next_round"), Effect("resume_ticket"))
+                               Effect("reset_after_feedback", (allowance, mode)),
+                               Effect("next_round"), Effect("resume_ticket"))
         return Decision("refuse", "use `job feedback` to send a job back to the builder")
     return Decision("refuse", f"no transition available from {stage}")
 
