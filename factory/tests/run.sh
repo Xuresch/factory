@@ -2545,7 +2545,7 @@ t_gate_and_heavy_share_pool() {
   wait "$builder" && wait "$gate" || return 1
   check "gate has its own wait metric" "$(field "$id" "d['heavy_wait_s']['gate'] > 0")" "True" &&
   check "gate wait shows the same job's builder" "$(field "$id" \
-    "d['heavy_waits']['gate'] == [{'blocker': '$id builder (self-queueing)', 's': d['heavy_wait_s']['gate']}]")" "True" &&
+    "d['heavy_waits']['gate'] == [{'blocker': '$id builder (self-queueing)', 's': d['heavy_wait_s']['gate'], 'pool': 'heavy'}]")" "True" &&
   check "gate wait is separate in checks.md" "$(cat "factory/jobs/$id/round-1/checks.md")" "before checks.sh ran; not counted in its" || return 1
 
   prior=0
@@ -2607,6 +2607,42 @@ t_gate_and_heavy_share_pool() {
   J _heavy-wait "$id" legacy 2 &&
   check "legacy CLI records only the total" "$(field "$id" \
     "d['heavy_wait_s']['legacy'] == 2 and 'legacy' not in d['heavy_waits']")" "True"
+}
+
+t_browser_slots() {
+  new_repo browser-slots; ticket 01 One; commit_all
+  heavy_fixture browser-slots
+  local id builder ux ui third out rc
+  id=$(to_build 01 low none) || return 1
+  set_config heavy_parallel 1 browser_parallel 0 heavy_max_minutes 0
+  "$HEAVY_RUNNER" --pool browser true && [[ ! -d factory/jobs/_browser ]] || return 1
+  python3 -c 'import json; p = "factory/config.json"; c = json.load(open(p)); del c["browser_parallel"]; json.dump(c, open(p, "w"))'
+
+  FACTORY_JOB="$id" FACTORY_ROLE=builder timeout 15 "$HEAVY_RUNNER" bash "$HOLD_SCRIPT" builder &
+  builder=$!
+  await_event "$HEAVY_EVENTS" "builder start" || return 1
+  FACTORY_JOB="$id" FACTORY_ROLE=reviewer-ux timeout 15 "$HEAVY_RUNNER" --pool browser \
+    bash -c '"$1" bash "$2" nested && bash "$2" ux' _ "$HEAVY_RUNNER" "$HOLD_SCRIPT" 2>"$HEAVY_RELEASE/ux.err" &
+  ux=$!
+  await_event "$HEAVY_RELEASE/ux.err" "heavy: waiting for $id builder" || return 1
+  FACTORY_JOB="$id" FACTORY_ROLE=reviewer-ui timeout 15 "$HEAVY_RUNNER" --pool browser bash "$HOLD_SCRIPT" ui &
+  ui=$!
+  await_event "$HEAVY_EVENTS" "ui start" || return 1
+  FACTORY_JOB="$id" FACTORY_ROLE=reviewer-other timeout 15 "$HEAVY_RUNNER" --pool browser \
+    bash "$HOLD_SCRIPT" third 2>"$HEAVY_RELEASE/third.err" &
+  third=$!
+  await_event "$HEAVY_RELEASE/third.err" "browser: waiting for $id reviewer-ux" &&
+  check "old browser slots appear in next" "$(J next "$id")" 'browser slot held' &&
+  [[ $(cat "$HEAVY_EVENTS") == $'builder start\nui start' ]] || return 1
+
+  touch "$HEAVY_RELEASE"/{builder,nested}
+  wait "$builder" && await_event "$HEAVY_EVENTS" "ux start" || return 1
+  out=$(timeout 3 "$HEAVY_RUNNER" "$HEAVY_RUNNER" --pool browser true 2>&1); rc=$?
+  [[ $rc == 2 ]] && check "reverse order refuses without waiting" "$out" 'start the browser session before taking a heavy slot' || return 1
+  touch "$HEAVY_RELEASE"/{ux,ui,third}
+  wait "$ux" && wait "$ui" && wait "$third" &&
+  check "nested build recorded a heavy wait" "$(field "$id" "d['heavy_waits']['reviewer-ux'][0]['pool']")" "heavy" &&
+  check "third session recorded a browser wait" "$(field "$id" "d['heavy_waits']['reviewer-other'][0]['pool']")" "browser"
 }
 
 t_heavy_nested_signals_and_exit() {

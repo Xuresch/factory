@@ -318,6 +318,7 @@
   "worktree_setup": "",
   "worktree_teardown": "",
   "heavy_parallel": 1,
+  "browser_parallel": 2,
   "heavy_max_minutes": 30,
   "lockfile_regenerate": {},
   "ci_wait_minutes": 30,

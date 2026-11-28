@@ -742,12 +742,13 @@ def save(job):
     tmp.replace(path)
 
 
-def add_heavy_wait(job, role, seconds, blocker=None):
+def add_heavy_wait(job, role, seconds, blocker=None, pool="heavy"):
     if 0 < seconds < float("inf"):
         waits = job.setdefault("heavy_wait_s", {})
         waits[role] = waits.get(role, 0) + seconds
         if blocker:
-            job.setdefault("heavy_waits", {}).setdefault(role, []).append({"blocker": blocker, "s": seconds})
+            job.setdefault("heavy_waits", {}).setdefault(role, []).append(
+                {"blocker": blocker, "s": seconds, "pool": pool})
         save(job)
 
 
@@ -5548,7 +5549,7 @@ def show_long_heavy_commands(job_id=None):
             continue
         elapsed = time.time() - holder["since"]
         if elapsed >= limit:
-            print(f"{owner or 'heavy'}: tell: heavy slot held for {elapsed / 60:.1f} min "
+            print(f"{owner or holder['pool']}: tell: {holder['pool']} slot held for {elapsed / 60:.1f} min "
                   f"(since {clock(holder['since'])}): {heavy.describe(holder)}")
 
 
@@ -5619,11 +5620,11 @@ def main(argv):
     COMMAND = cmd
     NO_WAIT = cmd in READ_ONLY or (cmd == "dispatch" and len(args) == 2)
     try:
-        if cmd == "_heavy-wait" and len(args) in (3, 4):
-            job_id, role, seconds, *blocker = args
+        if cmd == "_heavy-wait" and len(args) in (3, 4, 5):
+            job_id, role, seconds, *details = args
             require(Path(job_id).name == job_id and job_id not in {"", ".", ".."},
                     "invalid job ID for heavy wait")
-            add_heavy_wait(load(job_id), role, float(seconds), *blocker)
+            add_heavy_wait(load(job_id), role, float(seconds), *details)
             return
         if cmd != "claim":
             refresh_claim()

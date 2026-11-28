@@ -63,14 +63,15 @@ next agent reads. Each worker is a full session, so two jobs with four
 reviewers each already means ten agents at once; the default `concurrency` is
 2.
 
-**Heavy commands share one pool.** `factory/bin/heavy` gives gates, builders
-and reviewers a shared slot for each build, test run or E2E session. The slots
-are local to one repo and machine. Workers can read and edit while another
-command has a slot. `job.json` records the total wait per role in
-`heavy_wait_s`. Each entry in `heavy_waits` names the holder seen when the
-role began waiting and gives the wait in seconds. A holder from the same job
-is marked as self-queueing. `job next` shows slots held past
-`heavy_max_minutes`.
+**Browser sessions have their own slots.** `factory/bin/heavy` gives gates,
+builds and test runs slots from `heavy_parallel`. Reviewers run browser sessions
+with `factory/bin/heavy --pool browser`, which uses `browser_parallel`. A build
+or test inside a browser session can take a heavy slot. Take the browser slot
+first so commands never wait on the two pools in opposite order. Both pools
+are local to one repo and machine. `job.json` records the total wait per role
+in `heavy_wait_s`. Each entry in `heavy_waits` records the pool, the holder seen
+at the start of the wait and the wait in seconds. A holder from the same job
+is marked as self-queueing. `job next` shows slots held past `heavy_max_minutes`.
 
 **Fable at the door, once.** Intake is the only Fable call per job. It decides
 whether the issue is worth building, rewrites the scope when the issue is too

@@ -201,13 +201,17 @@ stack caches per checkout is rebuilt per job unless it is shared here. See
   and directories that exist (not a top-level directory) or new files with a
   directory and an extension; `## Out of scope` is left out. Set it `false`
   to let jobs build on the same files at once.
-- `heavy_parallel` sets how many gates, builds, tests and E2E commands run at
+- `heavy_parallel` sets how many gates, builds and test runs can run at
   once across this repo's worktrees on this machine. It defaults to 1, with
   `0` allowing unlimited commands. Updates carry over an existing
   `gate_parallel` value when adding the new key. Once heavy commands take
   turns, try raising `concurrency` to give more agents time to work between
   checks. `heavy_max_minutes` sets when `job next` reports a long-held slot
   and defaults to 30. A gate records its slot wait separately in checks.md.
+- `browser_parallel` sets how many reviewer browser sessions can run at once.
+  It defaults to 2, with `0` allowing unlimited sessions. Use
+  `factory/bin/heavy --pool browser` for the session and plain
+  `factory/bin/heavy` for builds or tests inside it.
 - `lockfile_regenerate`: `{lockfile path: shell command}` (a key may be an
   fnmatch pattern). When merging the base into a job branch conflicts only in
   these files, the factory takes the base's lockfile, runs the command in the
