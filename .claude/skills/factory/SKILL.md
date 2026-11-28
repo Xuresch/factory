@@ -377,8 +377,8 @@ dashboard fills in.
 From round 2 on, only the lenses that asked for CHANGES, those config.json
 `rerun_every_round` lists for the job's risk, and those whose `review_skip`
 paths the round touched run again; every other lens that passed is `skipped`:
-its `review-<r>.md` carries the PASS forward, so don't start it (`job start`
-refuses). The reviewers that run get the diff since they last looked.
+its `review-<r>.md` carries the PASS forward under `## Skipped`, so don't
+start it (`job start` refuses). The reviewers that run get the diff since they last looked.
 A **merge-only round** (the round after a failed merge, when the builder only
 merged the base: `git diff <base>...HEAD` without lockfiles is the same patch
 as the last reviewed round's, and every lens passed it) carries every lens:
@@ -400,7 +400,9 @@ When every reviewer has finished:
   (`job start` refuses), run `factory/bin/job merge <id>`. On GitHub, when
   CI fails, `advance` reruns the failed checks once and waits for them (up to
   `ci_wait_minutes`, it prints `rerunning once`); `job next` says `wait`
-  meanwhile.
+  meanwhile. A check that fails again sends the job to **build** (or
+  `needs-human` at the round limit): follow the stage `advance` prints, and
+  `job send` the builder what `job next <id>` prints.
 - any CHANGES: `factory/bin/job advance <id> build` (or `needs-human` when it
   refuses because this was the last round, or because a finding `stayed
   disputed`: the builder answered it `disagree` and the reviewer kept it

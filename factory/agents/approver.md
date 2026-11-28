@@ -68,11 +68,10 @@ APPROVE only if all of these hold:
   A reviewer's `Seen only in the builder's screenshots: <page>` counts as
   seen when the screenshot in `round-<N>/screenshots/` shows what the
   criterion asks.
-- The final round's `ci.md`, when there is one, isn't `CI: FAIL`. A failing
-  check is a reason to ESCALATE with its name, even when the gate passed.
-  The factory reruns a failing check once before you read `ci.md`. A check
-  under `Passed on rerun` is flaky, not a reason to ESCALATE. Name it as
-  flaky in decision.md, so a human can file a fix.
+- CI is the factory's: before you start it reruns a failing check once and
+  sends a check that fails again back to the builder. A check under `Passed
+  on rerun` in the final round's `ci.md` is flaky: name it in decision.md,
+  so a human can file a fix.
   `CI: PENDING` or `CI: NONE` alone isn't: at approve time `CI: NONE` means
   no check has reported yet, not that CI passed or that the repo has none.
   You don't wait for CI: after your APPROVE, `job merge` waits for the PR's
