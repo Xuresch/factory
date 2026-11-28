@@ -297,7 +297,8 @@ intake, caught after the spec. A spec that names unprotected paths too builds
 as usual; the builder leaves the protected part alone.
 
 **build.** Round 1: `factory/bin/job start <id> builder` (unless `job next`
-says `wait: overlaps`). Later rounds:
+says `wait: overlaps`: another job is changing files the spec names; start it
+when `job next` does). Later rounds:
 `factory/bin/job send <id> builder "<what this round is for>"`: the gate's
 `round-<N-1>/checks.md`, the reviews in `round-<N-1>/`, `feedback-<k>.md`, or
 `round-<N>/merge-back.md`. Every round, the first one and a resumed one too,
@@ -328,7 +329,9 @@ to the spec worker and run `advance <id> build` again when it reports. In round
 1. For each `slice-start` command `job slices` prints, run it (it makes the
    slice's worktree and branch), then `factory/bin/job start <id> builder-s<k>`.
    `job start` gives the slice builder its own worktree, branch and port. Start
-   every ready slice in one message so they run in parallel.
+   every ready slice in one message so they run in parallel. A slice `job next`
+   lists as `wait: slice <k> overlaps …` waits for another job; start it when
+   `job next` says `run`.
 2. When a slice worker reports, run `factory/bin/job slice-done <id> <k>`:
    - it prints `continue`: `factory/bin/job send <id> builder-s<k> "<the line it prints>"`;
    - it refuses (files outside the slice, a conflict): `job send` the worker
@@ -410,7 +413,12 @@ When every reviewer has finished:
   fallback (claude), says so, and clears its dispatch id: `send` refuses, so
   `job start <id> builder` with the same message plus the take-over line.
 
-**approve.** When the approver returns, read `decision.md`'s first line:
+**approve.** `job start <id> approver`, and `advance <id> needs-human` after an
+ESCALATE, first check that the branch merges with the base. On a conflict they
+send the job back to **build** (`back to the builder for round <N>`): run
+`factory/bin/job next <id>` and do what it prints.
+
+When the approver returns, read `decision.md`'s first line:
 
 - `APPROVE`: `factory/bin/job merge <id>`. It syncs the branch with the base
   (regenerating lockfiles when only they conflict), runs the gate again, on
@@ -662,6 +670,12 @@ new feature, ask.
   its consequences across the whole branch before `job finish` merges it. Ask
   the user when you aren't sure it is a rule change. A job on the base branch
   has no feature review; `--rule` then records nothing.
+
+  When the job waits on a base merge conflict (`job next` says
+  `--merge-only`), or the user's feedback only says how to resolve the base
+  merge, add `--merge-only` with the merge instructions on stdin. The builder
+  resolves the merge and nothing else; when the patch stays the same, the
+  reviews and approval carry over.
 - **Rejecting or benching a job**, waiting or running (not while it merges):
   stop its workers first if it is running (the `orchestration` guide's
   recovery reference), then pass their reason verbatim on stdin:
