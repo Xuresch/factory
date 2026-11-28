@@ -59,7 +59,9 @@ Usage:
   job feature-review <branch> --mid  a mid-feature review while tickets are open (job merge starts it
                                  every feature_review_every merges): findings go to
                                  _features/<branch>-integration.md for the later jobs, not to tickets
-  job feedback <job> [--rule]    needs-human → build, with your feedback (stdin) as feedback-<k>.md
+  job feedback <job> [--rule | --merge-only]
+                                 needs-human → build, with your feedback (stdin) as feedback-<k>.md
+                                 (--merge-only: resolve the base merge and keep prior review and approval)
                                  (--rule: it changes a product rule other tickets of the feature may
                                  rely on; its first line also goes under `## Rule changes` in
                                  factory/jobs/_features/<branch>-rules.md for the feature review)
@@ -1060,9 +1062,16 @@ def require(cond, msg):
         raise Refused(msg)
 
 
-def escalate(job, why):
+def escalate(job, why, conflict=False):
     """Write decision.md for an escalation the approver didn't make."""
-    (job_dir(job["id"]) / "decision.md").write_text(f"ESCALATE\n\n## Why\n{why}\n")
+    path = job_dir(job["id"]) / "decision.md"
+    if conflict:
+        job["merge_conflict_blocked"] = True
+        if first_line(path) == "APPROVE" and job.get("approved"):
+            job["approved"]["decision"] = path.read_text()
+        why += (f"\n\nUse `factory/bin/job feedback {job['id']} --merge-only` with the merge instructions "
+                "on stdin to send this conflict back to the builder.")
+    path.write_text(f"ESCALATE\n\n## Why\n{why}\n")
 
 
 def is_protected(path):
@@ -1777,7 +1786,7 @@ def sync_with_base(job):
         git(job, "fetch", "origin", jbase(job), check=False)
     ref = jref(job)
     before = git(job, "rev-parse", "HEAD").stdout.strip()
-    ok, out, note = merge_base_into(job, ref, rd / "lockfile-regenerate.log")
+    ok, out, note, _ = merge_base_into(job, ref, rd / "lockfile-regenerate.log")
     note = (f"\n{note}\n" if note else "") + kept
     if not ok:
         (rd / "base-sync.md").write_text(
@@ -1854,27 +1863,50 @@ def regenerate_lockfiles(job, ref, paths, log):
 
 
 def merge_base_into(job, ref, log):
-    """Merge `ref` into the job branch. Returns (ok, git output, note): a
+    """Merge `ref` into the job branch. Returns (ok, git output, note, conflict): a
     conflict only in `lockfile_regenerate` paths is resolved by regenerating
     them; any other conflict, or a failing regenerate, aborts the merge
     (ok False). `note` says what the factory did about lockfiles, or is None."""
     res = git(job, "merge", "--no-edit", ref, check=False)
     out = (res.stdout or res.stderr).strip()
     if res.returncode == 0:
-        return True, out, None
+        return True, out, None, False
     paths = conflicted_paths(job)
     note = None
     if paths and all(lockfile_command(p) for p in paths):
         ok, note = regenerate_lockfiles(job, ref, paths, log)
         if ok:
-            return True, out, note
+            return True, out, note, False
         note = f"The conflict is only in lockfiles ({', '.join(paths)}), but the factory couldn't regenerate them: {note}"
     git(job, "merge", "--abort", check=False)
-    return False, out, note
+    return False, out, note, bool(paths)
+
+
+def merge_conflict_reason(job, output, note=None):
+    return (f"The branch conflicts with {jbase(job)}:\n\n"
+            + (f"{note}\n\n" if note else "") + f"```\n{output}\n```")
+
+
+def approval_preflight(job):
+    """Test the reviewed head against the current base without touching the branch or index."""
+    if GITHUB:
+        fetch_base(jbase(job), job["worktree"])
+    res = git(job, "merge-tree", "--write-tree", "HEAD", jref(job), check=False)
+    if res.returncode == 1:
+        return lifecycle.Facts(merge_outcome="conflict",
+                               merge_reason=merge_conflict_reason(job, res.stdout.strip()))
+    require(res.returncode == 0, f"couldn't check the merge with {jbase(job)}: {(res.stderr or res.stdout).strip()}")
+    return None
+
+
+def grant_conflict_round(job):
+    job["round_limit"] += 1
+    job["merge_conflict_rounds"] = job.get("merge_conflict_rounds", 0) + 1
 
 
 def next_round(job):
     job["round"] += 1
+    job.pop("merge_conflict_blocked", None)
     round_dir(job).mkdir(exist_ok=True)
     job["gate"] = None
     job["reviews"] = {}
@@ -1913,8 +1945,7 @@ def change_id(job, head):
 
 def merge_only_from(job, head):
     """The reviewed round whose change `head` repeats, when every lens passed it:
-    this round only merged the base. None otherwise, and always after a human's
-    feedback or a rewind (they drop `carry`)."""
+    this round only merged the base. Ordinary feedback and rewinds drop `carry`."""
     carry = job.get("carry")
     if job["round"] < 2 or not carry or not set(reviewers(job)) <= set(carry["passed"]):
         return None
@@ -1950,7 +1981,10 @@ def carry_approval(job):
     note = (f"- Carried from round {k}: merge-only round. The change is the same one "
             f"{'a human' if human else 'the approver'} approved in round {k}; this round only merged "
             f"the base, and the merge gate checks it again.")
-    old = (d / "decision.md").read_text().split("\n", 1)[-1] if (d / "decision.md").exists() else ""
+    previous = approved.get("decision")
+    if previous is None and (d / "decision.md").exists():
+        previous = (d / "decision.md").read_text()
+    old = (previous or "").split("\n", 1)[-1]
     if human:  # decision.md is the escalation the human overruled with `job approve`
         body = f"\n## Summary\n{note}\n\n## Why\nA human approved round {k} with `job approve` (approval.md).\n"
     elif "## Summary\n" in old:
@@ -2064,17 +2098,26 @@ def observe_transition(job, target=None, *, reading=None):
         return facts(reviews=verdicts, dirty=dirty, head=head, disputes=disputes)
     if stage == "approve":
         line = first_line(d / "decision.md")
-        if line in {"APPROVE", "ESCALATE"}:
-            return facts(report=line, dirty=bool(git(job, "status", "--porcelain").stdout.strip()),
-                         head=git(job, "rev-parse", "HEAD").stdout.strip())
+        if target in {"build", "needs-human"} or line in {"APPROVE", "ESCALATE"}:
+            dirty = bool(git(job, "status", "--porcelain").stdout.strip())
+            head = git(job, "rev-parse", "HEAD").stdout.strip()
+            if not dirty and head == job.get("review_head") and (target in {"build", "needs-human"} or line == "ESCALATE"):
+                if conflict := approval_preflight(job):
+                    return conflict
+            return facts(report=line, dirty=dirty, head=head)
         return facts(report=line)
     if stage == "merging":
-        return facts(report=first_line(d / "decision.md"),
-                     approval=newer_report(d / "approval.md", d / "decision.md"))
+        line = first_line(d / "decision.md")
+        approval = newer_report(d / "approval.md", d / "decision.md")
+        if (target == "build" or (line == "ESCALATE" and not approval)) and job.get("review_head"):
+            if conflict := approval_preflight(job):
+                return conflict
+        return facts(report=line, approval=approval)
     if stage == "needs-human":
-        feedback = sorted(d.glob("feedback-*.md"))
+        feedback = max(d.glob("feedback-*.md"), key=lambda p: p.stat().st_mtime_ns, default=None)
+        fresh = feedback is not None and newer_report(feedback, d / "decision.md")
         return facts(approval=newer_report(d / "approval.md", d / "decision.md"),
-                     feedback=bool(feedback and newer_report(feedback[-1], d / "decision.md")))
+                     feedback=fresh, merge_only_feedback=fresh and first_line(feedback).startswith("# Merge-only feedback "))
     return facts()
 
 
@@ -2324,8 +2367,12 @@ def resume_ticket(job):
     TICKETS.resume(job["issue"])
 
 
-def reset_after_feedback(job, round_limit):
+def reset_after_feedback(job, round_limit, merge_only=False):
     job["round_limit"] = round_limit
+    if merge_only:
+        if job.get("review_head") and job["gate"] == "PASS" and set(job["reviews"].values()) == {"PASS"}:
+            remember_reviewed(job)
+        return
     reset_findings(job)
     job.pop("carry", None)  # every lens looks again at the whole change
     job.pop("reviewed_at", None)
@@ -2334,7 +2381,7 @@ def reset_after_feedback(job, round_limit):
 
 def record_merge_failure(job, why):
     (round_dir(job) / "merge-back.md").write_text(
-        f"MERGE: BACK\n\nThe merge after approval didn't go through, so this round fixes it:\n\n{why}\n")
+        f"MERGE: BACK\n\nThis round fixes the merge:\n\n{why}\n")
 
 
 def apply_effects(job, decision):
@@ -2350,7 +2397,8 @@ def apply_effects(job, decision):
         "open_approval": open_approval, "escalate_disputes": escalate_disputes, "maybe_fall_back": maybe_fall_back,
         "remember_reviewed": remember_reviewed, "update_pr_review": update_pr_review,
         "record_approval": record_approval, "resume_ticket": resume_ticket, "reset_after_feedback": reset_after_feedback,
-        "record_merge_failure": record_merge_failure, "request_human": request_human,
+        "record_merge_failure": record_merge_failure, "grant_conflict_round": grant_conflict_round,
+        "request_human": request_human,
         "record_review_verdicts": record_review_verdicts, "sync_with_base": sync_with_base,
     }
     for effect in decision.effects:
@@ -2376,7 +2424,7 @@ def request_human(job):
         body += f"\n\n**CI:** {ci.split(chr(10), 1)[0].removeprefix('CI: ')}" + "".join(
             f"\n{l}" for l in ci.splitlines() if l.startswith("- ") and not l.endswith(": success"))
     if job["pr"]:
-        if gh_json("pr", "view", str(job["pr"]), "--json", "isDraft")["isDraft"]:
+        if not job.get("merge_conflict_blocked") and gh_json("pr", "view", str(job["pr"]), "--json", "isDraft")["isDraft"]:
             gh("pr", "ready", str(job["pr"]))
         pr_comment(job["pr"], body)
     else:
@@ -2399,7 +2447,7 @@ def finish_transition(job, stage):
     if after:
         pause(job, after, stage)
         stage = "paused"
-    elif stage == "build" and old in {"spec", "gate", "review", "needs-human", "merging"}:
+    elif stage == "build" and old in {"spec", "gate", "review", "approve", "needs-human", "merging"}:
         sync_with_base(job)  # a paused job syncs when it resumes
     if stage == "build" and old in {"spec", "paused"}:
         try:
@@ -2970,7 +3018,9 @@ def wait_reason(job):
     why = ""
     if (d / "decision.md").exists():
         why = first_text_line(section(d / "decision.md", "Why") or (d / "decision.md").read_text().split("\n", 1)[-1])
-    if job["pr"]:
+    if job.get("merge_conflict_blocked"):
+        action = f"read {rel}/decision.md, then give merge-only feedback for {jid}"
+    elif job["pr"]:
         action = f"merge PR #{job['pr']}, or give feedback with /factory"
     elif not GITHUB and job.get("review_head"):
         action = f"read {rel}/decision.md, then /factory approve {jid}, or give feedback with /factory"
@@ -4335,6 +4385,16 @@ def structure_review_due(job, diff):
         print(f"{job['id']}: the structure review didn't start{reason}; the next base merge retries it")
 
 
+def finish_merge_failure(job, facts):
+    decision = lifecycle.decide(sync(job), facts)
+    save(apply_transition(job, decision))
+    if decision.stage == "build":
+        print(f"{job['id']}: back to the builder for round {job['round']}: {decision.reason.splitlines()[0]} "
+              f"(round-{job['round']}/merge-back.md)")
+    else:
+        print(f"{job['id']}: needs-human: {decision.reason.splitlines()[0]}")
+
+
 def cmd_merge(job):
     warn_dirty_protected_paths(jbase(job))
     sync(job)
@@ -4358,14 +4418,7 @@ def cmd_merge(job):
         return
 
     def finish_failure(outcome, why):
-        facts = lifecycle.Facts(merge_outcome=outcome, merge_reason=why)
-        decision = lifecycle.decide(sync(job), facts)
-        save(apply_transition(job, decision))
-        if decision.stage == "build":
-            print(f"{job['id']}: back to the builder for round {job['round']}: {decision.reason.splitlines()[0]} "
-                  f"(round-{job['round']}/merge-back.md)")
-        else:
-            print(f"{job['id']}: needs-human: {decision.reason.splitlines()[0]}")
+        return finish_merge_failure(job, lifecycle.Facts(merge_outcome=outcome, merge_reason=why))
 
     # The base can move between our sync and the merge (another PR landed):
     # GitHub then says "Base branch was modified". Sync, gate and merge again;
@@ -4375,12 +4428,13 @@ def cmd_merge(job):
         if GITHUB:
             fetch_base(jbase(job), job["worktree"])
         rd = round_dir(job)
-        ok, out, note = merge_base_into(job, jref(job), rd / "lockfile-regenerate.log")
+        ok, out, note, conflict = merge_base_into(job, jref(job), rd / "lockfile-regenerate.log")
         if note:  # what the factory did about a lockfile conflict, for the builder and the retro
             (rd / "merge-sync.md").write_text(f"SYNC: {'MERGED' if ok else 'CONFLICT'}\n\n{note}\n")
         if not ok:
-            return finish_failure("recoverable", f"The branch conflicts with {jbase(job)}:\n\n"
-                                  + (f"{note}\n\n" if note else "") + f"```\n{out}\n```")
+            return finish_failure("conflict" if conflict else "recoverable",
+                                  merge_conflict_reason(job, out, note) if conflict
+                                  else f"Couldn't merge {jbase(job)} into the branch:\n\n```\n{out}\n```")
         # This process owns the job lock. Record the child's wait here.
         with tempfile.TemporaryFile(mode="w+t") as wait:
             fd = wait.fileno()
@@ -4779,6 +4833,8 @@ def cmd_approve(job):
             "give feedback with `job feedback` instead")
     if git(job, "rev-parse", "HEAD").stdout.strip() != job.get("review_head"):
         die("the branch changed after review; give feedback so it is gated and reviewed again")
+    if job.get("merge_conflict_blocked") and approval_preflight(job):
+        die("the base still conflicts with the branch; use `job feedback --merge-only` to send it back")
     (job_dir(job["id"]) / "approval.md").write_text(
         f"APPROVED\n\nBy @{operator()} after the job escalated.\n")
     save(advance(sync(job), "merging"))
@@ -4805,7 +4861,10 @@ def record_rule_change(job, text):
     print(f"{job['id']}: rule change recorded in {path.relative_to(REPO)}; the feature review checks it")
 
 
-def cmd_feedback(job, text, rule=False):
+def cmd_feedback(job, text, rule=False, merge_only=False):
+    if merge_only:
+        require(job["stage"] == "needs-human" and Path(job["worktree"]).exists(),
+                "--merge-only requires a needs-human job with a worktree")
     if job["stage"] == "paused":  # redo the step it paused after
         after = job["paused"]["after"]
         cmd_rewind(job, {"budget": "build", "dependencies": "spec"}.get(after, after), text)
@@ -4821,7 +4880,9 @@ def cmd_feedback(job, text, rule=False):
         return
     d = job_dir(job["id"])
     k = len(list(d.glob("feedback-*.md"))) + 1
-    (d / f"feedback-{k}.md").write_text(f"# Feedback {k}\n\nFrom @{operator()} after the job escalated.\n\n{text.strip()}\n")
+    heading = "Merge-only feedback" if merge_only else "Feedback"
+    (d / f"feedback-{k}.md").write_text(
+        f"# {heading} {k}\n\nFrom @{operator()} after the job escalated.\n\n{text.strip()}\n")
     absorb_comments(job)
     advance(sync(job), "build")
     reopened = reopen_slices(job, f"feedback-{k}.md")
@@ -5224,6 +5285,12 @@ def start_worker(job, role, extra):
         if job["stage"] == "approve" and job.get("approve_carried") == job["round"]:
             die(f"the approval is carried in round {job['round']} (merge-only round, see decision.md); "
                 f"run `job merge {job['id']}`")
+        if job["stage"] == "approve":
+            require(not git(job, "status", "--porcelain").stdout.strip()
+                    and git(job, "rev-parse", "HEAD").stdout.strip() == job.get("review_head"),
+                    "the branch changed after review")
+            if conflict := approval_preflight(job):
+                return finish_merge_failure(job, conflict)
         lines.append(f"PR: {'#' + str(job['pr']) if job['pr'] else 'none'}. Final round: {job['round']}.")
     if role in {"intake", "spec"} and CONFIG.get("protected_paths"):
         lines.append(protected_note())
@@ -5576,6 +5643,12 @@ def next_approve(job, since):
     carried = job.get("approve_carried") == job["round"] and first_line(f) == "APPROVE"
     step = None if carried else worker_step(job, "approver", f, since)
     if step:
+        if step[0] == "start":
+            facts = observe_transition(job, "build")
+            if facts.merge_outcome:
+                return [decision_step(job, lifecycle.decide(job, facts))]
+            if facts.dirty or facts.head != job.get("review_head"):
+                return [("check", "the branch changed after review")]
         return [step]
     return [decision_step(job, transition_decision(job), "approver")]
 
@@ -5589,6 +5662,8 @@ def next_waiting(job, since):
                          "give feedback or reject")]
     if stage == "needs-info":
         return [decision_step(job, transition_decision(job))]
+    if job.get("merge_conflict_blocked"):
+        return [("wait", f"human: base merge conflict; give feedback with `{JOB} feedback {i} --merge-only`")]
     return [("wait", f"human: needs-human ({first_line(d / 'decision.md') or 'no decision.md'}); they approve "
                      f"(`{JOB} approve {i}`), give feedback or reject")]
 
@@ -5787,8 +5862,11 @@ def main(argv):
             cmd_mid_review(branch) if "--mid" in args else cmd_feature_review(branch)
         elif cmd == "approve" and len(args) == 1:
             cmd_approve(resolve(args[0]))
-        elif cmd == "feedback" and len([a for a in args if a != "--rule"]) == 1:
-            cmd_feedback(resolve(next(a for a in args if a != "--rule")), sys.stdin.read(), rule="--rule" in args)
+        elif cmd == "feedback" and len([a for a in args if a not in {"--rule", "--merge-only"}]) == 1:
+            rule, merge_only = "--rule" in args, "--merge-only" in args
+            require(not (rule and merge_only), "choose --rule or --merge-only")
+            key = next(a for a in args if a not in {"--rule", "--merge-only"})
+            cmd_feedback(resolve(key), sys.stdin.read(), rule=rule, merge_only=merge_only)
         elif cmd == "comments" and len([a for a in args if a != "--seen"]) == 1:
             cmd_comments(resolve(next(a for a in args if a != "--seen")), seen="--seen" in args)
         elif cmd == "reject" and len(args) == 1:
