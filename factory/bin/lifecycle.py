@@ -40,6 +40,7 @@ class Facts:
     pull_request: dict | None = None
     reviews: dict = field(default_factory=dict)
     review_problems: dict = field(default_factory=dict)
+    review_ci: str | None = None
     disputes: tuple = ()
     continues_left: bool = False
     replied: bool = False
@@ -108,11 +109,12 @@ def _gate(job, facts):
     report = Effect("publish_round_report")
     if verdict == "PASS":
         return _transition("review", "the gate passed", report, Effect("open_review", (facts.head,)))
+    ci = Effect("record_round_ci", (facts.head,))
     if rounds_left(job):
-        return _transition("build", _round_reason(job), report, Effect("next_round"))
+        return _transition("build", _round_reason(job), report, ci, Effect("next_round"))
     reason = (f'The gate failed in round {job["round"]}, the last allowed round. '
               f'See round-{job["round"]}/checks.md.')
-    return _transition("needs-human", _round_reason(job), report, Effect("escalate", (reason,)))
+    return _transition("needs-human", _round_reason(job), report, ci, Effect("escalate", (reason,)))
 
 
 def _review(job, facts):
@@ -130,20 +132,29 @@ def _review(job, facts):
     if facts.head != job.get("review_head"):
         return Decision("refuse", "HEAD moved during review; a reviewer committed")
     changes = tuple(lens for lens, verdict in facts.reviews.items() if verdict == "CHANGES")
-    record = Effect("record_review_verdicts", (facts.reviews,))
+    record = (Effect("record_review_verdicts", (facts.reviews,)),
+              Effect("record_round_ci", (facts.head, facts.review_ci)))
     pr = Effect("update_pr_review")
     if not changes:
-        return _transition("approve", "every review passed", record, Effect("open_approval"), pr)
+        if facts.review_ci and facts.review_ci.startswith("CI: FAIL\n"):
+            reason = f'CI failed on PR #{job["pr"]}. See round-{job["round"]}/ci.md.'
+            if rounds_left(job):
+                return _transition("build", reason, *record, Effect("remember_reviewed", (True,)),
+                                   Effect("next_round"), pr, legacy_target="approve")
+            reason += " The job has reached its round limit."
+            return _transition("needs-human", reason, *record, Effect("escalate", (reason,)), pr,
+                               legacy_target="approve")
+        return _transition("approve", "every review passed", *record, Effect("open_approval"), pr)
     if facts.disputes:
         keys = ", ".join(dispute["key"] for dispute in facts.disputes)
-        return _transition("needs-human", f"{keys} stayed disputed", record,
+        return _transition("needs-human", f"{keys} stayed disputed", *record,
                            Effect("escalate_disputes", (facts.disputes,)), pr)
     if rounds_left(job):
-        return _transition("build", _round_reason(job), record, Effect("maybe_fall_back", (changes,)),
+        return _transition("build", _round_reason(job), *record, Effect("maybe_fall_back", (changes,)),
                            Effect("remember_reviewed"), Effect("next_round"), pr)
     reason = (f'Review rounds exhausted. Outstanding CHANGES in round-{job["round"]}/ '
               f'from: {", ".join(changes)}.')
-    return _transition("needs-human", _round_reason(job), record, Effect("escalate", (reason,)), pr)
+    return _transition("needs-human", _round_reason(job), *record, Effect("escalate", (reason,)), pr)
 
 
 def _merge_failure(job, facts):
@@ -154,7 +165,8 @@ def _merge_failure(job, facts):
         extra = conflict and job.get("merge_conflict_rounds", 0) < EXTRA_CONFLICT_ROUNDS
         if extra or rounds_left(job):
             allowance = (Effect("grant_conflict_round"),) if extra else ()
-            return _transition("build", reason, reviewed, *allowance, Effect("next_round"),
+            ci = (Effect("record_round_ci", (job["review_head"],)),) if job.get("review_head") else ()
+            return _transition("build", reason, reviewed, *ci, *allowance, Effect("next_round"),
                                Effect("record_merge_failure", (reason,)), legacy_target="needs-human" if conflict else None)
     keep = (reviewed,) if conflict else ()
     escalation = Effect("escalate", (reason, True)) if conflict else Effect("escalate", (reason,))
