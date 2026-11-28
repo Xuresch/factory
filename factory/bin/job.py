@@ -1208,10 +1208,11 @@ def wait_for_ci(job, head, rerun=None, checks=None, grace=None):
     check showed up within `ci_start_grace_seconds`: a repo without CI) or TIMEOUT
     (still pending after `ci_wait_minutes`). Results for another head count as
     not started yet: GitHub hasn't seen the push. After a rerun (rerun_failed's
-    record), a rerun check still showing its old failure hasn't restarted yet,
-    for up to the grace period. `checks` (default: the PR's, ci_checks) is
-    what is asked each time; `grace` overrides ci_start_grace_seconds."""
+    record), a missing rerun check stays pending until the wait limit. An old
+    failure is given up to the grace period to restart. `checks` (default: the
+    PR's, ci_checks) is what is asked each time; `grace` overrides ci_start_grace_seconds."""
     checks = checks or (lambda: ci_checks(job))
+    rerun_failures = rerun["failed"] if rerun else {}
     grace = float(CONFIG.get("ci_start_grace_seconds", 180) if grace is None else grace)
     limit = float(CONFIG.get("ci_wait_minutes", 30)) * 60
     start = time.monotonic()
@@ -1222,10 +1223,14 @@ def wait_for_ci(job, head, rerun=None, checks=None, grace=None):
         except Refused:
             ci = classify_checks([], "")
         if ci["head"] != head:
-            ci.update(verdict="NONE", rows=[], failing=[], pending=[], passed=[], skipped=[])
-        old = [n for n in ci["failing"] if rerun and rerun["failed"].get(n)
-               and ci["ended"].get(n) == rerun["failed"][n]]
-        if old and waited < grace:
+            ci = classify_checks([], ci["head"])
+        missing = [n for n in rerun_failures if n not in ci["ended"]]
+        if missing:
+            ci["verdict"] = "PENDING"
+            ci["pending"].extend(missing)
+            ci["rows"].extend(f"- {n}: pending" for n in missing)
+        old = any(rerun_failures.get(n) and ci["ended"][n] == rerun_failures[n] for n in ci["failing"])
+        if old and waited < min(grace, limit):
             time.sleep(ci_poll_seconds())
             continue
         if ci["verdict"] in {"PASS", "FAIL"}:

@@ -212,6 +212,7 @@ check() {  # check <description> <actual> <expected substring>
 # records mergedHead), rerun.json (the statusCheckRollup `gh run rerun` puts on the PR),
 # commit-checks.json ({sha: [check runs]}: what `gh api .../commits/<sha>/check-runs` lists;
 # `pr merge` makes the merge commit f00d...), commit-rerun.json (the check runs `gh run rerun` puts there),
+# commit-check-polls.json ({sha: [[check runs], ...]}: successive responses before the stable checks),
 # permissions.json ({login: role_name}: what `gh api .../collaborators/<login>/permission` says; 404 otherwise),
 # merge-fail.json ({"count": n, "stderr": s, "run": cmd}:
 # the next n `pr merge` calls run cmd, then fail with s) and pr-comments.json
@@ -260,7 +261,12 @@ elif cmd[0] == "api" and cmd[1].endswith("/dependencies/blocked_by"):  # issue-<
                       for b in (load(f"issue-{n}.json") or {}).get("blocked_by", [])]))
 elif cmd[0] == "api" and "/check-runs" in cmd[1]:  # commit-checks.json {sha: [check runs]}
     sha = cmd[1].split("/commits/")[1].split("/")[0]
-    runs = (load("commit-checks.json") or {}).get(sha, [])
+    polls = load("commit-check-polls.json") or {}
+    if polls.get(sha):
+        runs = polls[sha].pop(0)
+        save("commit-check-polls.json", polls)
+    else:
+        runs = (load("commit-checks.json") or {}).get(sha, [])
     print(json.dumps({"total_count": len(runs), "check_runs": runs}))
 elif cmd[0] == "api" and cmd[1].endswith("/permission"):  # permissions.json {login: role_name}; else 404
     role = (load("permissions.json") or {}).get(cmd[1].split("/collaborators/")[1].split("/")[0])
@@ -2966,6 +2972,38 @@ t_gh_main_ci_after_merge() {
   done
 }
 
+t_gh_main_ci_missing_rerun() {
+  local case id ci
+  for case in returns timeout; do
+    new_gh_repo "ghmainci-missing-$case"; gh_issue 1 One
+    [[ $case == returns ]] && set_config ci_wait_minutes 0.05
+    id=$(gh_to_merging 1) || return 1
+    main_checks commit-checks.json failure
+    main_checks commit-rerun.json success
+    python3 - "$GH" "$MAIN_SHA" "$case" <<'PY' || return 1
+import json, sys
+from pathlib import Path
+fixtures, sha, case = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+initial = json.loads((fixtures / "commit-checks.json").read_text())[sha]
+missing = [check for check in initial if check["name"] != "integration"]
+stable = fixtures / "commit-rerun.json"
+if case == "timeout":
+    stable.write_text(json.dumps({sha: missing}))
+(fixtures / "commit-check-polls.json").write_text(json.dumps({sha: [initial, missing, missing]}))
+PY
+    J merge "$id" >/dev/null 2>&1 || return 1
+    ci=$(cat "factory/jobs/$id/round-1/main-ci.md") || return 1
+    case $case in
+      returns) check "passes when the check returns" "$(field "$id" "d['main_ci']['verdict']")" "PASS" &&
+               check "records the rerun result" "$ci" "- Passed on rerun: integration." ;;
+      timeout) check "times out while the check is absent" "$(field "$id" "d['main_ci']['verdict']")" "TIMEOUT" &&
+               check "records the missing check as pending" "$(field "$id" "d['main_ci']['pending']")" "['integration']" &&
+               check "names the missing check in the summary" "$ci" "- Checks still pending after ci_wait_minutes: integration." &&
+               check "lists the missing check" "$ci" "- integration: pending" ;;
+    esac || return 1
+  done
+}
+
 t_gh_main_ci_background() {
   new_gh_repo ghmainci-bg; gh_issue 1 One; unset FACTORY_MAIN_CI_SYNC; set_config ci_wait_minutes 0.05
   local id; id=$(gh_to_merging 1) || return 1
@@ -4606,8 +4644,24 @@ MD
   rm "factory/jobs/$id/build.md"; touch "$wt/FAIL"
   factory/bin/gate "$id" >/dev/null; rc=$?
   [[ $rc == 1 ]] && check "missing build input on FAIL" "$(cat "$report")" 'build.md: missing.' &&
+  [[ $(head -1 "$report") == 'REPORT: claims not checked, 1 untested' ]] &&
   check "reports actual failed gate" "$(cat "$report")" 'Round gate: FAIL.' &&
   J advance "$id" build >/dev/null && [[ $(field "$id" "d['round']") == 2 ]]
+}
+
+t_report_without_criteria() {
+  new_repo report-no-criteria; ticket 01 One; commit_all
+  local id report
+  id=$(to_build 01 low none) || return 1
+  build_commit "$id" alpha.py 'def alpha(): pass' || return 1
+  ready "$id"
+  printf '\n## Acceptance criteria\n\nNo checklist was included.\n' >> "factory/jobs/$id/build.md"
+  J advance "$id" gate >/dev/null && factory/bin/gate "$id" >/dev/null || return 1
+  report=$(cat "factory/jobs/$id/round-1/report.md") || return 1
+  [[ $(head -1 <<< "$report") == 'REPORT: claims not checked, 1 untested' ]] &&
+  check "summary explains why claims were not checked" "$report" \
+    '- Build claims not checked: build.md has no acceptance criteria the report could read.' &&
+  check "inputs name the missing criteria" "$report" 'build.md: no criteria found.'
 }
 
 t_report_directory_changes_and_grouped_criteria() {
@@ -4826,6 +4880,7 @@ human, lookalike, factory = json.loads(Path(sys.argv[1]).read_text())["issues/co
 assert human["body"] == "A human comment" and lookalike["user"]["login"] == "alice"
 assert factory["id"] == 13 and factory["user"]["login"] == "op"
 assert factory["body"] == "<!-- factory:report -->\n\n### Factory report\n\nRound 1\n\n" + Path(sys.argv[2]).read_text()
+assert "Round 1\n\nREPORT: claims not checked, 0 untested\n" in factory["body"]
 PY
   review "$id" 1 code CHANGES; J advance "$id" build >/dev/null || return 1
   build_commit "$id" FAIL fail && git -C "$wt" push -q || return 1
@@ -4869,6 +4924,7 @@ import job
 code, approver, builder = (job.render_brief(role, Path("target") / f"{role}.md").read_text()
                           for role in ("reviewer-code", "approver", "builder"))
 assert all("report.md" in text for text in (code, approver, builder))
+assert all("REPORT: claims not checked" in text for text in (code, approver))
 assert "[should]" in code and "contradiction" in code and "untested" in code
 assert "ESCALATE" in approver and "contradiction" in approver and "untested" in approver
 assert "Test:" in builder and "contradiction" in builder

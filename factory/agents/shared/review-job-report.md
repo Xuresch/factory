@@ -1,6 +1,9 @@
 `round-<N>/report.md` in the job folder is the gate's evidence report, written
 by a script and left as it is. Its first line is
-`REPORT: <n> contradictions, <m> untested`.
+`REPORT: <n> contradictions, <m> untested` or
+`REPORT: claims not checked, <m> untested` when the script found no readable
+acceptance criteria in build.md. Use the spec and the branch to assess those
+criteria.
 
 - A contradiction is a claim in build.md that the branch disproves: a
   `Test:` reference whose file or test name isn't on the branch at HEAD, or
