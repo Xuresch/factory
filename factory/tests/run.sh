@@ -327,6 +327,11 @@ elif cmd == ["pr", "list"]:  # --state open (default), merged or all
     ok = pr and state in ("ALL", pr["state"]) and opt("--head") in (None, pr["headRefName"])
     print(json.dumps([{"headRefOid": pr.get("mergedHead") or head(), **pr}] if ok else []))
 elif cmd == ["pr", "view"]:
+    polls = load("pr-check-polls.json") or []
+    if polls and "statusCheckRollup" in (opt("--json") or "").split(","):
+        pr["statusCheckRollup"] = polls.pop(0)
+        save("pr.json", pr)
+        save("pr-check-polls.json", polls)
     print(json.dumps({"headRefOid": head(), **pr}))
 elif cmd == ["run", "rerun"]:  # the rerun's results replace the PR's checks (and a commit's)
     if load("rerun.json") is not None:
@@ -386,15 +391,23 @@ gh_pr_set() {  # gh_pr_set <python statement on pr>: edit the fake's pr.json
   python3 -c "import json; p='$GH/pr.json'; pr=json.load(open(p)); $1; json.dump(pr, open(p, 'w'))"
 }
 
-gh_to_approve() {  # gh_to_approve <issue> [<file> <content>...]: create .. review on GitHub, PR pushed
+gh_to_gate() {  # gh_to_gate <issue> [<file> <content>...]: create .. gate on GitHub, PR pushed
   local id; id=$(J create "$1") || return 1; shift  # the build commits y.txt, or the files given
-  intake "$id" low none; factory/bin/route "$id" >/dev/null && J advance "$id" spec >/dev/null || return 1
-  echo "# Spec" > "factory/jobs/$id/spec.md"; J advance "$id" build >/dev/null
+  intake "$id" "${GH_TEST_RISK:-low}" "${GH_TEST_SURFACES:-none}"
+  factory/bin/route "$id" >/dev/null && J advance "$id" spec >/dev/null || return 1
+  echo "# Spec" > "factory/jobs/$id/spec.md"; J advance "$id" build >/dev/null || return 1
   (( $# )) || set -- y.txt y
   while (( $# )); do mkdir -p ".worktrees/$id/$(dirname "$1")"; build_commit "$id" "$1" "$2"; shift 2; done
   (cd ".worktrees/$id" && git push -q -u origin "factory/$id" 2>/dev/null &&
-   gh pr create --draft --base master --head "factory/$id" --title "feat: t" --body b >/dev/null)
-  to_review "$id"; review "$id" 1 code PASS
+   gh pr create --draft --base master --head "factory/$id" --title "feat: t" --body b >/dev/null) || return 1
+  ready "$id"; J advance "$id" gate >/dev/null || return 1
+  echo "$id"
+}
+
+gh_to_approve() {  # gh_to_approve <issue> [<file> <content>...]: finish the gate and write a passing code review
+  local id; id=$(gh_to_gate "$@") || return 1
+  factory/bin/gate "$id" >/dev/null && J advance "$id" review >/dev/null || return 1
+  review "$id" 1 code PASS
   echo "$id"
 }
 
@@ -1603,11 +1616,13 @@ t_gh_ci_at_approve() {
   local case rollup want
   for case in fail pass pending stale; do
     new_gh_repo "ghci-$case"; gh_issue 1 One
+    [[ $case == fail ]] && set_config max_rounds 1
     local id; id=$(gh_to_approve 1) || return 1
     rollup="[{'__typename': 'CheckRun', 'name': 'build', 'status': 'COMPLETED', 'conclusion': 'SUCCESS'}"
     case $case in
-      fail) rollup+=", {'__typename': 'StatusContext', 'context': 'ci/test', 'state': 'FAILURE'}]"; want="CI: FAIL" ;;
+      fail) rollup+=", {'__typename': 'StatusContext', 'context': 'ci/test', 'state': 'FAILURE', 'targetUrl': 'https://ci.example/test'}]"; want="CI: FAIL" ;;
       pending) rollup+=", {'__typename': 'CheckRun', 'name': 'lint', 'status': 'IN_PROGRESS', 'conclusion': ''}]"; want="CI: PENDING" ;;
+      stale) rollup="[{'name': 'old check', 'status': 'COMPLETED', 'conclusion': 'FAILURE'}]"; want="CI: UNKNOWN" ;;
       *) rollup+="]"; want="CI: PASS" ;;
     esac
     gh_pr_set "pr['statusCheckRollup'] = $rollup"
@@ -1616,15 +1631,16 @@ t_gh_ci_at_approve() {
     local ci; ci=$(cat "factory/jobs/$id/round-1/ci.md")
     check "$case: verdict" "$(head -1 <<< "$ci")" "$want" || return 1
     case $case in
-      fail) check "fail: names the check" "$ci" "- ci/test: failure" &&
+      fail) check "fail: names and links the check" "$ci" "- ci/test: failure (https://ci.example/test)" &&
             check "fail: an external status isn't rerun" "[$(grep -c '^run rerun' "$GH_LOG")]" "[0]" ;;
       pending) check "pending: names the check" "$ci" "- lint: pending" ;;
-      stale) check "stale: head note" "$ci" "The PR head f00ba44 isn't the reviewed commit" ;;
+      stale) check "stale: head note" "$ci" "The PR head f00ba44 isn't the reviewed commit" &&
+             [[ "$ci" != *"old check"* && $(field "$id" "d['stage']") == approve ]] ;;
       pass) check "pass: no head note" "[$(grep -c "isn't the reviewed commit" <<< "$ci")]" "[0]" ;;
     esac || return 1
     if [[ $case == fail ]]; then
-      printf 'ESCALATE\n\n## Why\nCI is red.\n' > "factory/jobs/$id/decision.md"
-      J advance "$id" needs-human >/dev/null || return 1
+      check "failure on the last round escalates" "$(field "$id" "d['stage'], d['round']")" "('needs-human', 1)" &&
+      check "decision points to the checks" "$(cat "factory/jobs/$id/decision.md")" "See round-1/ci.md" || return 1
       local body; body=$(sed -n '/^pr comment 7/,$p' "$GH_LOG")
       check "comment has the CI line" "$body" "**CI:** FAIL" &&
       check "comment lists the failing check" "$body" "- ci/test: failure" &&
@@ -3007,13 +3023,15 @@ gh_rerun_set() {  # gh_rerun_set <flaky|real>: what the PR's checks say after `g
 }
 
 t_gh_ci_rerun_at_approve() {
-  local case
-  for case in flaky real; do
+  local case id out ci
+  for case in flaky real exhausted; do
     new_gh_repo "ghrerun-$case"; gh_issue 1 One
-    local id; id=$(gh_to_approve 1) || return 1
-    gh_pr_set "pr['statusCheckRollup'] = $CI_RED"; gh_rerun_set "$case"
-    local out; out=$(J advance "$id" approve 2>&1) || { echo "$out"; return 1; }
-    local ci; ci=$(cat "factory/jobs/$id/round-1/ci.md")
+    [[ $case == exhausted ]] && set_config max_rounds 1
+    id=$(gh_to_approve 1) || return 1
+    gh_pr_set "pr['statusCheckRollup'] = $CI_RED"
+    if [[ $case == flaky ]]; then gh_rerun_set flaky; else gh_rerun_set real; fi
+    out=$(J advance "$id" approve 2>&1) || { echo "$out"; return 1; }
+    ci=$(cat "factory/jobs/$id/round-1/ci.md")
     check "$case: says it reruns" "$out" "rerunning once and waiting" &&
     check "$case: one rerun per Actions run" "$(grep '^run rerun' "$GH_LOG")" "run rerun 101 --failed
 run rerun 102 --failed" &&
@@ -3021,18 +3039,92 @@ run rerun 102 --failed" &&
     check "$case: marker gone" "$(field "$id" "d.get('ci_wait')")" "None" || return 1
     case $case in
       flaky) check "flaky: passes" "$(head -1 <<< "$ci")" "CI: PASS" &&
-             check "flaky: flakes stay visible" "$ci" "Passed on rerun: build, test" ;;
-      real) check "real: fails" "$(head -1 <<< "$ci")" "CI: FAIL" &&
+             check "flaky: flakes stay visible" "$ci" "Passed on rerun: build, test" &&
+             [[ $(field "$id" "d['stage']") == approve ]] ;;
+      real|exhausted) check "$case: fails" "$(head -1 <<< "$ci")" "CI: FAIL" &&
             check "real: the flake is named" "$ci" "Passed on rerun: build" &&
-            check "real: the failing check" "$ci" "- test: failure" ;;
+            check "real: the failing check" "$ci" "- test: failure (https://github.com/o/r/actions/runs/102/job/3)" ;;
+    esac || return 1
+    case $case in
+      exhausted) check "real failure on the last round escalates" "$out" "$id: needs-human (round 1)" ;;
+      real) check "real failure goes to build" "$out" "$id: build (round 2)" &&
+            [[ ! -e "factory/jobs/$id/decision.md" ]] ;;
     esac || return 1
   done
+  new_gh_repo ghrerun-once; gh_issue 1 One
+  id=$(gh_to_approve 1) || return 1
+  gh_pr_set "pr['statusCheckRollup'] = $CI_RED"; gh_rerun_set flaky
+  J advance "$id" approve >/dev/null || return 1
   # The same commit fails again at merge: no second rerun, back to the builder.
   printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"
   gh_pr_set "pr['statusCheckRollup'] = $CI_RED"
   out=$(J merge "$id" 2>&1)
   check "once per commit: no second rerun" "[$(grep -c '^run rerun' "$GH_LOG")]" "[2]" &&
   check "once per commit: back to build" "$out" "back to the builder for round 2: CI failed on PR #7"
+}
+
+t_gh_ci_reaches_the_next_builder() {
+  local case id ci pending head
+  pending="[{'name': 'test', 'status': 'IN_PROGRESS'}]"
+  for case in review gate pending timeout stale; do
+    new_gh_repo "ghci-builder-$case"; gh_issue 1 One
+    set_config ci_start_grace_seconds 0.3
+    if [[ $case == gate ]]; then
+      id=$(gh_to_gate 1 FAIL fail) || return 1
+      local rc=0; factory/bin/gate "$id" >/dev/null || rc=$?
+      [[ $rc == 1 ]] || return 1
+    else
+      id=$(gh_to_approve 1) || return 1
+      review "$id" 1 code CHANGES
+    fi
+    ci="factory/jobs/$id/round-1/ci.md"
+    head=$(git -C ".worktrees/$id" rev-parse HEAD)
+    case $case in
+      pending|timeout|stale) gh_pr_set "pr['statusCheckRollup'] = $pending" ;;
+      *) gh_pr_set "pr['statusCheckRollup'] = $CI_RED" ;;
+    esac
+    J advance "$id" build >/dev/null || return 1
+    check "$case: records the old round's head" "$(cat "$ci")" "COMMIT: $head" || return 1
+    case $case in
+      pending|timeout|stale) check "$case: pending at end of round" "$(head -1 "$ci")" 'CI: PENDING' || return 1 ;;
+      *) check "$case: red at end of round" "$(head -1 "$ci")" 'CI: FAIL' || return 1 ;;
+    esac
+    [[ $case != pending ]] || python3 -c "import json; json.dump([$pending, $CI_RED], open('$GH/pr-check-polls.json', 'w'))"
+    [[ $case != stale ]] || gh_pr_set "pr['headRefOid'] = 'a' * 40; pr['statusCheckRollup'] = $CI_RED"
+    if [[ $case == review ]]; then
+      J dispatch "$id" builder ctx_existing >/dev/null && J send "$id" builder "Fix review findings." >/dev/null || return 1
+      check "existing worker gets the failure" "$(cat "$CALLS")" 'test: failure (https://github.com/o/r/actions/runs/102/job/3)' || return 1
+    else
+      timeout 4 factory/bin/job start "$id" builder >/dev/null || return 1
+      case $case in
+        gate|pending) check "$case: prompt has the failure" "$(cat "$SPECS")" 'test: failure (https://github.com/o/r/actions/runs/102/job/3)' &&
+                      [[ $(head -1 "$ci") == 'CI: FAIL' ]] || return 1 ;;
+        timeout|stale) [[ $(head -1 "$ci") == 'CI: PENDING' ]] &&
+                       [[ $(cat "$SPECS") != *'PR checks failed'* ]] || return 1 ;;
+      esac
+    fi
+    check "$case: doesn't rerun checks outside approval" "[$(grep -c '^run rerun' "$GH_LOG")]" '[0]' || return 1
+  done
+}
+
+t_gh_ci_fix_carries_unchanged_reviews() {
+  new_gh_repo ghci-carry; gh_issue 1 One
+  set_config review_skip '{"ux":{"paths":["app/*"]},"ui":{"paths":["app/*"]}}' rerun_every_round '{"medium":["code"]}'
+  local id out
+  id=$(GH_TEST_RISK=medium GH_TEST_SURFACES='ui, security' gh_to_approve 1 app/page.txt page) || return 1
+  for lens in ux ui security; do review "$id" 1 "$lens" PASS; done
+  gh_pr_set "pr['statusCheckRollup'] = $CI_RED"; gh_rerun_set real
+  J advance "$id" approve >/dev/null || return 1
+  check "CI fix is the next build" "$(J next "$id")" 'Read round-1/ci.md, fix the failing PR checks' &&
+  check "all PASSes are eligible for carry" "$(field "$id" "sorted(d['carry']['passed'])")" "['code', 'security', 'ui', 'ux']" || return 1
+  build_commit "$id" test.txt fixed && git -C ".worktrees/$id" push -q || return 1
+  gh_pr_set "pr['statusCheckRollup'] = [{'name': 'test', 'status': 'COMPLETED', 'conclusion': 'SUCCESS'}]"
+  ready "$id"; J advance "$id" gate >/dev/null && factory/bin/gate "$id" >/dev/null || return 1
+  out=$(J advance "$id" review) || return 1
+  check "code reruns" "$out" "start reviewers: code"$'\n' &&
+  check "passed lenses carry" "$(field "$id" "sorted(d['skipped_reviews'])")" "['security', 'ui', 'ux']" || return 1
+  review "$id" 2 code PASS
+  J advance "$id" approve >/dev/null && [[ $(head -1 "factory/jobs/$id/round-2/ci.md") == 'CI: PASS' ]]
 }
 
 t_gh_ci_rerun_at_merge() {
@@ -3879,6 +3971,18 @@ t_findings_verdict_fits_severity() {
   check "PASS can't leave a blocker" "$(J advance "$id" approve 2>&1)" "it says PASS but leaves F1 open" || return 1
   rv "$id" 1 code PASS "" "F1 [nit] x.txt:1 rename it"
   check "nits pass" "$(J advance "$id" approve 2>&1)" "$id: approve"
+}
+
+t_earlier_nit_can_stay_open() {
+  new_repo earlier-nit; ticket 01 One; commit_all
+  local id; id=$(to_build 01 medium ui) || return 1
+  build_commit "$id" y.txt y && to_review "$id" || return 1
+  rv "$id" 1 code PASS "" "F1 [nit] y.txt:1 rename it"
+  review "$id" 1 ux CHANGES; review "$id" 1 ui PASS
+  J advance "$id" build >/dev/null && build_commit "$id" y.txt y2 && to_review "$id" || return 1
+  rv "$id" 2 code PASS "F1 still open: current name is clear" "None."
+  review "$id" 2 ux PASS; review "$id" 2 ui PASS
+  J advance "$id" approve && [[ $(field "$id" "d['stage']") == approve ]]
 }
 
 t_findings_answered_next_round() {

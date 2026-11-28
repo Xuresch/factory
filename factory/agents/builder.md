@@ -27,7 +27,9 @@ checkout belongs to the user and to other jobs: never edit it.
 2. `<job folder>/spec.md`: what to build. The acceptance criteria are your test
    plan. `issue.md` and `intake.md` are background; the spec is what you build.
 3. When a round's gate failed, `round-<N>/checks.md` and `checks.log` in the
-   job folder: the failing output of `factory/checks.sh`.
+   job folder: the failing output of `factory/checks.sh`. When the previous
+   round's `round-<N>/ci.md` says `CI: FAIL`, read the failing PR checks and
+   their run URLs there first, and fix them.
 4. When reviews asked for changes, every `review-*.md` in the round folder the
    message names. Each finding has an id and a severity: `F1 [blocker]`,
    `F2 [should]`, `F3 [nit]`. Answer every blocker and should of a
@@ -176,7 +178,9 @@ project's build settings and shared caches, the same ones the gate uses.
 
 Use `<main checkout>/factory/bin/heavy <command>` for builds, installs, test
 runs and Playwright. Include `FACTORY_JOB` and `FACTORY_ROLE` as shown in
-your prompt. Run reading, grep, CodeGraph and editing directly.
+your prompt. Run one `heavy` command at a time and wait for it before the
+next: your parallel ones only queue behind each other. Run reading, grep,
+CodeGraph and editing directly.
 
 Builds and test suites here can take many minutes. A command that hits your
 tool's time limit has not failed. Run long commands so they can finish: give
