@@ -1934,7 +1934,34 @@ t_gh_clean_merge_closes_issue() {
   J merge "$id" >/dev/null 2>&1
   check "issue closed" "$(python3 -c "import json; print(json.load(open('$GH/issue-1.json'))['state'])")" "CLOSED" &&
   check "summary posted" "$(cat "$GH_LOG")" "### Factory: merged" &&
-  check "says clean" "$(cat "$GH_LOG")" "Clean run"
+  check "says clean" "$(cat "$GH_LOG")" "Clean run" &&
+  [[ $(cat "$GH_LOG") != *"**Notes for later**"* ]]
+}
+
+t_gh_merge_posts_notes_for_later() {
+  new_gh_repo ghnotes; gh_issue 1 One
+  local id comment
+  id=$(gh_to_merging 1) || return 1
+  cat > "factory/jobs/$id/decision.md" <<'MD'
+APPROVE
+
+## Summary
+- Gate and reviews passed.
+
+## Notes for later
+- Keep the `drafts` link.
+  - Check the mobile view.
+- Revisit upload limits.
+
+## For the human
+- Decision details stay in the job.
+MD
+  J merge "$id" >/dev/null || return 1
+  comment=$(sed -n '/^issue comment 1 /,$p' "$GH_LOG")
+  check "approval summary goes to the issue" "$comment" $'**Why it was approved**\n- Gate and reviews passed.' &&
+  check "notes retain their Markdown" "$comment" \
+    $'**Notes for later**\n\n- Keep the `drafts` link.\n  - Check the mobile view.\n- Revisit upload limits.' &&
+  [[ "$comment" != *"Decision details stay in the job."* ]]
 }
 
 t_gh_approved_merge_closes_issue() {
@@ -2517,6 +2544,8 @@ t_gate_and_heavy_share_pool() {
   touch "$HEAVY_RELEASE"/{builder,gate}
   wait "$builder" && wait "$gate" || return 1
   check "gate has its own wait metric" "$(field "$id" "d['heavy_wait_s']['gate'] > 0")" "True" &&
+  check "gate wait shows the same job's builder" "$(field "$id" \
+    "d['heavy_waits']['gate'] == [{'blocker': '$id builder (self-queueing)', 's': d['heavy_wait_s']['gate']}]")" "True" &&
   check "gate wait is separate in checks.md" "$(cat "factory/jobs/$id/round-1/checks.md")" "before checks.sh ran; not counted in its" || return 1
 
   prior=0
@@ -2538,6 +2567,8 @@ t_gate_and_heavy_share_pool() {
     prior=$(field "$id" "d['heavy_wait_s']['builder']") || return 1
   done
   check "reviewer wait is tracked separately" "$(field "$id" "d['heavy_wait_s']['reviewer-code'] > 0")" "True" &&
+  check "each builder wait keeps its blocker and seconds" "$(field "$id" \
+    "len(d['heavy_waits']['builder']) == 2 and all(w['blocker'] == 'gate $id (self-queueing)' and w['s'] > 0 for w in d['heavy_waits']['builder']) and sum(w['s'] for w in d['heavy_waits']['builder']) == $prior")" "True" &&
   check "released slots are absent from next" "[$(J next | sed -n '/heavy slot held/p')]" "[]" || return 1
 
   rm "$HEAVY_RELEASE/builder"
@@ -2561,16 +2592,21 @@ t_gate_and_heavy_share_pool() {
   rm "$HEAVY_RELEASE/builder"
   : > "$HEAVY_EVENTS"
   prior=$(field "$id" "d['heavy_wait_s']['gate']") || return 1
-  timeout 10 "$HEAVY_RUNNER" bash "$HOLD_SCRIPT" builder &
+  FACTORY_JOB=002-other FACTORY_ROLE=builder timeout 10 "$HEAVY_RUNNER" bash "$HOLD_SCRIPT" builder &
   builder=$!
   await_event "$HEAVY_EVENTS" "builder start" || return 1
   timeout 10 factory/bin/job merge "$id" >"$HEAVY_RELEASE/merge.out" 2>"$HEAVY_RELEASE/merge.err" &
   gate=$!
-  await_event "$HEAVY_RELEASE/merge.err" "gate: waiting for $PWD: bash" || return 1
+  await_event "$HEAVY_RELEASE/merge.err" "gate: waiting for 002-other builder: bash" || return 1
   touch "$HEAVY_RELEASE/builder"
   wait "$builder" && wait "$gate" || return 1
   check "merge completed without reacquiring its own job lock" "$(field "$id" "d['stage']")" "merged" &&
-  check "merge records its gate wait" "$(field "$id" "d['heavy_wait_s']['gate'] > $prior")" "True"
+  check "merge records its gate wait" "$(field "$id" "d['heavy_wait_s']['gate'] > $prior")" "True" &&
+  check "merge records the other job's blocker" "$(field "$id" \
+    "d['heavy_waits']['gate'][-1]['blocker'] == '002-other builder' and d['heavy_waits']['gate'][-1]['s'] > 0")" "True" &&
+  J _heavy-wait "$id" legacy 2 &&
+  check "legacy CLI records only the total" "$(field "$id" \
+    "d['heavy_wait_s']['legacy'] == 2 and 'legacy' not in d['heavy_waits']")" "True"
 }
 
 t_heavy_nested_signals_and_exit() {
@@ -4636,7 +4672,7 @@ MD
   check "claimed but unchanged" "$first" 'names `ghost.py`, which the diff does not touch' &&
   check "unnamed changed file" "$first" 'changes `beta.py` without an entry' &&
   check "changed test linked to matching source" "$first" '`alpha.py`: changed tests with a matching filename stem: `tests/test_alpha.py`' &&
-  check "unlinked source" "$first" '`beta.py`: untested' &&
+  check "unlinked source" "$first" '`beta.py`: no test link found' &&
   check "no index" "$first" 'CodeGraph: no worktree index' &&
   check "coverage unset" "$first" 'LCOV: report.coverage_lcov is unset' || return 1
   [[ ! -e codegraph-called ]] || return 1
@@ -4662,6 +4698,48 @@ t_report_without_criteria() {
   check "summary explains why claims were not checked" "$report" \
     '- Build claims not checked: build.md has no acceptance criteria the report could read.' &&
   check "inputs name the missing criteria" "$report" 'build.md: no criteria found.'
+}
+
+t_report_web_test_evidence() {
+  new_repo report-web-tests; ticket 01 One
+  mkdir -p web/src e2e/tests
+  printf "test('keeps the active filter', () => {})\n" > web/src/filters.test.ts
+  printf "test('keeps a draft on reload', () => {})\n" > e2e/tests/drafts.spec.ts
+  printf "test('shows archived drafts', () => {})\n" > e2e/tests/archive.spec.ts
+  printf "test('shows the editor', () => {})\n" > e2e/tests/editor.spec.ts
+  cat >> factory/checks.sh <<'SH'
+printf '%s\n' ' ✓ src/filters.test.ts (1 test) 12ms' \
+  '  1 ✓ [chromium] › tests/drafts.spec.ts:3:1 (110ms)' \
+  '  2 ✓ [chromium] › tests/editor.spec.ts:4:1 › shows the editor (72ms)' \
+  'Listed test file: e2e/tests/archive.spec.ts'
+SH
+  commit_all
+  local id report
+  id=$(to_build 01 low none) || return 1
+  build_commit "$id" web/src/DraftPanel.tsx 'export const DraftPanel = () => null' || return 1
+  ready "$id"
+  cat >> "factory/jobs/$id/build.md" <<'MD'
+
+## Changes
+- `web/src/DraftPanel.tsx`
+
+## Acceptance criteria
+1. [x] Keep the filter. Test: `web/src/filters.test.ts::keeps the active filter`
+2. [x] Keep the draft. Test: `e2e/tests/drafts.spec.ts::keeps a draft on reload`
+3. [x] Show the archive. Test: `e2e/tests/archive.spec.ts::shows archived drafts`
+4. [x] Show the editor. Test: `e2e/tests/editor.spec.ts::shows the editor`
+MD
+  J advance "$id" gate >/dev/null && factory/bin/gate "$id" >/dev/null || return 1
+  report=$(cat "factory/jobs/$id/round-1/report.md") || return 1
+  check "Vitest file pass supplies evidence" "$report" \
+    '`web/src/filters.test.ts::keeps the active filter`. file exists on branch, name found in file, file unchanged, seen in the gate log (file passed).' &&
+  check "Playwright file pass supplies evidence" "$report" \
+    '`e2e/tests/drafts.spec.ts::keeps a draft on reload`. file exists on branch, name found in file, file unchanged, seen in the gate log (file passed).' &&
+  check "a bare filename does not establish a pass" "$report" \
+    "`e2e/tests/archive.spec.ts::shows archived drafts`. file exists on branch, name found in file, file unchanged, the gate log doesn't list test names for this file." &&
+  check "a logged name still supplies evidence" "$report" \
+    '`e2e/tests/editor.spec.ts::shows the editor`. file exists on branch, name found in file, file unchanged, seen in the gate log.' &&
+  check "a criterion alone does not link a source file" "$report" '`web/src/DraftPanel.tsx`: no test link found'
 }
 
 t_report_directory_changes_and_grouped_criteria() {

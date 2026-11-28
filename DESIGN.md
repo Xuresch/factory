@@ -67,7 +67,10 @@ reviewers each already means ten agents at once; the default `concurrency` is
 and reviewers a shared slot for each build, test run or E2E session. The slots
 are local to one repo and machine. Workers can read and edit while another
 command has a slot. `job.json` records the total wait per role in
-`heavy_wait_s`, and `job next` shows slots held past `heavy_max_minutes`.
+`heavy_wait_s`. Each entry in `heavy_waits` names the holder seen when the
+role began waiting and gives the wait in seconds. A holder from the same job
+is marked as self-queueing. `job next` shows slots held past
+`heavy_max_minutes`.
 
 **Fable at the door, once.** Intake is the only Fable call per job. It decides
 whether the issue is worth building, rewrites the scope when the issue is too
@@ -159,8 +162,15 @@ finding asked for. The builder brief asks for the smallest fix first.
 with build claims checked against the branch and gate log, changed source and
 its test links, and changed-line coverage when checks produce LCOV. A
 directory listed under `## Changes` covers changed files below it. The report
-checks the acceptance criteria from each slice of a split build. Its first line
-is `REPORT: <n> contradictions, <m> untested`. When the report finds no readable
+checks the acceptance criteria from each slice of a split build. A criterion's
+Playwright or Vitest reference names a test. The report needs a CodeGraph link
+or a changed test with a matching filename stem to link it to a source file.
+Each source file without either link says `no test link found`. A passing
+file in the gate log counts as evidence for a Playwright or Vitest claim
+when the reporter omits the test name.
+
+The first line is `REPORT: <n> contradictions, <m> untested`, where `untested`
+counts source files with no test link found. When the report finds no readable
 acceptance criteria in build.md, it starts with
 `REPORT: claims not checked, <m> untested`. Reviewers use the report as
 evidence, and it has no effect on the gate verdict. On GitHub, the job

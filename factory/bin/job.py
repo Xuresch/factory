@@ -742,10 +742,12 @@ def save(job):
     tmp.replace(path)
 
 
-def add_heavy_wait(job, role, seconds):
+def add_heavy_wait(job, role, seconds, blocker=None):
     if 0 < seconds < float("inf"):
         waits = job.setdefault("heavy_wait_s", {})
         waits[role] = waits.get(role, 0) + seconds
+        if blocker:
+            job.setdefault("heavy_waits", {}).setdefault(role, []).append({"blocker": blocker, "s": seconds})
         save(job)
 
 
@@ -4129,9 +4131,12 @@ def merge_summary(job, rough):
     built = section(d / "build.md", "Summary") if (d / "build.md").exists() else None
     if built:
         lines += ["", "**What changed**", built]
-    decided = section(d / "decision.md", "Summary") if (d / "decision.md").exists() else None
-    if decided:
-        lines += ["", "**Why it was approved**", decided]
+    decision = d / "decision.md"
+    if decision.exists():
+        if decided := section(decision, "Summary"):
+            lines += ["", "**Why it was approved**", decided]
+        if notes := section(decision, "Notes for later"):
+            lines += ["", "**Notes for later**", "", notes]
     if (d / "accepted.md").exists():
         lines += ["", "**Accepted by a human**"] + [l for l in (d / "accepted.md").read_text().splitlines() if l.lstrip().startswith("- ")]
     if job.get("follow_ups"):
@@ -4325,7 +4330,8 @@ def cmd_merge(job):
             gate = subprocess.run([str(BIN / "gate"), job["id"], "--merge"], stdout=subprocess.PIPE,
                                   text=True, env=dict(os.environ, FACTORY_GATE_WAIT_FD=str(fd)), pass_fds=(fd,))
             wait.seek(0)
-            add_heavy_wait(job, "gate", float(wait.read() or 0))
+            if recorded := wait.read():
+                add_heavy_wait(job, "gate", *json.loads(recorded))
         if gate.returncode != 0:
             return finish_failure("recoverable", f"The gate failed after syncing with {jbase(job)}. "
                                   f"See round-{job['round']}/merge-checks.md and merge-checks.log.\n\n{gate.stdout.strip()}")
@@ -5613,11 +5619,11 @@ def main(argv):
     COMMAND = cmd
     NO_WAIT = cmd in READ_ONLY or (cmd == "dispatch" and len(args) == 2)
     try:
-        if cmd == "_heavy-wait" and len(args) == 3:
-            job_id, role, seconds = args
+        if cmd == "_heavy-wait" and len(args) in (3, 4):
+            job_id, role, seconds, *blocker = args
             require(Path(job_id).name == job_id and job_id not in {"", ".", ".."},
                     "invalid job ID for heavy wait")
-            add_heavy_wait(load(job_id), role, float(seconds))
+            add_heavy_wait(load(job_id), role, float(seconds), *blocker)
             return
         if cmd != "claim":
             refresh_claim()

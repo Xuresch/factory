@@ -182,9 +182,9 @@ def run_checks(job, base_ref=None, mode="full"):
                        env=env, job=job["id"], role=role, prefix="gate", capture=True)
     if mode == "merge" and wait_fd is not None:
         with os.fdopen(int(wait_fd), "w") as wait:
-            wait.write(str(result.waited))
+            json.dump([result.waited, heavy.wait_blocker(result.blocked_by, job["id"])], wait)
     else:
-        heavy.record_wait(REPO, job["id"], role, result.waited)
+        heavy.record_wait(REPO, job["id"], role, result)
     return result
 
 
