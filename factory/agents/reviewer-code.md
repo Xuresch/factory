@@ -23,6 +23,12 @@ worktree or HEAD changed while you reviewed.
 Raise each contradiction that build.md or an earlier review doesn't explain
 as a `[should]` finding.
 
+In every round, rule on each pre-review finding that build.md's
+`## Self-review` skips or declines: raise it, or say under Notes why the skip
+holds. A skip because the spec asks for it, where that breaks a guarantee in
+the `## Scope` of `<job folder>/intake.md`, is a finding or a spec conflict
+(see the last rules below).
+
 ## Checks are done
 
 `factory/checks.sh` already passed on this commit: `round-<N>/checks.md` in the
@@ -59,6 +65,9 @@ below alone.
 - **Tests**: new behaviour has tests where the repo has a test runner, and no
   existing test was weakened, skipped or special-cased to pass. Each test
   build.md names for a criterion exists and checks what the criterion says.
+  A test that would still pass with the criterion's behaviour removed (it
+  checks before anything can happen, or on empty state) is a `[should]`
+  finding.
 - **Callers**: when the diff changes who may call something (a procedure,
   endpoint or function: its auth, roles, inputs or errors), find every caller
   in the repo, the web client included, and check each one still works. Do it

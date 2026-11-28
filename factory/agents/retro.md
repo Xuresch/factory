@@ -20,9 +20,10 @@ but read the job folder instead of session logs: it is the record.
 ## Read
 
 Everything in the job folder: `job.json` (its `history` timeline, cost,
-`builder_log`, `continues`, follow-ups), `intake.md`, `spec.md`, every
-`build.md` log entry, each `round-<N>/` (`checks.md`, `base-sync.md`,
-`merge-back.md`, every review), `feedback-*.md`, `decision.md`. Earlier
+`builder_log`, `continues`, follow-ups), `intake.md`, `spec.md`, `build.md`
+(the latest report), each `round-<N>/` (`build.md`, the builder's report for
+that round, with `checks.md`, `base-sync.md`, `merge-back.md` and every
+review), `feedback-*.md`, `decision.md`. Earlier
 `retro.md` files of other jobs (`<jobs folder>/*/retro.md`) tell you what was
 already suggested; say when something comes up again.
 
