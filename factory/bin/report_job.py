@@ -168,12 +168,23 @@ def claims(worktree, build, log, paths, inputs):
         inputs.append("build.md: no Changes section found.")
     elif paths is not None:
         named = set()
+        by_basename = {}
+        for path in paths:
+            by_basename.setdefault(Path(path).name, []).append(path)
         for line in "\n".join(changes).splitlines():
             if "`" in line:
-                entries = re.findall(r"`([^`]+)`", line)
+                for entry in re.findall(r"`([^`]+)`", line):
+                    entry = entry.rstrip(",")
+                    matches = by_basename.get(entry, [])
+                    if len(matches) > 1:
+                        candidates = ", ".join(f"`{path}`" for path in sorted(matches))
+                        note = f"build.md: `## Changes` name `{entry}` is ambiguous. Matches {candidates}."
+                        if note not in inputs:
+                            inputs.append(note)
+                    else:
+                        named.add(matches[0] if matches else repository_path(entry))
             else:
-                entries = CHANGE_ENTRY.findall(line)
-            named.update(repository_path(entry).rstrip(",") for entry in entries)
+                named.update(repository_path(entry).rstrip(",") for entry in CHANGE_ENTRY.findall(line))
         covered = set()
         rename_sources = {original for status, original in paths.values() if status.startswith("R")}
         for file in sorted(named):

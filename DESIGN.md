@@ -165,9 +165,11 @@ finding asked for. The builder brief asks for the smallest fix first.
 **The gate writes a job report.** Each round's gate writes `round-<N>/report.md`
 with build claims checked against the branch and gate log, changed source and
 its test links, and changed-line coverage when checks produce LCOV. A
-directory listed under `## Changes` covers changed files below it. The report
-checks the acceptance criteria from each slice of a split build. A criterion's
-Playwright or Vitest reference names a test. The report needs a CodeGraph link
+directory listed under `## Changes` covers changed files below it. A backticked
+basename stands for the changed file with that name if exactly one matches.
+The report lists ambiguous names under `## Inputs`. It checks the acceptance
+criteria from each slice of a split build. A criterion's Playwright or Vitest
+reference names a test. The report needs a CodeGraph link
 or a changed test with a matching filename stem to link it to a source file.
 Each source file without either link says `no test link found`. A passing
 file in the gate log counts as evidence for a Playwright or Vitest claim

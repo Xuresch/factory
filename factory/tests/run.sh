@@ -5106,6 +5106,34 @@ MD
   [[ "$report" != *"Criterion 3"* ]]
 }
 
+t_report_changes_basenames() {
+  new_repo report-basenames; ticket 01 One
+  mkdir -p app legacy; touch app/.keep legacy/.keep; commit_all
+  local id report
+  id=$(to_build 01 low none) || return 1
+  build_commit "$id" app/history.ts history &&
+  build_commit "$id" app/history.test.ts test &&
+  build_commit "$id" app/constants.ts constants &&
+  build_commit "$id" legacy/constants.ts constants && ready "$id" || return 1
+  cat >> "factory/jobs/$id/build.md" <<'MD'
+
+## Changes
+- `history.ts` and `history.test.ts`
+- `constants.ts`
+- `app/constants.ts`
+
+## Acceptance criteria
+- [x] History works.
+MD
+  J advance "$id" gate >/dev/null && factory/bin/gate "$id" >/dev/null || return 1
+  report=$(cat "factory/jobs/$id/round-1/report.md") || return 1
+  check "the shorthand adds no contradictions" "$report" 'REPORT: 0 contradictions' &&
+  check "Inputs lists both candidates" "${report##*## Inputs}" \
+    'name `constants.ts` is ambiguous. Matches `app/constants.ts`, `legacy/constants.ts`.' &&
+  check "only the unresolved path lacks an entry" "$report" 'changes `legacy/constants.ts` without an entry' &&
+  [[ $(grep -c 'without an entry' <<< "$report") == 1 ]]
+}
+
 t_report_codegraph_and_coverage() {
   new_repo report-index; ticket 01 One
   printf 'def untouched():\n    return 0\n\ndef alpha():\n    old()\n    old()\n    old()\n\n    return 5\n' > alpha.py
