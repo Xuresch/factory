@@ -5246,9 +5246,12 @@ def builder_ci_context(job, role):
     path = round_dir(job, n) / "ci.md"
     if not path.exists():
         return ""
+    metadata = header(path)
+    head = metadata.get("COMMIT")
+    if not head or metadata.get("CI") not in {"FAIL", "PENDING"}:
+        return ""
     ci = path.read_text()
-    head = header(path).get("COMMIT")
-    if head and (ci.startswith("CI: PENDING\n") or any(line.endswith(": pending") for line in ci.splitlines())):
+    if metadata["CI"] == "PENDING" or any(line.endswith(": pending") for line in ci.splitlines()):
         grace = float(CONFIG.get("ci_start_grace_seconds", 180))
         refreshed = ci_status(job, head, checks=lambda: wait_for_ci(job, head, max_wait=grace))
         if not refreshed.startswith(("CI: UNKNOWN\n", "CI: NONE\n")):
