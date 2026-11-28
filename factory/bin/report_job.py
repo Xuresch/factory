@@ -18,6 +18,10 @@ TEST_SUFFIX = re.compile(r"(?:[_.-](?:test|spec|testcase|integration|e2e|node))+
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.M)
 CRITERION = re.compile(r"^\s*(?:\d+[.)]|[-*])\s+(?:\[[ xX]\]\s+)?(.+)$")
 TEST_REF = re.compile(r"\bTest:\s*(?:`([^`\n]+::[^`\n]+)`|([^`\n]+?::[^`\n]+)(?=$|\s+Test:))")
+WEB_TEST_FILE = r"\.(?:test|spec)\.[cm]?[jt]sx?"
+PASSING_WEB_TEST = re.compile(
+    rf"^\s*(?:\d+\s+)?(?:✓|✔|ok|PASS)\s+(?:(?:\[[^\n]+?\]\s+›|\|[^\n]+?\|)\s+)?"
+    rf"(.+?{WEB_TEST_FILE})(?=[:\s]|$)")
 CHANGE_ENTRY = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)?(?:\*\*)?(?:`([^`]+)`|([^\s:*]+))")
 SYMBOL = re.compile(r"^- `([^`]+)` \([^\n]+?\).* — :(\d+)[ \t]*$", re.M)
 CALLER_LIMIT = 5
@@ -85,6 +89,19 @@ def is_branch_directory(worktree, path):
         return False
 
 
+def gate_log_evidence(log, passed_files, file, name):
+    if log is None:
+        return "gate log unavailable"
+    if name in log:
+        return "seen in the gate log"
+    if re.search(WEB_TEST_FILE + "$", file):
+        # Reporters can print paths relative to their package or config directory.
+        if any(path == file or file.endswith("/" + path) for path in passed_files):
+            return "seen in the gate log (file passed)"
+        return "the gate log doesn't list test names for this file"
+    return "seen in the gate log" if file in log else "not seen in the gate log"
+
+
 def claims(worktree, build, log, paths, inputs):
     lines, contradictions = [], 0
     if build is None:
@@ -112,6 +129,8 @@ def claims(worktree, build, log, paths, inputs):
         criteria.extend(block)
     if not criteria:
         inputs.append("build.md: no criteria found.")
+    passed_files = {repository_path(match[1]) for line in (log or "").splitlines()
+                    if (match := PASSING_WEB_TEST.match(line))}
     blobs = {}
     for index, criterion in enumerate(criteria, 1):
         refs = TEST_REF.findall(criterion)
@@ -137,8 +156,7 @@ def claims(worktree, build, log, paths, inputs):
                 outcomes.append("name found in file" if name in content else "name missing from file")
             outcomes.append("file changed" if paths is not None and file in paths else
                             "file unchanged" if paths is not None else "diff unavailable")
-            outcomes.append("gate log unavailable" if log is None else
-                            "seen in the gate log" if name in log or file in log else "not seen in the gate log")
+            outcomes.append(gate_log_evidence(log, passed_files, file, name))
             contradicts = content is None or name not in content
             contradictions += contradicts
             label = " **Contradiction.**" if contradicts else ""
@@ -349,7 +367,7 @@ def write(worktree, base_ref, round_dir, verdict, lcov_before, lcov_after):
                 links.append("changed tests with a matching filename stem: " + ", ".join(f"`{test}`" for test in nearby))
             if not links:
                 untested += 1
-                links.append("untested: no CodeGraph affected test and no changed test with a matching filename stem")
+                links.append("no test link found: no CodeGraph affected test and no changed test with a matching filename stem")
             tests.append(f"- `{file}`: " + "; ".join(links) + ".")
         if coverage is not None:
             added = {line for lo, hi in ranges or [] for line in range(lo, hi + 1)}

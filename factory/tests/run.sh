@@ -4672,7 +4672,7 @@ MD
   check "claimed but unchanged" "$first" 'names `ghost.py`, which the diff does not touch' &&
   check "unnamed changed file" "$first" 'changes `beta.py` without an entry' &&
   check "changed test linked to matching source" "$first" '`alpha.py`: changed tests with a matching filename stem: `tests/test_alpha.py`' &&
-  check "unlinked source" "$first" '`beta.py`: untested' &&
+  check "unlinked source" "$first" '`beta.py`: no test link found' &&
   check "no index" "$first" 'CodeGraph: no worktree index' &&
   check "coverage unset" "$first" 'LCOV: report.coverage_lcov is unset' || return 1
   [[ ! -e codegraph-called ]] || return 1
@@ -4698,6 +4698,48 @@ t_report_without_criteria() {
   check "summary explains why claims were not checked" "$report" \
     '- Build claims not checked: build.md has no acceptance criteria the report could read.' &&
   check "inputs name the missing criteria" "$report" 'build.md: no criteria found.'
+}
+
+t_report_web_test_evidence() {
+  new_repo report-web-tests; ticket 01 One
+  mkdir -p web/src e2e/tests
+  printf "test('keeps the active filter', () => {})\n" > web/src/filters.test.ts
+  printf "test('keeps a draft on reload', () => {})\n" > e2e/tests/drafts.spec.ts
+  printf "test('shows archived drafts', () => {})\n" > e2e/tests/archive.spec.ts
+  printf "test('shows the editor', () => {})\n" > e2e/tests/editor.spec.ts
+  cat >> factory/checks.sh <<'SH'
+printf '%s\n' ' ✓ src/filters.test.ts (1 test) 12ms' \
+  '  1 ✓ [chromium] › tests/drafts.spec.ts:3:1 (110ms)' \
+  '  2 ✓ [chromium] › tests/editor.spec.ts:4:1 › shows the editor (72ms)' \
+  'Listed test file: e2e/tests/archive.spec.ts'
+SH
+  commit_all
+  local id report
+  id=$(to_build 01 low none) || return 1
+  build_commit "$id" web/src/DraftPanel.tsx 'export const DraftPanel = () => null' || return 1
+  ready "$id"
+  cat >> "factory/jobs/$id/build.md" <<'MD'
+
+## Changes
+- `web/src/DraftPanel.tsx`
+
+## Acceptance criteria
+1. [x] Keep the filter. Test: `web/src/filters.test.ts::keeps the active filter`
+2. [x] Keep the draft. Test: `e2e/tests/drafts.spec.ts::keeps a draft on reload`
+3. [x] Show the archive. Test: `e2e/tests/archive.spec.ts::shows archived drafts`
+4. [x] Show the editor. Test: `e2e/tests/editor.spec.ts::shows the editor`
+MD
+  J advance "$id" gate >/dev/null && factory/bin/gate "$id" >/dev/null || return 1
+  report=$(cat "factory/jobs/$id/round-1/report.md") || return 1
+  check "Vitest file pass supplies evidence" "$report" \
+    '`web/src/filters.test.ts::keeps the active filter`. file exists on branch, name found in file, file unchanged, seen in the gate log (file passed).' &&
+  check "Playwright file pass supplies evidence" "$report" \
+    '`e2e/tests/drafts.spec.ts::keeps a draft on reload`. file exists on branch, name found in file, file unchanged, seen in the gate log (file passed).' &&
+  check "a bare filename does not establish a pass" "$report" \
+    "`e2e/tests/archive.spec.ts::shows archived drafts`. file exists on branch, name found in file, file unchanged, the gate log doesn't list test names for this file." &&
+  check "a logged name still supplies evidence" "$report" \
+    '`e2e/tests/editor.spec.ts::shows the editor`. file exists on branch, name found in file, file unchanged, seen in the gate log.' &&
+  check "a criterion alone does not link a source file" "$report" '`web/src/DraftPanel.tsx`: no test link found'
 }
 
 t_report_directory_changes_and_grouped_criteria() {
