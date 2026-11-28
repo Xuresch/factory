@@ -37,6 +37,7 @@ import fnmatch
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -310,6 +311,9 @@ def gate(job_id, merge):
     name = "merge-checks" if merge else "checks"
     (round_dir / f"{name}.log").write_text(log)
     if not merge:
+        build = round_dir.parent / "build.md"
+        if build.is_file():
+            shutil.copyfile(build, round_dir / build.name)
         try:
             report_job.write(worktree, base_ref, round_dir, verdict, lcov_before, lcov_after)
         except Exception as error:  # a report never changes the gate's verdict

@@ -362,7 +362,7 @@ STATUS: READY
 - 3 to 5 short bullets: what the branch does now and what this round changed
 
 ## Changes
-The files changed and what each change does.
+Each file changed, by repository-relative path, and what the change does.
 
 ## Acceptance criteria
 1. [x] <criterion>: <evidence>. Test: `<file>::<test name>`

@@ -108,7 +108,8 @@ the main checkout. Commit them to the base branch so clean clones and CI
 use the same checks. Features can update tests. The code reviewer fails any
 test that was weakened, skipped or special-cased to pass. The builder also
 has a `SubagentStop` hook that runs the checks before it finishes, as a nudge;
-the gate is still what decides.
+the gate is still what decides. The round gate also copies the builder's
+`build.md` to `round-<N>/build.md` so later rounds can write their own reports.
 
 **Commit messages are checked, not asked for.** Every job commit and PR title
 is a Conventional Commits line (`feat(members): invite members by email`), at
@@ -151,7 +152,9 @@ or let it burn rounds until the limit. Now a finding the builder disputed
 and the reviewer kept open goes to a human right away, with both sides in
 two lines each (`max_disputes`). UX and UI findings stay build instructions
 and can't be disputed (`binding_lenses`). A human's ordinary feedback closes
-every earlier finding and each lens looks again.
+every earlier finding. Each lens looks again unless it passed the last reviewed
+round, has `review_skip` paths that the diff since its review leaves untouched,
+and isn't in `rerun_every_round` for the job's risk.
 
 **Reviews must not grow the change.** Every review round can add a guard, a
 test, an option, each cheap alone. `job advance` records the size of the
@@ -163,9 +166,11 @@ finding asked for. The builder brief asks for the smallest fix first.
 **The gate writes a job report.** Each round's gate writes `round-<N>/report.md`
 with build claims checked against the branch and gate log, changed source and
 its test links, and changed-line coverage when checks produce LCOV. A
-directory listed under `## Changes` covers changed files below it. The report
-checks the acceptance criteria from each slice of a split build. A criterion's
-Playwright or Vitest reference names a test. The report needs a CodeGraph link
+directory listed under `## Changes` covers changed files below it. A backticked
+basename stands for the changed file with that name if exactly one matches.
+The report lists ambiguous names under `## Inputs`. It checks the acceptance
+criteria from each slice of a split build. A criterion's Playwright or Vitest
+reference names a test. The report needs a CodeGraph link
 or a changed test with a matching filename stem to link it to a source file.
 Each source file without either link says `no test link found`. A passing
 file in the gate log counts as evidence for a Playwright or Vitest claim
