@@ -16,13 +16,13 @@ TEST_DIRS = {"test", "tests", "__tests__", "spec", "specs", "e2e"}
 TEST_PREFIX = re.compile(r"^(?:test|spec)[_.-]")
 TEST_SUFFIX = re.compile(r"(?:[_.-](?:test|spec|testcase|integration|e2e|node))+$")
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.M)
-CRITERION = re.compile(r"^\s*(?:\d+[.)]|[-*])\s+(?:\[[ xX]\]\s+)?(.+)$")
-TEST_REF = re.compile(r"\bTest:\s*(?:`([^`\n]+::[^`\n]+)`|([^`\n]+?::[^`\n]+)(?=$|\s+Test:))")
+CRITERION = re.compile(r"^([ \t]*)(?:\d+[.)]|[-*+])\s+(?:\[[ xX]\]\s+)?(.+)$")
+TEST_REF = re.compile(r"\bTest:\s*(?:`([^`\n]+::[^`\n]+)`|([^`\n]+?::[^`\n]+)(?=$|\s+Test:))", re.M)
 WEB_TEST_FILE = r"\.(?:test|spec)\.[cm]?[jt]sx?"
 PASSING_WEB_TEST = re.compile(
     rf"^\s*(?:\d+\s+)?(?:✓|✔|ok|PASS)\s+(?:(?:\[[^\n]+?\]\s+›|\|[^\n]+?\|)\s+)?"
     rf"(.+?{WEB_TEST_FILE})(?=[:\s]|$)")
-CHANGE_ENTRY = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)?(?:\*\*)?(?:`([^`]+)`|([^\s:*]+))")
+CHANGE_ENTRY = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)?(?:\*\*)?([^\s:*]+)")
 SYMBOL = re.compile(r"^- `([^`]+)` \([^\n]+?\).* — :(\d+)[ \t]*$", re.M)
 CALLER_LIMIT = 5
 COMMAND_TIMEOUT = 15
@@ -119,13 +119,14 @@ def claims(worktree, build, log, paths, inputs):
             criteria_level = level
         if criteria_level is None:
             continue
-        block = []
+        block, indent = [], None
         for line in body.splitlines():
             match = CRITERION.match(line)
-            if match:
-                block.append(match[1])
+            if match and (indent is None or len(match[1].expandtabs(4)) <= indent):
+                indent = len(match[1].expandtabs(4))
+                block.append(match[2])
             elif block and line.strip():
-                block[-1] += " " + line.strip()
+                block[-1] += "\n" + line.strip()
         criteria.extend(block)
     if not criteria:
         inputs.append("build.md: no criteria found.")
@@ -135,7 +136,8 @@ def claims(worktree, build, log, paths, inputs):
     for index, criterion in enumerate(criteria, 1):
         refs = TEST_REF.findall(criterion)
         if not refs:
-            lines.append(f"- Criterion {index} has no `Test:` reference ({criterion}).")
+            text = criterion.replace("\n", " ")
+            lines.append(f"- Criterion {index} has no `Test:` reference ({text}).")
         for quoted, plain in refs:
             file, name = map(str.strip, (quoted or plain).split("::", 1))
             file = repository_path(file)
@@ -167,8 +169,11 @@ def claims(worktree, build, log, paths, inputs):
     elif paths is not None:
         named = set()
         for line in "\n".join(changes).splitlines():
-            if entry := CHANGE_ENTRY.match(line):
-                named.add(repository_path(entry[1] or entry[2]).rstrip(","))
+            if "`" in line:
+                entries = re.findall(r"`([^`]+)`", line)
+            else:
+                entries = CHANGE_ENTRY.findall(line)
+            named.update(repository_path(entry).rstrip(",") for entry in entries)
         covered = set()
         rename_sources = {original for status, original in paths.values() if status.startswith("R")}
         for file in sorted(named):

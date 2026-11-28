@@ -4782,7 +4782,7 @@ t_report_directory_changes_and_grouped_criteria() {
   new_repo report-directories; ticket 01 One
   mkdir -p server/src/nested server/src-extra messages stable tests
   touch server/src/nested/.keep server/src-extra/.keep messages/.keep stable/.keep
-  printf 'def test_one(): pass\ndef test_two(): pass\n' > tests/test_slices.py
+  printf 'def test_one(): pass\ndef test_two(): pass\ndef test_three(): pass\n' > tests/test_slices.py
   commit_all
   local id report
   id=$(to_build 01 low none) || return 1
@@ -4793,22 +4793,25 @@ t_report_directory_changes_and_grouped_criteria() {
   cat >> "factory/jobs/$id/build.md" <<'MD'
 
 ## Changes
-- `server/src/`: Change the server.
-- `messages`: Add translations.
-- `stable`: Claimed change to an untouched directory.
+- `server/src/`, `messages`: Change the server and add translations.
+- stable: Claimed change to an untouched directory.
 
 ## Acceptance criteria
 ### Slice 1
-1. [x] First.
-   Test: `tests/test_slices.py::test_one`
+  1. [x] First.
+     - Test: tests/test_slices.py::test_one
+     - Also check translations.
+       1. Test: `tests/test_slices.py::test_three`
 ### Slice 2
-2. [x] Second. Test: `tests/test_slices.py::test_two`
+- [x] Second.
+  Test: `tests/test_slices.py::test_two`
 ## Validation
 - Ran checks.
 MD
   J advance "$id" gate >/dev/null && factory/bin/gate "$id" >/dev/null || return 1
   report=$(cat "factory/jobs/$id/round-1/report.md") || return 1
   check "first slice criterion and its continuation are read" "$report" 'Criterion 1, `tests/test_slices.py::test_one`.' &&
+  check "nested list adds evidence to its parent" "$report" 'Criterion 1, `tests/test_slices.py::test_three`.' &&
   check "second slice criterion is read" "$report" 'Criterion 2, `tests/test_slices.py::test_two`.' &&
   check "untouched directory contradicts the report" "$report" 'names `stable`, which the diff does not touch' &&
   check "a matching prefix outside the directory is not covered" "$report" 'changes `server/src-extra/extra.py` without an entry' &&
