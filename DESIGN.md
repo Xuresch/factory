@@ -36,7 +36,8 @@ spec-writer (opus) → spec.md
 builder            → Conventional Commits; first round pushes + opens draft PR titled with the spec's first line, body "Closes #<n>" + Summary/Evidence/Merge Danger
 gate (script)      → checks.sh + commit subjects and PR title; FAIL → builder gets the log, no reviewers spawned
 reviewers (routed) → parallel, WAIT FOR ALL; CHANGES → builder → gate → reviewers (max rounds)
-approver (opus)    → APPROVE: sync origin/main, gate, gh pr merge
+approver (opus)    → dry-run base merge before starting and before escalating
+                     APPROVE: sync origin/main, gate, gh pr merge
                      ESCALATE: PR ready, decision as PR comment, label ready-for-human
 ```
 
@@ -149,8 +150,8 @@ A builder that had to "address every finding" either gave in to a wrong one
 or let it burn rounds until the limit. Now a finding the builder disputed
 and the reviewer kept open goes to a human right away, with both sides in
 two lines each (`max_disputes`). UX and UI findings stay build instructions
-and can't be disputed (`binding_lenses`). A human's feedback closes every
-earlier finding: the feedback decides, and each lens looks again.
+and can't be disputed (`binding_lenses`). A human's ordinary feedback closes
+every earlier finding and each lens looks again.
 
 **Reviews must not grow the change.** Every review round can add a guard, a
 test, an option, each cheap alone. `job advance` records the size of the
@@ -226,8 +227,8 @@ break this.
   Claude Code session with a shell: see Orca and Codex below.
 - Agents push only `factory/*` branches. Only `factory/bin/job merge` merges,
   through `gh pr merge`. The factory never deploys.
-- One PR per issue; at most `max_rounds` build rounds per job before a human
-  is asked.
+- One PR per issue. Jobs get `max_rounds` build rounds and up to two additional
+  rounds for base merge conflicts before a human is asked.
 
 ## Orca, Codex and Claude Code
 
@@ -286,13 +287,14 @@ after their needs are merged. The merged branch then goes through one gate and
 one set of reviews, and later rounds use a single builder. A slice, like a
 whole build, can report PARTIAL and continue in place.
 
-**Jobs that would collide take turns.** Two jobs building on the same test
-file at once cost one of them a round. So a job's first builder waits while
-another running job has changed a file its spec names: the files that job
-really changed (its branch since its base, and uncommitted work), not what its
-spec says, so a broad spec makes no one wait. Only a job with no changes of its
-own waits, so no one waits on it and two jobs never wait on each other; the
-wait clears when the other job merges or parks (`overlap_wait`).
+**Jobs that would collide take turns.** A builder with no changes of its own
+waits while another active job has changed files its spec names. The check
+includes committed and uncommitted changes. A running builder with no changes
+yet reserves its spec paths as soon as the factory starts it. For slices, the
+check uses the paths each slice owns. If two split jobs are already underway,
+the earlier job can finish first so their remaining slices cannot deadlock.
+Disjoint slices can use free slots while overlapping slices wait. Set
+`overlap_wait: false` to switch this off.
 
 **The scripts start the workers.** `job start <job> <role>` reads the agent,
 model, worktree and brief from `job.json`, writes the header, runs Orca's
@@ -311,13 +313,25 @@ a paused job's resumed one included, `job advance` merges the base into the
 job branch and writes `round-<N>/base-sync.md`; a conflict is resolved by the
 builder at the start of that round. A conflict only in lockfiles
 (`lockfile_regenerate`) the factory resolves itself: it takes the base's
-lockfile and regenerates it, as a builder should. A conflict, a failing gate
-or a failing CI check during `job merge` sends the job back to the builder
-too, after one rerun: a GitHub Actions check that passes on rerun is a flake,
-listed in `merge-ci.md`, and costs no round. Only with no round left does it
-reach a human. When that round only merged the base (the change compared to the base is the same patch as the
-approved one), the reviews and the approval carry over and nobody reviews the
-same change twice. `job approve` merges an escalated job the same way.
+lockfile and regenerates it. Before the approver starts or an approval-stage
+escalation reaches a human, the factory fetches the base and checks for
+conflicts with `git merge-tree --write-tree`. A clean result leaves the branch
+and round in place. A conflict sends a new round to the builder, as it does
+during `job merge`.
+
+The first two base conflicts after the reviews pass each raise the job's
+`round_limit` by one. Once those two extensions are used, further conflicts
+use any remaining ordinary rounds. When the limit is reached, the factory
+asks a human for feedback to resolve the conflict. A failing gate or CI check
+during `job merge` uses the ordinary round allowance. A GitHub Actions check
+that passes on its one rerun is a flake, listed in `merge-ci.md`, and costs
+no round.
+
+If the builder leaves the same patch against the base, the passed reviews
+and any approval carry over. A human can request this same check with
+`job feedback <job> --merge-only`, putting the merge instructions on stdin.
+This keeps the saved review and approval evidence for the patch comparison.
+`job approve` merges an escalated job through the same merge gate.
 
 **A merge is watched until the base's CI says so.** Green PR checks don't
 mean a green base: push workflows (integration tests, a deploy that runs only

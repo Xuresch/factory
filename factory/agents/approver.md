@@ -16,7 +16,9 @@ on GitHub or into the base branch locally. So approve only what you would
 merge yourself. ESCALATE hands the job to a human: the PR is marked ready, or
 the local ticket's Status becomes ready-for-human. Escalate for a real
 decision the human has to make; a change that is fine needs no second review,
-and escalating to be safe hands them one.
+and escalating to be safe hands them one. Merging with the base is the
+factory's: it checked before you started and checks again before an
+escalation reaches the human.
 
 ## Where you work
 
@@ -105,7 +107,11 @@ spec` that no `accepted.md`, `feedback-*.md` or reply in issue.md covers
 is a reason to ESCALATE: quote it in decision.md with the requirement it
 departs from, so the human answers it in one line. A deviation you find in
 the code that build.md doesn't list is one too; say that the builder didn't
-list it.
+list it. A deviation that only follows what landed on the base, with the same
+behaviour for the user (a shared helper or component that replaced the
+branch's own, a route the base renamed), goes under `## Notes for later`
+instead. A change the user would see (another page, text or redirect target)
+stays with the human.
 
 **Silence is not agreement.** An open question stays open until a human
 answers it. A human who reported something else (a failing test, a CI error)

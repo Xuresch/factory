@@ -583,6 +583,45 @@ t_approve_escalated_job() {
   check "merged" "$out" "merged factory/$id into master" && check "done" "$(status_of 01)" "done"
 }
 
+t_approval_preflight_fetches_and_leaves_clean_branch_alone() {
+  new_gh_repo approval-preflight; gh_issue 1 One
+  local id before
+  id=$(gh_to_approve 1) || return 1
+  J advance "$id" approve >/dev/null || return 1
+  before=$(git rev-parse "factory/$id")
+  "$GH/land" other.txt other >/dev/null || return 1
+  check "clean base: start advice" "$(J next "$id")" "start: factory/bin/job start $id approver" &&
+  check "clean base: worker starts" "$(J start "$id" approver)" "started approver" &&
+  [[ $(git rev-parse "factory/$id") == "$before" && $(git ls-remote origin "refs/heads/factory/$id" | cut -f1) == "$before" ]] &&
+  check "clean base: same round" "$(field "$id" "d['stage'], d['round']")" "('approve', 1)"
+}
+
+t_approval_preflight_returns_conflict_before_start() {
+  new_gh_repo approval-conflict; gh_issue 1 One
+  local id
+  id=$(gh_to_approve 1) || return 1
+  J advance "$id" approve >/dev/null || return 1
+  "$GH/land" y.txt other >/dev/null || return 1
+  check "start advice sends the job back" "$(J next "$id")" "advance: factory/bin/job advance $id build" &&
+  check "direct start also sends the job back" "$(J start "$id" approver)" "back to the builder for round 2" &&
+  check "no approver spawned" "[$(grep ' approver r' "$CALLS" 2>/dev/null)]" "[]" &&
+  check "conflict recorded" "$(cat "factory/jobs/$id/round-2/merge-back.md")" "conflicts with master" &&
+  check "back in build" "$(field "$id" "d['stage'], d['round']")" "('build', 2)"
+}
+
+t_approval_preflight_returns_conflict_before_human() {
+  new_gh_repo escalation-conflict; gh_issue 1 One
+  local id
+  id=$(gh_to_approve 1) || return 1
+  J advance "$id" approve >/dev/null && J start "$id" approver >/dev/null || return 1
+  "$GH/land" y.txt other >/dev/null || return 1
+  printf 'ESCALATE\n\n## Why\nAsk the human.\n' > "factory/jobs/$id/decision.md"
+  check "advice sends the job back" "$(J next "$id")" "advance: factory/bin/job advance $id build" &&
+  check "escalation command sends the job back" "$(J advance "$id" needs-human)" "build (round 2)" &&
+  check "no human label or ready PR" "[$(rg 'ready-for-human|^pr ready' "$GH_LOG")]" "[]" &&
+  check "conflict handed to builder" "$(cat "factory/jobs/$id/round-2/merge-back.md")" "conflicts with master"
+}
+
 t_partial_continue_then_swap() {
   new_repo partial; ticket 01 One; commit_all
   distinct_fallback low || return 1
@@ -3187,6 +3226,40 @@ t_overlap_waits() {
   check "knob off: start works" "$(J start "$B" builder)" "started builder"
 }
 
+t_overlap_running_builder_before_changes() {
+  new_repo overlap-running; mkdir -p src; echo a > src/a.ts; ticket 01 One; ticket 02 Two; commit_all
+  local A B; A=$(to_build 01 low none) && B=$(to_build 02 low none) || return 1
+  printf '# Spec\n\nEdit src/a.ts.\n' > "factory/jobs/$A/spec.md"
+  cp "factory/jobs/$A/spec.md" "factory/jobs/$B/spec.md"
+  J start "$A" builder >/dev/null || return 1
+  export FAKE_WORKER=running
+  check "clean running peer blocks" "$(J next "$B")" "$B: wait: overlaps $A (src/a.ts)" &&
+  check "direct start waits too" "$(J start "$B" builder 2>&1)" "wait: overlaps $A (src/a.ts)" &&
+  check "first builder still runs" "$(J next "$A")" "$A: wait: builder running" &&
+  check "settled clean peer clears" "$(FAKE_WORKER=settled J next "$B")" "$B: start:" &&
+  set_config overlap_wait false &&
+  check "off skips spec overlap" "$(J start "$B" builder)" "started builder"
+}
+
+t_overlap_slice_uses_owned_paths() {
+  new_repo overlap-slices; mkdir -p a b; echo a > a/file.txt; echo b > b/file.txt
+  ticket 01 One; ticket 02 Big; set_config max_parallel_builders 1; commit_all
+  local A B; A=$(to_build 01 low none) && B=$(J create f/02) || return 1
+  printf '# Spec\n\nEdit a/file.txt.\n' > "factory/jobs/$A/spec.md"
+  J start "$A" builder >/dev/null || return 1
+  export FAKE_WORKER=running
+  intake "$B" low none; sed -i 's/SPLIT: no/SPLIT: yes/; s/SIZE: small/SIZE: large/' "factory/jobs/$B/intake.md"
+  factory/bin/route "$B" >/dev/null && J advance "$B" spec >/dev/null || return 1
+  printf '# Big\n\n## Slices\n### Slice 1: A\n**Owns:** a/\n**Needs:** none\n**Criteria:** 1\n\n### Slice 2: B\n**Owns:** b/\n**Needs:** none\n**Criteria:** 2\n' > "factory/jobs/$B/spec.md"
+  J advance "$B" build >/dev/null || return 1
+  check "slice waits in advice" "$(J next "$B")" "slice 1 overlaps $A (a/file.txt)" &&
+  check "slice start waits" "$(J slice-start "$B" 1 2>&1)" "wait: overlaps $A (a/file.txt)" &&
+  [[ ! -e ".worktrees/$B-s1" ]] &&
+  check "disjoint slice starts" "$(J slice-start "$B" 2)" "slice 2 worktree" &&
+  set_config max_parallel_builders 2 && set_config overlap_wait false &&
+  check "off allows overlapping slice" "$(J slice-start "$B" 1)" "slice 1 worktree"
+}
+
 t_overlap_none_starts() {
   new_repo overlap-none; mkdir -p src; echo a > src/a.ts; echo b > src/b.ts; ticket 01 One; ticket 02 Two; commit_all
   local A B; A=$(to_build 01 low none) && B=$(to_build 02 low none) || return 1
@@ -4542,15 +4615,49 @@ t_lifecycle_rechecks_worktree_and_head() {
   check "review did not advance" "$(field "$id" "d['stage'], d['round']")" "('review', 1)"
 }
 
-t_lifecycle_merge_failure_with_no_round_left() {
-  new_repo lifecycle-merge; ticket 01 One; set_config max_rounds 1; commit_all
-  local id; id=$(to_build 01 low none); build_commit "$id" x.txt job; to_review "$id"
+t_lifecycle_conflict_rounds_are_free_and_bounded() {
+  lockfile_repo lifecycle-merge 'exit 3'; set_config max_rounds 1
+  local id round
+  id=$(to_build 01 low none) || return 1
+  build_commit "$id" y.txt job; build_commit "$id" deps.lock job; to_review "$id"
+  review "$id" 1 code PASS; J advance "$id" approve >/dev/null || return 1
+  printf 'APPROVE\n\n## Why\nOriginal approval.\n' > "factory/jobs/$id/decision.md"
+  for round in 2 3; do
+    echo "base $round" > deps.lock && git commit -qam "master edit $round" || return 1
+    check "conflict $round returns to the builder" "$(J merge "$id")" "back to the builder for round $round" &&
+    check "round $round has its allowance restored" "$(field "$id" "d['stage'], d['round'], d['round_limit']")" \
+      "('build', $round, $round)" || return 1
+    resolve_conflict_test_lock "$id" "$round" && to_review "$id" || return 1
+    check "approval carries into round $round" "$(J advance "$id" approve)" "approval carried from round $((round - 1))" || return 1
+  done
+  echo 'base 4' > deps.lock && git commit -qam "master edit 4" || return 1
+  check "third conflict escalates for feedback" "$(J merge "$id")" "needs-human: The branch conflicts with master" &&
+  check "rounds capped" "$(field "$id" "d['stage'], d['round'], d['round_limit']")" "('needs-human', 3, 3)" &&
+  check "next asks for merge feedback" "$(J next "$id")" "feedback $id --merge-only" &&
+  check "still-conflicting approval refused" "$(J approve "$id" 2>&1)" "the base still conflicts" &&
+  [[ ! -d "factory/jobs/$id/round-4" ]] || return 1
+  check "merge-only feedback starts round 4" "$(echo "Resolve the merge only." | J feedback "$id" --merge-only)" "round 4" &&
+  check "feedback kept carry and approval" "$(field "$id" "d['carry']['round'], d['approved']['round']")" "(3, 3)" &&
+  resolve_conflict_test_lock "$id" 4 && to_review "$id" &&
+  check "feedback round carries reviews" "$(field "$id" "d['skipped_reviews']['code']")" "same as round 3" &&
+  check "feedback round carries approval" "$(J advance "$id" approve)" "approval carried from round 3" &&
+  check "original approval text survives escalation" "$(cat "factory/jobs/$id/decision.md")" "Original approval." &&
+  check "merge finishes" "$(J merge "$id")" "merged factory/$id"
+}
+
+resolve_conflict_test_lock() {
+  (cd ".worktrees/$1" && ! git merge -q master &&
+    printf 'base %s and job\n' "$2" > deps.lock && git add deps.lock && git commit -q --no-edit)
+}
+
+t_lifecycle_merge_gate_failure_does_not_get_extra_round() {
+  new_repo lifecycle-merge-gate; ticket 01 One; set_config max_rounds 1; commit_all
+  local id; id=$(to_build 01 low none); build_commit "$id" y.txt job; to_review "$id"
   review "$id" 1 code PASS; J advance "$id" approve >/dev/null || return 1
   printf 'APPROVE\n\n## Why\nok\n' > "factory/jobs/$id/decision.md"
-  echo master > x.txt && git commit -qam "master edit"
-  check "merge escalates" "$(J merge "$id")" "needs-human: The branch conflicts with master" &&
-  check "no extra round" "$(field "$id" "d['stage'], d['round']")" "('needs-human', 1)" &&
-  [[ ! -d "factory/jobs/$id/round-2" ]]
+  echo fail > FAIL && git add FAIL && git commit -qm "master breaks gate" || return 1
+  check "failing merge gate escalates" "$(J merge "$id")" "needs-human: The gate failed" &&
+  check "no extra round" "$(field "$id" "d['stage'], d['round'], d['round_limit']")" "('needs-human', 1, 1)"
 }
 
 t_lifecycle_sets_up_worktree_before_ticket_comment() {

@@ -217,6 +217,8 @@ What this slice builds, in two or three lines.
   source type, marked kept (where it goes), lost (the line the user sees
   about it) or n.a., and require a test that walks the source type's fields
   so a new field can't be dropped silently.
+- When the change adds a page, say how the user gets back from it (a link, a
+  button, a breadcrumb, the browser's back), with its own criterion.
 - A check in a browser is a criterion for the builder, who runs the app, not
   a question for a human. When the reviewers can't reach a page (sign-in, a
   role, seed data), the criterion names the page, the account or data it

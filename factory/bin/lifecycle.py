@@ -8,6 +8,7 @@ TERMINAL = {"merged", "rejected"}
 WAITING = {"needs-info", "needs-human", "paused"}
 REJECTABLE = {"spec", "build", "gate", "review", "approve"}
 REWINDABLE = REJECTABLE | {"paused", "needs-human"}
+EXTRA_CONFLICT_ROUNDS = 2
 
 TRANSITIONS = {
     "intake": {"needs-info", "rejected", "spec", "build", "needs-human"},
@@ -16,7 +17,7 @@ TRANSITIONS = {
     "build": {"gate", "needs-human", "rejected"},
     "gate": {"review", "build", "needs-human", "rejected"},
     "review": {"approve", "build", "needs-human", "rejected"},
-    "approve": {"merging", "needs-human", "rejected"},
+    "approve": {"merging", "build", "needs-human", "rejected"},
     "merging": {"needs-human", "build"},
     "needs-human": {"build", "rejected", "merging"},
     "paused": {"rejected"},
@@ -45,6 +46,7 @@ class Facts:
     rejection: bool = False
     approval: bool = False
     feedback: bool = False
+    merge_only_feedback: bool = False
     merged: bool = False
     merge_outcome: str | None = None
     merge_reason: str | None = None
@@ -144,6 +146,21 @@ def _review(job, facts):
     return _transition("needs-human", _round_reason(job), record, Effect("escalate", (reason,)), pr)
 
 
+def _merge_failure(job, facts):
+    reason = facts.merge_reason
+    conflict = facts.merge_outcome == "conflict"
+    reviewed = Effect("remember_reviewed")
+    if conflict or facts.merge_outcome == "recoverable":
+        extra = conflict and job.get("merge_conflict_rounds", 0) < EXTRA_CONFLICT_ROUNDS
+        if extra or rounds_left(job):
+            allowance = (Effect("grant_conflict_round"),) if extra else ()
+            return _transition("build", reason, reviewed, *allowance, Effect("next_round"),
+                               Effect("record_merge_failure", (reason,)), legacy_target="needs-human" if conflict else None)
+    keep = (reviewed,) if conflict else ()
+    escalation = Effect("escalate", (reason, True)) if conflict else Effect("escalate", (reason,))
+    return _transition("needs-human", reason, *keep, escalation)
+
+
 def _progression(job, facts, target, max_rounds):
     stage, report = job["stage"], facts.report
     if target == "merged":
@@ -207,6 +224,8 @@ def _progression(job, facts, target, max_rounds):
     if stage == "review":
         return _review(job, facts)
     if stage == "approve":
+        if facts.merge_outcome == "conflict":
+            return _merge_failure(job, facts)
         if report not in {"APPROVE", "ESCALATE"}:
             return Decision("send", "decision.md must start with APPROVE or ESCALATE. Fix it and report again.")
         if facts.dirty or facts.head != job.get("review_head"):
@@ -216,11 +235,8 @@ def _progression(job, facts, target, max_rounds):
         return _transition("needs-human", "the approver escalated")
     if stage == "merging":
         reason = facts.merge_reason or "only `job merge` can apply a merge outcome"
-        if facts.merge_outcome == "recoverable" and rounds_left(job):
-            return _transition("build", reason, Effect("remember_reviewed"), Effect("next_round"),
-                               Effect("record_merge_failure", (reason,)))
-        if facts.merge_outcome in {"recoverable", "escalate"}:
-            return _transition("needs-human", reason, Effect("escalate", (reason,)))
+        if facts.merge_outcome in {"conflict", "recoverable", "escalate"}:
+            return _merge_failure(job, facts)
         approved = job.get("approved") or {}
         human_approved = facts.approval and approved.get("by") == "human" and approved.get("round") == job["round"]
         if report == "ESCALATE" and not human_approved:
@@ -235,9 +251,11 @@ def _progression(job, facts, target, max_rounds):
                                    Effect("resume_ticket"))
             return Decision("refuse", "use `job approve` to merge an escalated job")
         if facts.feedback:
+            allowance = job["round"] + max_rounds
+            reset = (Effect("reset_after_feedback", (allowance, True)) if facts.merge_only_feedback
+                     else Effect("reset_after_feedback", (allowance,)))
             return _transition("build", "the operator gave feedback",
-                               Effect("reset_after_feedback", (job["round"] + max_rounds,)),
-                               Effect("next_round"), Effect("resume_ticket"))
+                               reset, Effect("next_round"), Effect("resume_ticket"))
         return Decision("refuse", "use `job feedback` to send a job back to the builder")
     return Decision("refuse", f"no transition available from {stage}")
 
@@ -256,7 +274,9 @@ def decide(job, facts=None, *, target=None, intent="advance", max_rounds=0):
     if target is not None and not legal_target(old, target):
         return Decision("refuse", f'{job["id"]}: {old} → {target} is not a legal transition')
     facts = facts or Facts()
-    if facts.merge_outcome is not None and old != "merging":
+    if facts.merge_outcome is not None and not (
+        old == "merging" or (old == "approve" and facts.merge_outcome == "conflict")
+    ):
         return Decision("refuse", f'{job["id"]} is in {old}, not merging')
     decision = _progression(job, facts, target, max_rounds)
     if target is None or target in (decision.stage, decision.legacy_target):

@@ -46,10 +46,11 @@ checkout belongs to the user and to other jobs: never edit it.
    conflict so both sides' changes survive, run the checks and commit. Then
    do the rest of the round. `SYNC: MERGED` means new work landed on the base;
    make sure your change still fits it (when it says the factory regenerated
-   a lockfile, that is done). `round-<N>/merge-back.md` means the merge after
-   approval failed; fix what it says. When the only fix is merging the base,
-   change nothing else: a round whose change stays the same keeps its reviews
-   and approval.
+   a lockfile, that is done). `round-<N>/merge-back.md` means the base merge
+   failed, before approval or after it; fix what it says. When the only fix is
+   merging the base, or a `feedback-*.md` starts with `# Merge-only feedback`,
+   resolve the base merge and change nothing else: a round whose change stays
+   the same keeps its reviews and approval.
    **Lockfiles are never hand-merged.** When a lockfile conflicts
    (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`, `bun.lock`,
    `Cargo.lock`, `uv.lock`), take the base's version
