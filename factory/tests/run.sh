@@ -2544,6 +2544,8 @@ t_gate_and_heavy_share_pool() {
   touch "$HEAVY_RELEASE"/{builder,gate}
   wait "$builder" && wait "$gate" || return 1
   check "gate has its own wait metric" "$(field "$id" "d['heavy_wait_s']['gate'] > 0")" "True" &&
+  check "gate wait shows the same job's builder" "$(field "$id" \
+    "d['heavy_waits']['gate'] == [{'blocker': '$id builder (self-queueing)', 's': d['heavy_wait_s']['gate']}]")" "True" &&
   check "gate wait is separate in checks.md" "$(cat "factory/jobs/$id/round-1/checks.md")" "before checks.sh ran; not counted in its" || return 1
 
   prior=0
@@ -2565,6 +2567,8 @@ t_gate_and_heavy_share_pool() {
     prior=$(field "$id" "d['heavy_wait_s']['builder']") || return 1
   done
   check "reviewer wait is tracked separately" "$(field "$id" "d['heavy_wait_s']['reviewer-code'] > 0")" "True" &&
+  check "each builder wait keeps its blocker and seconds" "$(field "$id" \
+    "len(d['heavy_waits']['builder']) == 2 and all(w['blocker'] == 'gate $id (self-queueing)' and w['s'] > 0 for w in d['heavy_waits']['builder']) and sum(w['s'] for w in d['heavy_waits']['builder']) == $prior")" "True" &&
   check "released slots are absent from next" "[$(J next | sed -n '/heavy slot held/p')]" "[]" || return 1
 
   rm "$HEAVY_RELEASE/builder"
@@ -2588,16 +2592,21 @@ t_gate_and_heavy_share_pool() {
   rm "$HEAVY_RELEASE/builder"
   : > "$HEAVY_EVENTS"
   prior=$(field "$id" "d['heavy_wait_s']['gate']") || return 1
-  timeout 10 "$HEAVY_RUNNER" bash "$HOLD_SCRIPT" builder &
+  FACTORY_JOB=002-other FACTORY_ROLE=builder timeout 10 "$HEAVY_RUNNER" bash "$HOLD_SCRIPT" builder &
   builder=$!
   await_event "$HEAVY_EVENTS" "builder start" || return 1
   timeout 10 factory/bin/job merge "$id" >"$HEAVY_RELEASE/merge.out" 2>"$HEAVY_RELEASE/merge.err" &
   gate=$!
-  await_event "$HEAVY_RELEASE/merge.err" "gate: waiting for $PWD: bash" || return 1
+  await_event "$HEAVY_RELEASE/merge.err" "gate: waiting for 002-other builder: bash" || return 1
   touch "$HEAVY_RELEASE/builder"
   wait "$builder" && wait "$gate" || return 1
   check "merge completed without reacquiring its own job lock" "$(field "$id" "d['stage']")" "merged" &&
-  check "merge records its gate wait" "$(field "$id" "d['heavy_wait_s']['gate'] > $prior")" "True"
+  check "merge records its gate wait" "$(field "$id" "d['heavy_wait_s']['gate'] > $prior")" "True" &&
+  check "merge records the other job's blocker" "$(field "$id" \
+    "d['heavy_waits']['gate'][-1]['blocker'] == '002-other builder' and d['heavy_waits']['gate'][-1]['s'] > 0")" "True" &&
+  J _heavy-wait "$id" legacy 2 &&
+  check "legacy CLI records only the total" "$(field "$id" \
+    "d['heavy_wait_s']['legacy'] == 2 and 'legacy' not in d['heavy_waits']")" "True"
 }
 
 t_heavy_nested_signals_and_exit() {

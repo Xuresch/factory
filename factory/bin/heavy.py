@@ -173,12 +173,22 @@ def run(repo, config, cmd, *, cwd=None, env=None, job=None, role=None, prefix="h
             signal.signal(sig, handler)
 
 
-def record_wait(repo, job, role, waited):
-    if job and role and waited > 0:
+def wait_blocker(info, job):
+    info = info or {}
+    holder_job, role = info.get("job"), info.get("role")
+    if not holder_job:
+        return role or "another heavy command"
+    label = f"gate {holder_job}" if role == "gate" else " ".join(filter(None, (holder_job, role)))
+    return label + (" (self-queueing)" if holder_job == job else "")
+
+
+def record_wait(repo, job, role, result):
+    if job and role and result.waited > 0:
         # Record after releasing the heavy slot, so the job lock and pool
         # never depend on one another in opposite order.
         try:
-            subprocess.run([str(repo / "factory" / "bin" / "job"), "_heavy-wait", job, role, str(waited)],
+            subprocess.run([str(repo / "factory" / "bin" / "job"), "_heavy-wait", job, role,
+                            str(result.waited), wait_blocker(result.blocked_by, job)],
                            cwd=repo, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
         except OSError as exc:
             print(f"heavy: could not record wait: {exc}", file=sys.stderr)
@@ -201,7 +211,7 @@ def main(argv):
     except (OSError, ValueError) as exc:
         print(f"heavy: {exc}", file=sys.stderr)
         return 127 if isinstance(exc, FileNotFoundError) else 126 if isinstance(exc, PermissionError) else 2
-    record_wait(repo, job, role, result.waited)
+    record_wait(repo, job, role, result)
     return result.returncode
 
 
