@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Usage: factory/bin/heavy <cmd...>
+"""Usage: factory/bin/heavy [--pool heavy|browser] <cmd...>
 
-Run a command in a shared heavy slot for this repository and machine.
+Run a command in a shared slot for this repository and machine.
 """
 
 import fcntl
@@ -17,7 +17,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 
-SLOT_ENV = "FACTORY_HEAVY_SLOT"
+SLOT_ENVS = {"heavy": "FACTORY_HEAVY_SLOT", "browser": "FACTORY_BROWSER_SLOT"}
 POLL_SECONDS = 0.1
 STOP_GRACE_SECONDS = 2
 
@@ -34,8 +34,8 @@ def main_checkout(cwd):
     return Path(os.fsdecode(trees.split(b"\0", 1)[0].removeprefix(b"worktree ")))
 
 
-def pool_dir(repo):
-    return repo / "factory" / "jobs" / "_heavy" / socket.gethostname()
+def pool_dir(repo, pool):
+    return repo / "factory" / "jobs" / f"_{pool}" / socket.gethostname()
 
 
 def holder(path):
@@ -47,7 +47,13 @@ def holder(path):
 
 
 def active_holders(repo):
-    for path in sorted(pool_dir(repo).glob("slot-*.lock")):
+    for pool in SLOT_ENVS:
+        for info in pool_holders(pool_dir(repo, pool)):
+            yield dict(info, pool=pool)
+
+
+def pool_holders(directory):
+    for path in sorted(directory.glob("slot-*.lock")):
         # Check the lock, rather than the recorded PID: flock releases it
         # when the holder dies, and the PID alone may have been reused.
         try:
@@ -89,13 +95,15 @@ class Stopped(Exception):
 
 
 @contextmanager
-def slot(repo, config, info, stopped, *, prefix, env):
-    limit = int(config.get("heavy_parallel", config.get("gate_parallel", 1)) or 0)
-    if SLOT_ENV in env or limit <= 0:
+def slot(repo, config, info, stopped, *, pool, prefix, env):
+    default = 2 if pool == "browser" else config.get("gate_parallel", 1)
+    limit = int(config.get(f"{pool}_parallel", default) or 0)
+    slot_env = SLOT_ENVS[pool]
+    if slot_env in env or limit <= 0:
         yield env, 0, None
         return
 
-    directory = pool_dir(repo)
+    directory = pool_dir(repo, pool)
     directory.mkdir(parents=True, exist_ok=True)
     paths = [directory / f"slot-{n}.lock" for n in range(1, limit + 1)]
     started, blocker = time.monotonic(), None
@@ -111,7 +119,7 @@ def slot(repo, config, info, stopped, *, prefix, env):
                 json.dump(dict(info, pid=os.getpid(), since=time.time()), lock)
                 lock.flush()
                 waited = time.monotonic() - started if blocker is not None else 0
-                yield dict(env, **{SLOT_ENV: str(path)}), waited, blocker
+                yield dict(env, **{slot_env: str(path)}), waited, blocker
                 return
         if blocker is None:
             blocker = holder(paths[0])
@@ -142,7 +150,7 @@ def communicate(child, stopped):
             os.killpg(child.pid, signal.SIGKILL)
 
 
-def run(repo, config, cmd, *, cwd=None, env=None, job=None, role=None, prefix="heavy", capture=False):
+def run(repo, config, cmd, *, cwd=None, env=None, job=None, role=None, prefix="heavy", capture=False, pool="heavy"):
     cwd = str(cwd or Path.cwd())
     env = os.environ.copy() if env is None else env
     info = {"job": job, "role": role, "command": shlex.join(cmd).replace("\n", r"\n"), "cwd": cwd}
@@ -157,7 +165,7 @@ def run(repo, config, cmd, *, cwd=None, env=None, job=None, role=None, prefix="h
 
     previous = {sig: signal.signal(sig, on_signal) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
-        with slot(repo, config, info, stopped, prefix=prefix, env=env) as (child_env, waited, blocker):
+        with slot(repo, config, info, stopped, pool=pool, prefix=prefix, env=env) as (child_env, waited, blocker):
             if interrupted:
                 return Result(128 + interrupted, waited=waited, blocked_by=blocker)
             started = time.monotonic()
@@ -182,13 +190,12 @@ def wait_blocker(info, job):
     return label + (" (self-queueing)" if holder_job == job else "")
 
 
-def record_wait(repo, job, role, result):
+def record_wait(repo, job, role, result, pool="heavy"):
     if job and role and result.waited > 0:
-        # Record after releasing the heavy slot, so the job lock and pool
-        # never depend on one another in opposite order.
+        # Release this slot before taking the job lock.
         try:
             subprocess.run([str(repo / "factory" / "bin" / "job"), "_heavy-wait", job, role,
-                            str(result.waited), wait_blocker(result.blocked_by, job)],
+                            str(result.waited), wait_blocker(result.blocked_by, job), pool],
                            cwd=repo, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
         except OSError as exc:
             print(f"heavy: could not record wait: {exc}", file=sys.stderr)
@@ -198,20 +205,29 @@ def main(argv):
     if not argv or argv == ["--help"]:
         print(__doc__.strip(), file=sys.stdout if argv else sys.stderr)
         return 0 if argv else 2
+    pool = "heavy"
+    if argv[0] == "--pool":
+        if len(argv) < 3 or argv[1] not in SLOT_ENVS:
+            print(__doc__.strip(), file=sys.stderr)
+            return 2
+        pool, argv = argv[1], argv[2:]
     try:
-        if SLOT_ENV in os.environ:
+        if SLOT_ENVS[pool] in os.environ:
             os.execvp(argv[0], argv)
+        # Browser scripts can take heavy slots. Forbid the reverse order.
+        if pool == "browser" and SLOT_ENVS["heavy"] in os.environ:
+            raise ValueError("start the browser session before taking a heavy slot")
         repo = main_checkout(Path.cwd())
         config = json.loads((repo / "factory" / "config.json").read_text())
         job, role = os.environ.get("FACTORY_JOB"), os.environ.get("FACTORY_ROLE")
-        result = run(repo, config, argv, job=job, role=role)
+        result = run(repo, config, argv, job=job, role=role, pool=pool, prefix=pool)
     except subprocess.CalledProcessError as exc:
         print(f"heavy: cannot find the factory's Git checkout: {exc.stderr}", file=sys.stderr)
         return 2
     except (OSError, ValueError) as exc:
         print(f"heavy: {exc}", file=sys.stderr)
         return 127 if isinstance(exc, FileNotFoundError) else 126 if isinstance(exc, PermissionError) else 2
-    record_wait(repo, job, role, result)
+    record_wait(repo, job, role, result, pool)
     return result.returncode
 
 

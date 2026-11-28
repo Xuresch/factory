@@ -239,6 +239,9 @@ What this slice builds, in two or three lines.
   viewer's role at each step, and check that no requirement refuses on the
   next page what another requirement offers on this one.
 
+<!-- project: rules this project's specs must cover -->
+<!-- /project -->
+
 ### Needs a human
 
 - `## Needs a human` lists only what nobody in the factory can check: the

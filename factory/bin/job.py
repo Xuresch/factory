@@ -326,10 +326,12 @@ def issue_key(arg):
     return f"{m.group(1)}/{m.group(2)}"
 
 
-def ticket_path(key):
+def ticket_path(key, *, missing_ok=False):
     feature, nn = key.split("/")
     hits = sorted((SCRATCH / feature / "issues").glob(f"{nn}-*.md"))
     if not hits:
+        if missing_ok:
+            return None
         die(f"no ticket {key}: nothing matches .scratch/{feature}/issues/{nn}-*.md")
     return hits[0]
 
@@ -742,12 +744,13 @@ def save(job):
     tmp.replace(path)
 
 
-def add_heavy_wait(job, role, seconds, blocker=None):
+def add_heavy_wait(job, role, seconds, blocker=None, pool="heavy"):
     if 0 < seconds < float("inf"):
         waits = job.setdefault("heavy_wait_s", {})
         waits[role] = waits.get(role, 0) + seconds
         if blocker:
-            job.setdefault("heavy_waits", {}).setdefault(role, []).append({"blocker": blocker, "s": seconds})
+            job.setdefault("heavy_waits", {}).setdefault(role, []).append(
+                {"blocker": blocker, "s": seconds, "pool": pool})
         save(job)
 
 
@@ -2092,6 +2095,46 @@ def close_merged(job):
     waited = {"needs-human": "human", "paused": "human", "needs-info": "info"}.get(job["stage"])
     TICKETS.done(job["issue"], merge_summary(job, rough), waited=waited,
                  why=f"{job['title']} (factory job {job['id']})")
+    post_approval_notes(job)
+
+
+def post_approval_notes(job):
+    decision = job_dir(job["id"]) / "decision.md"
+    notes = section(decision, "Notes for later") if decision.exists() else None
+    if not notes:
+        return
+    linked = {}
+    for note in re.split(r"(?m)(?=^(?:[-*+]|\d+[.)])[ \t]+)", notes):
+        numbers = dict.fromkeys(re.findall(r"(?<![\w/&#])#0*([1-9][0-9]*)\b", note))
+        for number in numbers:
+            linked.setdefault(number, []).append(note.strip())
+    source = job.get("issue_url")
+    if GITHUB:
+        origin = f"[#{job['issue']}]({source})" if source else f"#{job['issue']}"
+        if job.get("pr_url"):
+            origin += f" and [PR #{job['pr']}]({job['pr_url']})"
+    else:
+        origin = f"[{job['issue']}]({Path(source).name})" if source else job["issue"]
+    for number, items in linked.items():
+        key = number
+        if not GITHUB:
+            feature = job["issue"].split("/")[0]
+            key = f"{feature}/{number.zfill(2)}"
+        if key == str(job["issue"]) or key in job.get("approval_notes_attempted", ()):
+            continue
+        try:
+            if GITHUB:
+                issue = gh_json("api", f"repos/{{owner}}/{{repo}}/issues/{key}")
+                if not isinstance(issue, dict) or "pull_request" in issue:
+                    continue
+            elif ticket_path(key, missing_ok=True) is None:
+                continue
+            # Save before posting so an interrupted merge never reposts the note.
+            job.setdefault("approval_notes_attempted", []).append(key)
+            save(job)
+            TICKETS.comment(key, f"### Factory: notes from {origin}\n\n" + "\n\n".join(items))
+        except (Refused, OSError, ValueError):
+            print(f"{job['id']}: couldn't forward approval notes to {key}", file=sys.stderr)
 
 
 def reject_transition(job):
@@ -5548,7 +5591,7 @@ def show_long_heavy_commands(job_id=None):
             continue
         elapsed = time.time() - holder["since"]
         if elapsed >= limit:
-            print(f"{owner or 'heavy'}: tell: heavy slot held for {elapsed / 60:.1f} min "
+            print(f"{owner or holder['pool']}: tell: {holder['pool']} slot held for {elapsed / 60:.1f} min "
                   f"(since {clock(holder['since'])}): {heavy.describe(holder)}")
 
 
@@ -5619,11 +5662,11 @@ def main(argv):
     COMMAND = cmd
     NO_WAIT = cmd in READ_ONLY or (cmd == "dispatch" and len(args) == 2)
     try:
-        if cmd == "_heavy-wait" and len(args) in (3, 4):
-            job_id, role, seconds, *blocker = args
+        if cmd == "_heavy-wait" and len(args) in (3, 4, 5):
+            job_id, role, seconds, *details = args
             require(Path(job_id).name == job_id and job_id not in {"", ".", ".."},
                     "invalid job ID for heavy wait")
-            add_heavy_wait(load(job_id), role, float(seconds), *blocker)
+            add_heavy_wait(load(job_id), role, float(seconds), *details)
             return
         if cmd != "claim":
             refresh_claim()

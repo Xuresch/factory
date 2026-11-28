@@ -273,6 +273,14 @@ elif cmd[0] == "api" and cmd[1].endswith("/permission"):  # permissions.json {lo
     if role is None:
         sys.exit("HTTP 404: Not Found")
     print(json.dumps({"permission": {"maintain": "write", "triage": "read"}.get(role, role), "role_name": role}))
+elif cmd[0] == "api" and cmd[1].startswith("repos/{owner}/{repo}/issues/") and cmd[1].count("/") == 4:
+    n = int(cmd[1].split("/")[-1])
+    issue = load(f"issue-{n}.json")
+    if pr and n == pr["number"]:
+        issue = {"number": n, "pull_request": {}}
+    if issue is None:
+        sys.exit("HTTP 404: Not Found")
+    print(json.dumps(issue))
 elif cmd[0] == "api" and any(a.startswith("repos/{owner}/{repo}/") for a in args):
     # PR comments from pr-comments.json {"pulls/comments": [...], "issues/comments": [...], "pulls/reviews": [...]},
     # two per page: --paginate prints the pages back to back, without it only the first one comes.
@@ -304,7 +312,8 @@ elif cmd == ["issue", "edit"]:  # --add-label / --remove-label (comma-separated)
     i["labels"] += [{"name": x} for x in (opt("--add-label") or "").split(",") if x]
     save(f"issue-{args[2]}.json", i)
 elif cmd in (["issue", "comment"], ["pr", "comment"], ["pr", "close"]):
-    pass
+    if cmd == ["issue", "comment"] and (d / f"comment-fail-{args[2]}").exists():
+        sys.exit("HTTP 403: Resource not accessible by integration")
 elif cmd == ["issue", "close"]:  # close-fail: GitHub refuses
     if (d / "close-fail").exists():
         sys.exit("HTTP 403: Resource not accessible by integration")
@@ -1940,8 +1949,12 @@ t_gh_clean_merge_closes_issue() {
 
 t_gh_merge_posts_notes_for_later() {
   new_gh_repo ghnotes; gh_issue 1 One
+  gh_issue 25 Closed; gh_issue 26 Broken; gh_issue 27 Open; gh_issue 28 Unrelated
+  gh issue close 25
+  touch "$GH/comment-fail-26"
   local id comment
   id=$(gh_to_merging 1) || return 1
+  : > "$GH_LOG"
   cat > "factory/jobs/$id/decision.md" <<'MD'
 APPROVE
 
@@ -1949,19 +1962,49 @@ APPROVE
 - Gate and reviews passed.
 
 ## Notes for later
-- Keep the `drafts` link.
+- Keep the `drafts` link in #25.
   - Check the mobile view.
-- Revisit upload limits.
+- Revisit upload limits in #25 and #27.
+- Recheck #26, #7, #1, #999 and other/repo#28.
 
 ## For the human
-- Decision details stay in the job.
+- Decision details stay in the job, even with a reference to #28.
 MD
   J merge "$id" >/dev/null || return 1
-  comment=$(sed -n '/^issue comment 1 /,$p' "$GH_LOG")
+  J merge "$id" >/dev/null 2>&1
+  [[ $(field "$id" "d['stage']") == merged ]] || return 1
+  comment=$(sed -n '/^issue comment 1 /,/^issue view 1 /p' "$GH_LOG")
   check "approval summary goes to the issue" "$comment" $'**Why it was approved**\n- Gate and reviews passed.' &&
   check "notes retain their Markdown" "$comment" \
-    $'**Notes for later**\n\n- Keep the `drafts` link.\n  - Check the mobile view.\n- Revisit upload limits.' &&
-  [[ "$comment" != *"Decision details stay in the job."* ]]
+    $'**Notes for later**\n\n- Keep the `drafts` link in #25.\n  - Check the mobile view.\n- Revisit upload limits in #25 and #27.' &&
+  [[ "$comment" != *"Decision details stay in the job"* ]] &&
+  check "only noted issues get one comment each, even after retry" \
+    "[$(sed -n 's/^issue comment \([0-9]*\) .*/\1/p' "$GH_LOG" | paste -sd ' ')]" "[1 25 27 26]" &&
+  comment=$(sed -n '/^issue comment 25 /,/^api /p' "$GH_LOG") &&
+  check "closed issue gets all its notes and links back" "$comment" \
+    $'### Factory: notes from [#1](https://github.com/o/r/issues/1) and [PR #7](https://github.com/o/r/pull/7)\n\n- Keep the `drafts` link in #25.\n  - Check the mobile view.\n\n- Revisit upload limits in #25 and #27.' &&
+  comment=$(sed -n '/^issue comment 27 /,/^api /p' "$GH_LOG") &&
+  check "open issue gets its note" "$comment" 'Revisit upload limits in #25 and #27.' &&
+  [[ "$comment" != *'Keep the `drafts` link'* ]]
+}
+
+t_local_merge_forwards_approval_notes() {
+  new_repo local-notes; ticket 01 One; ticket 02 Two; ticket 03 Three
+  printf '\n## Comments\n\nExisting comment.\n' >> .scratch/f/issues/02-t.md
+  commit_all
+  local id out
+  id=$(to_build 01 low none) && build_commit "$id" x.txt changed &&
+  to_review "$id" && review "$id" 1 code PASS && J advance "$id" approve >/dev/null || return 1
+  printf 'APPROVE\n\n## Notes for later\n- Follow up in #02, #03 and #99.\n' > "factory/jobs/$id/decision.md"
+  J merge "$id" >/dev/null || return 1
+  J merge "$id" >/dev/null 2>&1
+  out=$(cat .scratch/f/issues/02-t.md)
+  check "local note links back to the merged ticket" "$out" \
+    $'### Factory: notes from [f/01](01-t.md)\n\n- Follow up in #02, #03 and #99.' &&
+  [[ $(grep -c '^### Factory: notes from' <<< "$out") == 1 ]] &&
+  [[ "$out" == *'Existing comment.'* && $(status_of 02) == ready-for-agent ]] &&
+  check "local tracker adds a comments section when needed" "$(cat .scratch/f/issues/03-t.md)" \
+    $'## Comments\n\n<!-- factory -->'
 }
 
 t_gh_approved_merge_closes_issue() {
@@ -2545,7 +2588,7 @@ t_gate_and_heavy_share_pool() {
   wait "$builder" && wait "$gate" || return 1
   check "gate has its own wait metric" "$(field "$id" "d['heavy_wait_s']['gate'] > 0")" "True" &&
   check "gate wait shows the same job's builder" "$(field "$id" \
-    "d['heavy_waits']['gate'] == [{'blocker': '$id builder (self-queueing)', 's': d['heavy_wait_s']['gate']}]")" "True" &&
+    "d['heavy_waits']['gate'] == [{'blocker': '$id builder (self-queueing)', 's': d['heavy_wait_s']['gate'], 'pool': 'heavy'}]")" "True" &&
   check "gate wait is separate in checks.md" "$(cat "factory/jobs/$id/round-1/checks.md")" "before checks.sh ran; not counted in its" || return 1
 
   prior=0
@@ -2607,6 +2650,42 @@ t_gate_and_heavy_share_pool() {
   J _heavy-wait "$id" legacy 2 &&
   check "legacy CLI records only the total" "$(field "$id" \
     "d['heavy_wait_s']['legacy'] == 2 and 'legacy' not in d['heavy_waits']")" "True"
+}
+
+t_browser_slots() {
+  new_repo browser-slots; ticket 01 One; commit_all
+  heavy_fixture browser-slots
+  local id builder ux ui third out rc
+  id=$(to_build 01 low none) || return 1
+  set_config heavy_parallel 1 browser_parallel 0 heavy_max_minutes 0
+  "$HEAVY_RUNNER" --pool browser true && [[ ! -d factory/jobs/_browser ]] || return 1
+  python3 -c 'import json; p = "factory/config.json"; c = json.load(open(p)); del c["browser_parallel"]; json.dump(c, open(p, "w"))'
+
+  FACTORY_JOB="$id" FACTORY_ROLE=builder timeout 15 "$HEAVY_RUNNER" bash "$HOLD_SCRIPT" builder &
+  builder=$!
+  await_event "$HEAVY_EVENTS" "builder start" || return 1
+  FACTORY_JOB="$id" FACTORY_ROLE=reviewer-ux timeout 15 "$HEAVY_RUNNER" --pool browser \
+    bash -c '"$1" bash "$2" nested && bash "$2" ux' _ "$HEAVY_RUNNER" "$HOLD_SCRIPT" 2>"$HEAVY_RELEASE/ux.err" &
+  ux=$!
+  await_event "$HEAVY_RELEASE/ux.err" "heavy: waiting for $id builder" || return 1
+  FACTORY_JOB="$id" FACTORY_ROLE=reviewer-ui timeout 15 "$HEAVY_RUNNER" --pool browser bash "$HOLD_SCRIPT" ui &
+  ui=$!
+  await_event "$HEAVY_EVENTS" "ui start" || return 1
+  FACTORY_JOB="$id" FACTORY_ROLE=reviewer-other timeout 15 "$HEAVY_RUNNER" --pool browser \
+    bash "$HOLD_SCRIPT" third 2>"$HEAVY_RELEASE/third.err" &
+  third=$!
+  await_event "$HEAVY_RELEASE/third.err" "browser: waiting for $id reviewer-ux" &&
+  check "old browser slots appear in next" "$(J next "$id")" 'browser slot held' &&
+  [[ $(cat "$HEAVY_EVENTS") == $'builder start\nui start' ]] || return 1
+
+  touch "$HEAVY_RELEASE"/{builder,nested}
+  wait "$builder" && await_event "$HEAVY_EVENTS" "ux start" || return 1
+  out=$(timeout 3 "$HEAVY_RUNNER" "$HEAVY_RUNNER" --pool browser true 2>&1); rc=$?
+  [[ $rc == 2 ]] && check "reverse order refuses without waiting" "$out" 'start the browser session before taking a heavy slot' || return 1
+  touch "$HEAVY_RELEASE"/{ux,ui,third}
+  wait "$ux" && wait "$ui" && wait "$third" &&
+  check "nested build recorded a heavy wait" "$(field "$id" "d['heavy_waits']['reviewer-ux'][0]['pool']")" "heavy" &&
+  check "third session recorded a browser wait" "$(field "$id" "d['heavy_waits']['reviewer-other'][0]['pool']")" "browser"
 }
 
 t_heavy_nested_signals_and_exit() {
@@ -4746,7 +4825,7 @@ t_report_directory_changes_and_grouped_criteria() {
   new_repo report-directories; ticket 01 One
   mkdir -p server/src/nested server/src-extra messages stable tests
   touch server/src/nested/.keep server/src-extra/.keep messages/.keep stable/.keep
-  printf 'def test_one(): pass\ndef test_two(): pass\n' > tests/test_slices.py
+  printf 'def test_one(): pass\ndef test_two(): pass\ndef test_three(): pass\n' > tests/test_slices.py
   commit_all
   local id report
   id=$(to_build 01 low none) || return 1
@@ -4757,22 +4836,25 @@ t_report_directory_changes_and_grouped_criteria() {
   cat >> "factory/jobs/$id/build.md" <<'MD'
 
 ## Changes
-- `server/src/`: Change the server.
-- `messages`: Add translations.
-- `stable`: Claimed change to an untouched directory.
+- `server/src/`, `messages`: Change the server and add translations.
+- stable: Claimed change to an untouched directory.
 
 ## Acceptance criteria
 ### Slice 1
-1. [x] First.
-   Test: `tests/test_slices.py::test_one`
+  1. [x] First.
+     - Test: tests/test_slices.py::test_one
+     - Also check translations.
+       1. Test: `tests/test_slices.py::test_three`
 ### Slice 2
-2. [x] Second. Test: `tests/test_slices.py::test_two`
+- [x] Second.
+  Test: `tests/test_slices.py::test_two`
 ## Validation
 - Ran checks.
 MD
   J advance "$id" gate >/dev/null && factory/bin/gate "$id" >/dev/null || return 1
   report=$(cat "factory/jobs/$id/round-1/report.md") || return 1
   check "first slice criterion and its continuation are read" "$report" 'Criterion 1, `tests/test_slices.py::test_one`.' &&
+  check "nested list adds evidence to its parent" "$report" 'Criterion 1, `tests/test_slices.py::test_three`.' &&
   check "second slice criterion is read" "$report" 'Criterion 2, `tests/test_slices.py::test_two`.' &&
   check "untouched directory contradicts the report" "$report" 'names `stable`, which the diff does not touch' &&
   check "a matching prefix outside the directory is not covered" "$report" 'changes `server/src-extra/extra.py` without an entry' &&
