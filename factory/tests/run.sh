@@ -212,6 +212,7 @@ check() {  # check <description> <actual> <expected substring>
 # records mergedHead), rerun.json (the statusCheckRollup `gh run rerun` puts on the PR),
 # commit-checks.json ({sha: [check runs]}: what `gh api .../commits/<sha>/check-runs` lists;
 # `pr merge` makes the merge commit f00d...), commit-rerun.json (the check runs `gh run rerun` puts there),
+# commit-check-polls.json ({sha: [[check runs], ...]}: successive responses before the stable checks),
 # permissions.json ({login: role_name}: what `gh api .../collaborators/<login>/permission` says; 404 otherwise),
 # merge-fail.json ({"count": n, "stderr": s, "run": cmd}:
 # the next n `pr merge` calls run cmd, then fail with s) and pr-comments.json
@@ -260,7 +261,12 @@ elif cmd[0] == "api" and cmd[1].endswith("/dependencies/blocked_by"):  # issue-<
                       for b in (load(f"issue-{n}.json") or {}).get("blocked_by", [])]))
 elif cmd[0] == "api" and "/check-runs" in cmd[1]:  # commit-checks.json {sha: [check runs]}
     sha = cmd[1].split("/commits/")[1].split("/")[0]
-    runs = (load("commit-checks.json") or {}).get(sha, [])
+    polls = load("commit-check-polls.json") or {}
+    if polls.get(sha):
+        runs = polls[sha].pop(0)
+        save("commit-check-polls.json", polls)
+    else:
+        runs = (load("commit-checks.json") or {}).get(sha, [])
     print(json.dumps({"total_count": len(runs), "check_runs": runs}))
 elif cmd[0] == "api" and cmd[1].endswith("/permission"):  # permissions.json {login: role_name}; else 404
     role = (load("permissions.json") or {}).get(cmd[1].split("/collaborators/")[1].split("/")[0])
@@ -2962,6 +2968,38 @@ t_gh_main_ci_after_merge() {
             mkdir -p factory/jobs/zz-later
             python3 -c "import json; d = json.load(open('factory/jobs/$id/job.json')); d.update(id='zz-later', main_ci=dict(d['main_ci'], verdict='PASS', at='9999')); json.dump(d, open('factory/jobs/zz-later/job.json', 'w'))"
             check "fail: a later green base clears it" "[$(J next | grep -c tell)]" "[0]" ;;
+    esac || return 1
+  done
+}
+
+t_gh_main_ci_missing_rerun() {
+  local case id ci
+  for case in returns timeout; do
+    new_gh_repo "ghmainci-missing-$case"; gh_issue 1 One
+    [[ $case == returns ]] && set_config ci_wait_minutes 0.05
+    id=$(gh_to_merging 1) || return 1
+    main_checks commit-checks.json failure
+    main_checks commit-rerun.json success
+    python3 - "$GH" "$MAIN_SHA" "$case" <<'PY' || return 1
+import json, sys
+from pathlib import Path
+fixtures, sha, case = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+initial = json.loads((fixtures / "commit-checks.json").read_text())[sha]
+missing = [check for check in initial if check["name"] != "integration"]
+stable = fixtures / "commit-rerun.json"
+if case == "timeout":
+    stable.write_text(json.dumps({sha: missing}))
+(fixtures / "commit-check-polls.json").write_text(json.dumps({sha: [initial, missing, missing]}))
+PY
+    J merge "$id" >/dev/null 2>&1 || return 1
+    ci=$(cat "factory/jobs/$id/round-1/main-ci.md") || return 1
+    case $case in
+      returns) check "passes when the check returns" "$(field "$id" "d['main_ci']['verdict']")" "PASS" &&
+               check "records the rerun result" "$ci" "- Passed on rerun: integration." ;;
+      timeout) check "times out while the check is absent" "$(field "$id" "d['main_ci']['verdict']")" "TIMEOUT" &&
+               check "records the missing check as pending" "$(field "$id" "d['main_ci']['pending']")" "['integration']" &&
+               check "names the missing check in the summary" "$ci" "- Checks still pending after ci_wait_minutes: integration." &&
+               check "lists the missing check" "$ci" "- integration: pending" ;;
     esac || return 1
   done
 }
