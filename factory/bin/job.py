@@ -1401,12 +1401,13 @@ def review_findings(path):
     return new, earlier
 
 
-def open_findings(path):
+def open_findings(job, lens, n, path):
     """The ids a review leaves for the builder: its blockers and shoulds, and
-    the earlier findings it calls still open."""
+    earlier blockers and shoulds it calls still open."""
     new, earlier = review_findings(path)
     return ([i for i, (sev, _) in new.items() if sev in BLOCKING]
-            + [i for i, (status, _) in earlier.items() if status == "still open" and i not in new])
+            + [i for i, (status, _) in earlier.items() if status == "still open" and i not in new
+               and first_finding(job, lens, i, n)[0] != "nit"])
 
 
 def last_review(job, lens, before=None):
@@ -1423,7 +1424,7 @@ def owed_findings(job, lens):
     """(round, ids): the findings of `lens` that the round before left open.
     This round's builder and this round's reviewer each say what became of them."""
     n, f = last_review(job, lens)
-    return (n, open_findings(f)) if f else (None, [])
+    return (n, open_findings(job, lens, n, f)) if f else (None, [])
 
 
 def next_finding_number(job, lens):
@@ -1432,13 +1433,13 @@ def next_finding_number(job, lens):
     return max(used, default=0) + 1
 
 
-def finding_text(job, lens, fid):
-    """What the reviewer first wrote for a finding: `[severity] text`."""
-    for n in range(job["round"], 0, -1):
+def first_finding(job, lens, fid, before):
+    """The severity and text from the round that raised this finding."""
+    for n in range(job.get("findings_reset", 0) + 1, before):
         new = review_findings(round_dir(job, n) / f"review-{lens}.md")[0]
         if fid in new:
-            return f"[{new[fid][0]}] {new[fid][1]}"
-    return "(not found)"
+            return new[fid]
+    return None, "(not found)"
 
 
 def builder_answers(job):
@@ -1495,7 +1496,8 @@ def stuck_disputes(job):
             if status != "still open" or (now_answers.get(key) or {}).get("status") != "disagree":
                 continue
             if sum(1 for a in rounds.values() if (a.get(key) or {}).get("status") == "disagree") >= limit:
-                out.append({"key": key, "finding": finding_text(job, lens, fid),
+                severity, text = first_finding(job, lens, fid, job["round"])
+                out.append({"key": key, "finding": f"[{severity}] {text}" if severity else text,
                             "builder": now_answers[key]["text"], "reviewer": why or "(no reason given)"})
     return out
 
@@ -1540,7 +1542,7 @@ def review_problem(lens, path, verdict, job=None):
         return (f"its `## Earlier findings` doesn't say what became of {', '.join(unanswered)} from "
                 f"round-{n}/review-{lens}.md: one line each, `F<n> resolved`, `F<n> still open: <why>` "
                 f"or `F<n> withdrawn: <why>`")
-    still = open_findings(path)
+    still = open_findings(job, lens, job["round"], path)
     if verdict == "CHANGES" and not still:
         return ("it says CHANGES but no finding is a blocker or a should: write each finding as "
                 "`F<n> [blocker|should|nit] <path:line> <problem and fix>` under `## Findings`; "
