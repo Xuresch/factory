@@ -1435,7 +1435,7 @@ def next_finding_number(job, lens):
 
 def first_finding(job, lens, fid, before):
     """The severity and text from the round that raised this finding."""
-    for n in range(job.get("findings_reset", 0) + 1, before):
+    for n in range(1, before):
         new = review_findings(round_dir(job, n) / f"review-{lens}.md")[0]
         if fid in new:
             return new[fid]
@@ -1497,6 +1497,8 @@ def stuck_disputes(job):
                 continue
             if sum(1 for a in rounds.values() if (a.get(key) or {}).get("status") == "disagree") >= limit:
                 severity, text = first_finding(job, lens, fid, job["round"])
+                if severity == "nit":
+                    continue
                 out.append({"key": key, "finding": f"[{severity}] {text}" if severity else text,
                             "builder": now_answers[key]["text"], "reviewer": why or "(no reason given)"})
     return out

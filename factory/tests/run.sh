@@ -3881,6 +3881,18 @@ t_findings_verdict_fits_severity() {
   check "nits pass" "$(J advance "$id" approve 2>&1)" "$id: approve"
 }
 
+t_earlier_nit_can_stay_open() {
+  new_repo earlier-nit; ticket 01 One; commit_all
+  local id; id=$(to_build 01 medium ui) || return 1
+  build_commit "$id" y.txt y && to_review "$id" || return 1
+  rv "$id" 1 code PASS "" "F1 [nit] y.txt:1 rename it"
+  review "$id" 1 ux CHANGES; review "$id" 1 ui PASS
+  J advance "$id" build >/dev/null && build_commit "$id" y.txt y2 && to_review "$id" || return 1
+  rv "$id" 2 code PASS "F1 still open: current name is clear" "None."
+  review "$id" 2 ux PASS; review "$id" 2 ui PASS
+  J advance "$id" approve && [[ $(field "$id" "d['stage']") == approve ]]
+}
+
 t_findings_answered_next_round() {
   new_repo answers; ticket 01 One; commit_all
   local id; id=$(to_build 01 medium ui); build_commit "$id" y.txt y; to_review "$id"
@@ -3973,18 +3985,6 @@ t_gh_pr_review_table() {
   id=$(gh_to_approve 1) && who=$(config_value "reviewer('low', 'code')" label) || return 1
   rv "$id" 1 code CHANGES "" $'F1 [blocker] y.txt:1 wrong\nF2 [nit] y.txt:1 name'
   J advance "$id" build >/dev/null
-t_earlier_nit_can_stay_open() {
-  new_repo earlier-nit; ticket 01 One; commit_all
-  local id; id=$(to_build 01 medium ui) || return 1
-  build_commit "$id" y.txt y && to_review "$id" || return 1
-  rv "$id" 1 code PASS "" "F1 [nit] y.txt:1 rename it"
-  review "$id" 1 ux CHANGES; review "$id" 1 ui PASS
-  J advance "$id" build >/dev/null && build_commit "$id" y.txt y2 && to_review "$id" || return 1
-  rv "$id" 2 code PASS "F1 still open: current name is clear" "None."
-  review "$id" 2 ux PASS; review "$id" 2 ui PASS
-  J advance "$id" approve && [[ $(field "$id" "d['stage']") == approve ]]
-}
-
   body=$(python3 -c "import json; print(json.load(open('$GH/pr.json'))['body'])")
   check "the builder's text stays" "[${body%%$'\n'*}]" "[b]" &&
   check "table in the PR" "$body" "## Factory review" &&
