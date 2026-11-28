@@ -273,6 +273,14 @@ elif cmd[0] == "api" and cmd[1].endswith("/permission"):  # permissions.json {lo
     if role is None:
         sys.exit("HTTP 404: Not Found")
     print(json.dumps({"permission": {"maintain": "write", "triage": "read"}.get(role, role), "role_name": role}))
+elif cmd[0] == "api" and cmd[1].startswith("repos/{owner}/{repo}/issues/") and cmd[1].count("/") == 4:
+    n = int(cmd[1].split("/")[-1])
+    issue = load(f"issue-{n}.json")
+    if pr and n == pr["number"]:
+        issue = {"number": n, "pull_request": {}}
+    if issue is None:
+        sys.exit("HTTP 404: Not Found")
+    print(json.dumps(issue))
 elif cmd[0] == "api" and any(a.startswith("repos/{owner}/{repo}/") for a in args):
     # PR comments from pr-comments.json {"pulls/comments": [...], "issues/comments": [...], "pulls/reviews": [...]},
     # two per page: --paginate prints the pages back to back, without it only the first one comes.
@@ -304,7 +312,8 @@ elif cmd == ["issue", "edit"]:  # --add-label / --remove-label (comma-separated)
     i["labels"] += [{"name": x} for x in (opt("--add-label") or "").split(",") if x]
     save(f"issue-{args[2]}.json", i)
 elif cmd in (["issue", "comment"], ["pr", "comment"], ["pr", "close"]):
-    pass
+    if cmd == ["issue", "comment"] and (d / f"comment-fail-{args[2]}").exists():
+        sys.exit("HTTP 403: Resource not accessible by integration")
 elif cmd == ["issue", "close"]:  # close-fail: GitHub refuses
     if (d / "close-fail").exists():
         sys.exit("HTTP 403: Resource not accessible by integration")
@@ -1940,8 +1949,12 @@ t_gh_clean_merge_closes_issue() {
 
 t_gh_merge_posts_notes_for_later() {
   new_gh_repo ghnotes; gh_issue 1 One
+  gh_issue 25 Closed; gh_issue 26 Broken; gh_issue 27 Open; gh_issue 28 Unrelated
+  gh issue close 25
+  touch "$GH/comment-fail-26"
   local id comment
   id=$(gh_to_merging 1) || return 1
+  : > "$GH_LOG"
   cat > "factory/jobs/$id/decision.md" <<'MD'
 APPROVE
 
@@ -1949,19 +1962,49 @@ APPROVE
 - Gate and reviews passed.
 
 ## Notes for later
-- Keep the `drafts` link.
+- Keep the `drafts` link in #25.
   - Check the mobile view.
-- Revisit upload limits.
+- Revisit upload limits in #25 and #27.
+- Recheck #26, #7, #1, #999 and other/repo#28.
 
 ## For the human
-- Decision details stay in the job.
+- Decision details stay in the job, even with a reference to #28.
 MD
   J merge "$id" >/dev/null || return 1
-  comment=$(sed -n '/^issue comment 1 /,$p' "$GH_LOG")
+  J merge "$id" >/dev/null 2>&1
+  [[ $(field "$id" "d['stage']") == merged ]] || return 1
+  comment=$(sed -n '/^issue comment 1 /,/^issue view 1 /p' "$GH_LOG")
   check "approval summary goes to the issue" "$comment" $'**Why it was approved**\n- Gate and reviews passed.' &&
   check "notes retain their Markdown" "$comment" \
-    $'**Notes for later**\n\n- Keep the `drafts` link.\n  - Check the mobile view.\n- Revisit upload limits.' &&
-  [[ "$comment" != *"Decision details stay in the job."* ]]
+    $'**Notes for later**\n\n- Keep the `drafts` link in #25.\n  - Check the mobile view.\n- Revisit upload limits in #25 and #27.' &&
+  [[ "$comment" != *"Decision details stay in the job"* ]] &&
+  check "only noted issues get one comment each, even after retry" \
+    "[$(sed -n 's/^issue comment \([0-9]*\) .*/\1/p' "$GH_LOG" | paste -sd ' ')]" "[1 25 27 26]" &&
+  comment=$(sed -n '/^issue comment 25 /,/^api /p' "$GH_LOG") &&
+  check "closed issue gets all its notes and links back" "$comment" \
+    $'### Factory: notes from [#1](https://github.com/o/r/issues/1) and [PR #7](https://github.com/o/r/pull/7)\n\n- Keep the `drafts` link in #25.\n  - Check the mobile view.\n\n- Revisit upload limits in #25 and #27.' &&
+  comment=$(sed -n '/^issue comment 27 /,/^api /p' "$GH_LOG") &&
+  check "open issue gets its note" "$comment" 'Revisit upload limits in #25 and #27.' &&
+  [[ "$comment" != *'Keep the `drafts` link'* ]]
+}
+
+t_local_merge_forwards_approval_notes() {
+  new_repo local-notes; ticket 01 One; ticket 02 Two; ticket 03 Three
+  printf '\n## Comments\n\nExisting comment.\n' >> .scratch/f/issues/02-t.md
+  commit_all
+  local id out
+  id=$(to_build 01 low none) && build_commit "$id" x.txt changed &&
+  to_review "$id" && review "$id" 1 code PASS && J advance "$id" approve >/dev/null || return 1
+  printf 'APPROVE\n\n## Notes for later\n- Follow up in #02, #03 and #99.\n' > "factory/jobs/$id/decision.md"
+  J merge "$id" >/dev/null || return 1
+  J merge "$id" >/dev/null 2>&1
+  out=$(cat .scratch/f/issues/02-t.md)
+  check "local note links back to the merged ticket" "$out" \
+    $'### Factory: notes from [f/01](01-t.md)\n\n- Follow up in #02, #03 and #99.' &&
+  [[ $(grep -c '^### Factory: notes from' <<< "$out") == 1 ]] &&
+  [[ "$out" == *'Existing comment.'* && $(status_of 02) == ready-for-agent ]] &&
+  check "local tracker adds a comments section when needed" "$(cat .scratch/f/issues/03-t.md)" \
+    $'## Comments\n\n<!-- factory -->'
 }
 
 t_gh_approved_merge_closes_issue() {
