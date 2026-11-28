@@ -385,8 +385,9 @@ Then add a short section:
 `/factory run` builds every open GitHub issue labeled `ready-for-agent`
 through intake → spec → build → gate → review → approve, one PR per issue.
 Every agent is an Orca worker: Codex builds, Claude Code reviews, and a job
-moves to a Claude builder when the UX or UI review asks for changes. Briefs
-are in `factory/agents/`. State is in
+moves to a Claude builder after `builder.ui_fixes_before_fallback` (default 2)
+rounds of UX/UI fixes, and always for its last round. Briefs are in
+`factory/agents/`. State is in
 `factory/jobs/` (gitignored); `factory/bin/job` is its only writer. Checks:
 `factory/checks.sh`. Dashboard: `factory/bin/dashboard`, then open
 http://127.0.0.1:8000/dashboard.html.
