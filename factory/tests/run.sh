@@ -3187,6 +3187,40 @@ t_overlap_waits() {
   check "knob off: start works" "$(J start "$B" builder)" "started builder"
 }
 
+t_overlap_running_builder_before_changes() {
+  new_repo overlap-running; mkdir -p src; echo a > src/a.ts; ticket 01 One; ticket 02 Two; commit_all
+  local A B; A=$(to_build 01 low none) && B=$(to_build 02 low none) || return 1
+  printf '# Spec\n\nEdit src/a.ts.\n' > "factory/jobs/$A/spec.md"
+  cp "factory/jobs/$A/spec.md" "factory/jobs/$B/spec.md"
+  J start "$A" builder >/dev/null || return 1
+  export FAKE_WORKER=running
+  check "clean running peer blocks" "$(J next "$B")" "$B: wait: overlaps $A (src/a.ts)" &&
+  check "direct start waits too" "$(J start "$B" builder 2>&1)" "wait: overlaps $A (src/a.ts)" &&
+  check "first builder still runs" "$(J next "$A")" "$A: wait: builder running" &&
+  check "settled clean peer clears" "$(FAKE_WORKER=settled J next "$B")" "$B: start:" &&
+  set_config overlap_wait false &&
+  check "off skips spec overlap" "$(J start "$B" builder)" "started builder"
+}
+
+t_overlap_slice_uses_owned_paths() {
+  new_repo overlap-slices; mkdir -p a b; echo a > a/file.txt; echo b > b/file.txt
+  ticket 01 One; ticket 02 Big; set_config max_parallel_builders 1; commit_all
+  local A B; A=$(to_build 01 low none) && B=$(J create f/02) || return 1
+  printf '# Spec\n\nEdit a/file.txt.\n' > "factory/jobs/$A/spec.md"
+  J start "$A" builder >/dev/null || return 1
+  export FAKE_WORKER=running
+  intake "$B" low none; sed -i 's/SPLIT: no/SPLIT: yes/; s/SIZE: small/SIZE: large/' "factory/jobs/$B/intake.md"
+  factory/bin/route "$B" >/dev/null && J advance "$B" spec >/dev/null || return 1
+  printf '# Big\n\n## Slices\n### Slice 1: A\n**Owns:** a/\n**Needs:** none\n**Criteria:** 1\n\n### Slice 2: B\n**Owns:** b/\n**Needs:** none\n**Criteria:** 2\n' > "factory/jobs/$B/spec.md"
+  J advance "$B" build >/dev/null || return 1
+  check "slice waits in advice" "$(J next "$B")" "slice 1 overlaps $A (a/file.txt)" &&
+  check "slice start waits" "$(J slice-start "$B" 1 2>&1)" "wait: overlaps $A (a/file.txt)" &&
+  [[ ! -e ".worktrees/$B-s1" ]] &&
+  check "disjoint slice starts" "$(J slice-start "$B" 2)" "slice 2 worktree" &&
+  set_config max_parallel_builders 2 && set_config overlap_wait false &&
+  check "off allows overlapping slice" "$(J slice-start "$B" 1)" "slice 1 worktree"
+}
+
 t_overlap_none_starts() {
   new_repo overlap-none; mkdir -p src; echo a > src/a.ts; echo b > src/b.ts; ticket 01 One; ticket 02 Two; commit_all
   local A B; A=$(to_build 01 low none) && B=$(to_build 02 low none) || return 1

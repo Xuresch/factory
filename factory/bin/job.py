@@ -2530,18 +2530,23 @@ def slice_port(job, k):
     return CONFIG["ports"]["base"] + CONFIG["ports"]["step"] * n + 2 + int(k)
 
 
-def ready_slices(job):
+def ready_slices(job, waits=None):
     states = {s["n"]: s["state"] for s in job["slices"]}
     running = sum(1 for v in states.values() if v == "running")
     free = CONFIG.get("max_parallel_builders", 3) - running
     ready = [s for s in job["slices"]
              if s["state"] in {"pending", "resume"} and all(states[n] == "done" for n in s["needs"])]
+    if waits is not None and free > 0:
+        for s in ready:
+            if wait := overlap_wait(job, s):
+                waits[s["n"]] = wait
+        ready = [s for s in ready if s["n"] not in waits]
     return ready[:max(free, 0)]
 
 
 def slices_status(job):
     lines = [f"slice {s['n']} {s['state']}: {s['title']}" for s in job["slices"]]
-    nxt = ready_slices(job)
+    nxt = ready_slices(job, {})
     if nxt:
         lines.append("start: " + ", ".join(
             f"factory/bin/job slice-start {job['id']} {s['n']}"
@@ -2607,11 +2612,20 @@ def cmd_unsplit(job):
 
 
 def cmd_slice_start(job, k):
+    with overlap_start_lock():
+        start_slice(job, k)
+
+
+def start_slice(job, k):
     require(job["stage"] == "build" and job.get("slices"), f"{job['id']} isn't building slices")
     s = slice_of(job, k)
     require(s["state"] in {"pending", "resume"}, f"slice {k} is {s['state']}, not pending or resume")
-    require(s in ready_slices(job), f"slice {k} waits for slices {s['needs']} or a free builder "
-                                    f"(max_parallel_builders {CONFIG.get('max_parallel_builders', 3)})")
+    waits = {}
+    ready = ready_slices(job, waits)
+    if wait := waits.get(s["n"]):
+        die(f"{job['id']}: slice {k} wait: {wait}")
+    require(s in ready, f"slice {k} waits for slices {s['needs']} or a free builder "
+                        f"(max_parallel_builders {CONFIG.get('max_parallel_builders', 3)})")
     branch, where = slice_branch(job, k), slice_worktree(job, k)
     resumed = s["state"] == "resume"
     if resumed:  # its branch and fork point stay; only a missing worktree comes back
@@ -5106,34 +5120,65 @@ def peer_jobs():
     return [jobfiles.read_job(p / "job.json") for p in sorted(JOBS.iterdir()) if (p / "job.json").exists()]
 
 
-def overlap(job):
-    """(other job id, file) when another running job changed a file this job's
-    spec names and this job hasn't changed anything yet; else None."""
+@contextlib.contextmanager
+def overlap_start_lock():
+    """Serialize the overlap check and the recorded builder or slice start."""
+    if not CONFIG.get("overlap_wait", True):
+        yield
+        return
+    with (JOBS / ".overlap-start.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def overlap(job, slice_=None):
+    """Return the peer and path blocking a build that has yet to change files."""
     if not CONFIG.get("overlap_wait", True) or not Path(job["worktree"]).exists():
         return None
-    mine = spec_paths(job)
-    if not mine or changed_files(job["worktree"], jref(job)):
+    mine = slice_["owns"] if slice_ else spec_paths(job)
+    where = slice_worktree(job, slice_["n"]) if slice_ else job["worktree"]
+    base = (slice_.get("fork") if slice_ else None) or jref(job)
+    if not mine or (Path(where).exists() and changed_files(where, base)):
         return None
+    split_underway = slice_ and any(s["state"] != "pending" for s in job["slices"])
     for other in peer_jobs():
         if other["id"] == job["id"] or other["stage"] not in OVERLAP_STAGES:
             continue
-        places = [other["worktree"]] + [slice_worktree(other, s["n"]) for s in other.get("slices") or []]
-        for where in places:
-            if not Path(where).exists():
-                continue
-            for f in sorted(changed_files(where, jref(other))):
-                if any(owns_overlap(f, p) for p in mine):
-                    return other["id"], f
+        slices = unfinished_slices(other)
+        # Once the peer has no active slice, break a possible wait between
+        # two partially built splits in creation order.
+        if (split_underway and slices and all(s["state"] != "running" for s in slices)
+                and int(job["id"].split("-")[0]) < int(other["id"].split("-")[0])):
+            continue
+        paths = changed_files(other["worktree"], jref(other)) if Path(other["worktree"]).exists() else set()
+        if other["stage"] == "build" and not slices and not paths:
+            state, _ = step_report(other, "builder", job_dir(other["id"]) / "build.md", entered(other))
+            if state == "running":
+                paths.update(spec_paths(other))
+        for s in slices:
+            place = slice_worktree(other, s["n"])
+            changed = changed_files(place, s.get("fork") or jref(other)) if Path(place).exists() else set()
+            paths.update(changed or (s["owns"] if s["state"] == "running" else []))
+        for path in sorted(paths):
+            if any(owns_overlap(path, p) for p in mine):
+                return other["id"], path
     return None
 
 
-def overlap_wait(job):
+def overlap_wait(job, slice_=None):
     """`overlaps <job> (<file>)`, the reason this job's builder waits, or None."""
-    hit = overlap(job)
+    hit = overlap(job, slice_)
     return f"overlaps {hit[0]} ({hit[1]})" if hit else None
 
 
 def cmd_start(job, role, extra):
+    if role == "builder" and job["stage"] == "build":
+        with overlap_start_lock():
+            return start_worker(job, role, extra)
+    return start_worker(job, role, extra)
+
+
+def start_worker(job, role, extra):
     if role == "builder" and unfinished_slices(job):
         i = job["id"]
         die(f"{i} has unfinished slices. See `job slices {i}` and use `job slice-start {i} <k>` "
@@ -5455,12 +5500,15 @@ def next_spec(job, since):
 
 def next_slices(job, since):
     i, d, out = job["id"], job_dir(job["id"]), []
-    ready = [s["n"] for s in ready_slices(job)]
+    waits = {}
+    ready = [s["n"] for s in ready_slices(job, waits)]
     for s in job["slices"]:
         k, role = s["n"], f"builder-s{s['n']}"
         if s["state"] == "running":
             step = worker_step(job, role, d / f"slice-{k}.md", max(since, s.get("started", 0)))
             out.append(step or ("run", f"{JOB} slice-done {i} {k}"))
+        elif k in waits:
+            out.append(("wait", f"slice {k} {waits[k]}"))
         elif k in ready:
             out.append(("run", f"{JOB} slice-start {i} {k}, then {JOB} start {i} {role}"))
     if not out:

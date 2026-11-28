@@ -286,13 +286,14 @@ after their needs are merged. The merged branch then goes through one gate and
 one set of reviews, and later rounds use a single builder. A slice, like a
 whole build, can report PARTIAL and continue in place.
 
-**Jobs that would collide take turns.** Two jobs building on the same test
-file at once cost one of them a round. So a job's first builder waits while
-another running job has changed a file its spec names: the files that job
-really changed (its branch since its base, and uncommitted work), not what its
-spec says, so a broad spec makes no one wait. Only a job with no changes of its
-own waits, so no one waits on it and two jobs never wait on each other; the
-wait clears when the other job merges or parks (`overlap_wait`).
+**Jobs that would collide take turns.** A builder with no changes of its own
+waits while another active job has changed files its spec names. The check
+includes committed and uncommitted changes. A running builder with no changes
+yet reserves its spec paths as soon as the factory starts it. For slices, the
+check uses the paths each slice owns. If two split jobs are already underway,
+the earlier job can finish first so their remaining slices cannot deadlock.
+Disjoint slices can use free slots while overlapping slices wait. Set
+`overlap_wait: false` to switch this off.
 
 **The scripts start the workers.** `job start <job> <role>` reads the agent,
 model, worktree and brief from `job.json`, writes the header, runs Orca's
