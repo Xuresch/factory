@@ -88,7 +88,7 @@ def is_branch_directory(worktree, path):
 def claims(worktree, build, log, paths, inputs):
     lines, contradictions = [], 0
     if build is None:
-        return lines, contradictions
+        return lines, None
     sections = re.split(r"^(#{1,6}) +([^\n]+)\n", build, flags=re.M)
     criteria, changes = [], []
     criteria_level = None
@@ -170,7 +170,7 @@ def claims(worktree, build, log, paths, inputs):
                 contradictions += 1
         for file in sorted(paths.keys() - covered):
             lines.append(f"- The diff changes `{file}` without an entry in `## Changes` (not a contradiction).")
-    return lines, contradictions
+    return lines, contradictions if criteria else None
 
 
 def test_key(path):
@@ -365,7 +365,13 @@ def write(worktree, base_ref, round_dir, verdict, lcov_before, lcov_after):
                           f"Changed lines without a recorded hit: {line_ranges(added - hits)}")
             covered.append(f"- `{file}`: {detail}.")
 
-    summary = [f"- Round gate: {verdict}.", f"- {contradictions} build claim contradictions.",
+    if contradictions is None:
+        claims_status = "claims not checked"
+        claims_summary = "- Build claims not checked: build.md has no acceptance criteria the report could read."
+    else:
+        claims_status = f"{contradictions} contradictions"
+        claims_summary = f"- {contradictions} build claim contradictions."
+    summary = [f"- Round gate: {verdict}.", claims_summary,
                f"- {source_count} changed source files identified, {untested} with no test link found.",
                f"- Changed-line coverage: {'LCOV records available' if coverage is not None else 'unavailable'}."]
     parts = [("Summary", summary), ("Claims", claims_lines or ["No claims to list."]),
@@ -373,6 +379,6 @@ def write(worktree, base_ref, round_dir, verdict, lcov_before, lcov_after):
              ("Tests for the change", tests or ["No changed source files to link to tests."]),
              ("Coverage", covered or ["No changed-line coverage to list."]),
              ("Inputs", [f"- {item}" for item in inputs] or ["All inputs available."])]
-    report = f"REPORT: {contradictions} contradictions, {untested} untested\n\n"
+    report = f"REPORT: {claims_status}, {untested} untested\n\n"
     report += "\n\n".join(f"## {title}\n\n" + "\n".join(body) for title, body in parts) + "\n"
     (round_dir / "report.md").write_text(report, encoding="utf-8")

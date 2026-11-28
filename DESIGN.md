@@ -159,8 +159,11 @@ finding asked for. The builder brief asks for the smallest fix first.
 with build claims checked against the branch and gate log, changed source and
 its test links, and changed-line coverage when checks produce LCOV. A
 directory listed under `## Changes` covers changed files below it. The report
-checks the acceptance criteria from each slice of a split build. Reviewers use
-it as evidence, and it has no effect on the gate verdict. On GitHub, the job
+checks the acceptance criteria from each slice of a split build. Its first line
+is `REPORT: <n> contradictions, <m> untested`. When the report finds no readable
+acceptance criteria in build.md, it starts with
+`REPORT: claims not checked, <m> untested`. Reviewers use the report as
+evidence, and it has no effect on the gate verdict. On GitHub, the job
 updates one PR comment as each round leaves the gate.
 
 **The PR shows who reviewed it.** After every review round the factory

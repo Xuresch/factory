@@ -4644,8 +4644,24 @@ MD
   rm "factory/jobs/$id/build.md"; touch "$wt/FAIL"
   factory/bin/gate "$id" >/dev/null; rc=$?
   [[ $rc == 1 ]] && check "missing build input on FAIL" "$(cat "$report")" 'build.md: missing.' &&
+  [[ $(head -1 "$report") == 'REPORT: claims not checked, 1 untested' ]] &&
   check "reports actual failed gate" "$(cat "$report")" 'Round gate: FAIL.' &&
   J advance "$id" build >/dev/null && [[ $(field "$id" "d['round']") == 2 ]]
+}
+
+t_report_without_criteria() {
+  new_repo report-no-criteria; ticket 01 One; commit_all
+  local id report
+  id=$(to_build 01 low none) || return 1
+  build_commit "$id" alpha.py 'def alpha(): pass' || return 1
+  ready "$id"
+  printf '\n## Acceptance criteria\n\nNo checklist was included.\n' >> "factory/jobs/$id/build.md"
+  J advance "$id" gate >/dev/null && factory/bin/gate "$id" >/dev/null || return 1
+  report=$(cat "factory/jobs/$id/round-1/report.md") || return 1
+  [[ $(head -1 <<< "$report") == 'REPORT: claims not checked, 1 untested' ]] &&
+  check "summary explains why claims were not checked" "$report" \
+    '- Build claims not checked: build.md has no acceptance criteria the report could read.' &&
+  check "inputs name the missing criteria" "$report" 'build.md: no criteria found.'
 }
 
 t_report_directory_changes_and_grouped_criteria() {
@@ -4864,6 +4880,7 @@ human, lookalike, factory = json.loads(Path(sys.argv[1]).read_text())["issues/co
 assert human["body"] == "A human comment" and lookalike["user"]["login"] == "alice"
 assert factory["id"] == 13 and factory["user"]["login"] == "op"
 assert factory["body"] == "<!-- factory:report -->\n\n### Factory report\n\nRound 1\n\n" + Path(sys.argv[2]).read_text()
+assert "Round 1\n\nREPORT: claims not checked, 0 untested\n" in factory["body"]
 PY
   review "$id" 1 code CHANGES; J advance "$id" build >/dev/null || return 1
   build_commit "$id" FAIL fail && git -C "$wt" push -q || return 1
@@ -4907,6 +4924,7 @@ import job
 code, approver, builder = (job.render_brief(role, Path("target") / f"{role}.md").read_text()
                           for role in ("reviewer-code", "approver", "builder"))
 assert all("report.md" in text for text in (code, approver, builder))
+assert all("REPORT: claims not checked" in text for text in (code, approver))
 assert "[should]" in code and "contradiction" in code and "untested" in code
 assert "ESCALATE" in approver and "contradiction" in approver and "untested" in approver
 assert "Test:" in builder and "contradiction" in builder
