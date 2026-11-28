@@ -229,9 +229,11 @@ What this slice builds, in two or three lines.
   that something never contains, logs, stores or sends a value (an address,
   a token, a name) has to fit the places where that value legitimately
   appears today: find them in the code (a queue job's `to`, a column, a log
-  field the contract needs) and write them into the criterion as exceptions
-  ("no address anywhere in the queued job except `to`"). When you can't
-  write such a criterion so it holds, ask under `## Needs a human`. When the
+  field the contract needs) and in the source or docs of each library the
+  value goes to (a session store keeps a hash of the password hash, an auth
+  library writes a token to a table), and write them into the criterion as
+  exceptions ("no address anywhere in the queued job except `to`"). When you
+  can't write such a criterion so it holds, ask under `## Needs a human`. When the
   change is about who can see or do something, list every entry point of the
   flow (a link, a button, a redirect) and the page it leads to, with the
   viewer's role at each step, and check that no requirement refuses on the
