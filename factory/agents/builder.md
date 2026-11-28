@@ -217,9 +217,13 @@ A criterion that asks for a test and has none named isn't met: write the test.
   reviewers and the human: after your last change this round, screenshot every
   page the diff changes at desktop (1440 px) and phone (390 px) width, in each
   theme the app has, into `<job folder>/round-<N>/screenshots/`, named
-  `<page>-<width>-<theme>.png`. Signed in where the page needs it, with the
-  account AGENTS.md names for development. List each file under
-  `## Screenshots` in build.md with the state it shows. The reviewers cite
+  `<page>-<width>-<theme>.png`, plus one shot with keyboard focus on each new
+  or changed interactive element (`<page>-focus-<element>.png`). Signed in
+  where the page needs it, with the account AGENTS.md names for development.
+  Look at every shot before READY and fix what it shows wrong, such as a
+  focus ring drawn through a heading or a border that doesn't render. List
+  each file under `## Screenshots` in build.md with the state it shows. The
+  reviewers cite
   them; take a new set in each round that changes a page.
 - An acceptance criterion that needs a browser is yours to check, even when
   the reviewers can't sign in: record what the page showed, with the
